@@ -4,7 +4,7 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-import { ChannelAddress } from '../address/index.ts';
+import { ChannelAddress, type ServiceAddressLike, toServiceAddress } from '../address/index.ts';
 import { type PayloadLike, toPayload } from '../bytes.ts';
 import {
   type MuxChannel,
@@ -17,7 +17,6 @@ import { Broadcast } from '../switchboard/broadcast.ts';
 import { coreRuntime } from '../switchboard/core-runtime.ts';
 import { IncomingChannel } from '../switchboard/incoming-channel.ts';
 import type { MuxFactory } from '../switchboard/runtime.ts';
-import { type ServiceAddressLike, toServiceAddress } from '../switchboard/service-address-like.ts';
 import {
   installBulkRouting,
   isBulkAddress,

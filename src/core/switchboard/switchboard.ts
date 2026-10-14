@@ -4,7 +4,13 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-import { ChannelAddress, maxInstance, ServiceAddress } from '../address/index.ts';
+import {
+  ChannelAddress,
+  maxInstance,
+  ServiceAddress,
+  type ServiceAddressLike,
+  toServiceAddress,
+} from '../address/index.ts';
 import { bytesEqual, hexString, type PayloadLike, toPayload, utf8Encode } from '../bytes.ts';
 import type {
   Credential,
@@ -30,6 +36,7 @@ import { type Logger, type LogLevel, noopLogger } from '../util/logger.ts';
 import { Broadcast } from './broadcast.ts';
 import { ChannelPolicies } from './channel-policy.ts';
 import type {
+  BrokeringResolver,
   ChannelHandler,
   ChannelPolicy,
   EndpointCredential,
@@ -53,9 +60,8 @@ import { genericStatus } from './generic-status.ts';
 import { waitForIdentityChange } from './identity-wait.ts';
 import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
-import { type BrokeringResolver, isBrokeringResolver } from './resolver.ts';
+import { isBrokeringResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
-import { type ServiceAddressLike, toServiceAddress } from './service-address-like.ts';
 import { installBulkRouting, isBulkAddress, refuseBulk, talkOver } from './talk-layer.ts';
 import {
   abortable,
@@ -66,8 +72,6 @@ import {
   goAwayQuietly,
   quietly,
 } from './waits.ts';
-
-export { type ServiceAddressLike, toServiceAddress } from './service-address-like.ts';
 
 /** The logger name of the node. */
 const logName = 'Switchboard.Node';

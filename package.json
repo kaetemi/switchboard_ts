@@ -1,5 +1,5 @@
 {
-  "name": "@polyverse/switchboard",
+  "name": "@kaetemi/switchboard",
   "version": "3.0.0-dev.1",
   "description": "Polyverse Switchboard, a microservice mesh protocol: multiplexed channels, message chains, service addressing and a naming service over WebSocket, TCP, QUIC and WebTransport.",
   "license": "BSD-3-Clause",

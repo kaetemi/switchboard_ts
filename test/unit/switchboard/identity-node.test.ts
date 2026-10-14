@@ -14,13 +14,14 @@ import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type {
+  BrokeringResolver,
   ChannelPolicy,
   ExpectedIdentity,
   IncomingChannel,
   Resolver,
   ServiceRecord,
 } from '../../../src/core/switchboard/contract.ts';
-import { type BrokeringResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
+import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';

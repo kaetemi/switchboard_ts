@@ -1,6 +1,6 @@
 # Polyverse Switchboard for TypeScript
 
-`@polyverse/switchboard` is the TypeScript implementation of the Switchboard protocol, wire-compatible with the Dart reference implementation. It gives JavaScript and TypeScript programs, on servers and in browsers, the same microservice mesh: multiplexed channels with flow control, Talk message chains, service addressing, connection identity, a naming service with sharding, proxying and relaying, over WebSocket, TCP, QUIC and WebTransport.
+`@kaetemi/switchboard` is the TypeScript implementation of the Switchboard protocol, wire-compatible with the Dart reference implementation. It gives JavaScript and TypeScript programs, on servers and in browsers, the same microservice mesh: multiplexed channels with flow control, Talk message chains, service addressing, connection identity, a naming service with sharding, proxying and relaying, over WebSocket, TCP, QUIC and WebTransport.
 
 These pages document the TypeScript package. The protocol itself is specified in the Switchboard wiki (`transport`, `mux`, `talk`, `addressing`, `identity`, `naming`, `sharding`, `quic-binding`, `test-vectors`); nothing here changes the wire.
 

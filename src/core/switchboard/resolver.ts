@@ -9,28 +9,7 @@ import type { Name } from '../name.ts';
 import { downEvent, serviceRecord, upEvent } from '../naming/naming-protocol.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import { Broadcast } from './broadcast.ts';
-import type { Resolver, ServiceEvent, ServiceRecord } from './contract.ts';
-
-/**
- * A resolver that can have an instance which registered without endpoints
- * dial the caller: the naming service's CONNECT (wiki page "Polyverse
- * Switchboard Identity and Credentials", section "Reverse connections").
- * The node brokers a connection through it to an instance whose record
- * has no endpoints (`Switchboard.broker`).
- */
-export interface BrokeringResolver extends Resolver {
-  /**
-   * Has the instance at [address] dial [endpoint] and identify there with
-   * [intent] (at most 64 bytes). Resolves once it has, with the identity it
-   * presents. [options.timeout] (milliseconds) bounds the whole request.
-   */
-  connectTo(
-    address: ServiceAddress,
-    endpoint: string,
-    intent: Uint8Array,
-    options?: { timeout?: number | undefined; signal?: AbortSignal | undefined },
-  ): Promise<string>;
-}
+import type { BrokeringResolver, Resolver, ServiceEvent, ServiceRecord } from './contract.ts';
 
 /** Whether [resolver] can broker connections ({@link BrokeringResolver}). */
 export function isBrokeringResolver(resolver: Resolver): resolver is BrokeringResolver {
