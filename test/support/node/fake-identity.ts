@@ -4,186 +4,125 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
-import { concatBytes, hexBytes, utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import {
-  type Credential,
+  type Credential as CredentialContract,
   CredentialKind,
-  type CredentialVerifier,
-  type HolderKey,
   type PeerIdentity,
-  Right,
-  type Scope,
-  SignatureKind,
+  type Right,
 } from '../../../src/core/identity/contract.ts';
-import { Name } from '../../../src/core/name.ts';
-import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import type { Credential } from '../../../src/core/identity/credential.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import {
+  CredentialVerifier,
+  type CredentialVerifierOptions,
+} from '../../../src/core/identity/credential-verifier.ts';
+import { createPeerIdentity } from '../../../src/core/identity/peer-identity.ts';
+import { Scope } from '../../../src/core/identity/scope.ts';
 
 /**
- * Credentials without cryptography for the node thread's tests, standing in
- * for the protocol core's codec, issuer and verifier until they land. A
- * fake credential encodes to `fake:<serial>`; a {@link FakeVerifier}
- * accepts exactly the fake credentials not revoked and not expired.
+ * The node suites' identity, as Dart's `identity_node_test.dart` has it:
+ * real credentials of a test authority (`auth1`, an Ed25519 key pair from a
+ * fixed seed), of a rogue key pair claiming the same key id, and of the
+ * mesh's HMAC key (`mesh1`), verified by a real verifier that knows the
+ * authority and the mesh key. Holder keys are `Ed25519HolderKey`s
+ * (`Ed25519HolderKey.fromSeed` for deterministic ones). Every party reads
+ * the wall time when it needs it, so that a test faking `Date` moves
+ * issuance and expiry alike.
  */
 
-const registry = new Map<string, FakeCredential>();
-let serial = 0;
+/** The authority's Ed25519 seed (Dart's `authoritySeed`). */
+export const authoritySeed: Uint8Array = Uint8Array.from({ length: 32 }, (_, i) => 3 * i);
 
-/** A scope pattern match as the wiki defines it: a trailing `*` matches any suffix, `*` alone everything. */
-export function patternMatches(pattern: Name, name: Name): boolean {
-  const p = pattern.bytes;
-  const n = name.bytes;
-  const length = pattern.length;
-  if (length > 0 && p[length - 1] === 0x2a) {
-    for (let i = 0; i < length - 1; i++) {
-      if (p[i] !== n[i]) return false;
-    }
-    return true;
-  }
-  return pattern.equals(name);
-}
+/** The rogue key pair's seed (Dart's `rogueSeed`). */
+export const rogueSeed: Uint8Array = Uint8Array.from({ length: 32 }, (_, i) => 5 * i + 1);
 
-class FakeScope implements Scope {
-  readonly right: Right;
-  readonly pattern: Name;
-  constructor(right: Right, pattern: string) {
-    this.right = right;
-    this.pattern = Name.of(pattern);
-  }
-  matches(name: Name): boolean {
-    return patternMatches(this.pattern, name);
-  }
-}
+/** The mesh's HMAC key (Dart's `meshKey`). */
+export const meshKey: Uint8Array = Uint8Array.from({ length: 32 }, (_, i) => i);
 
-/** What {@link fakeCredential} takes. */
-export interface FakeCredentialInit {
-  identity: string;
-  kind?: CredentialKind;
-  /** `[right, pattern]` pairs, such as `[Right.open, 'echo']`. */
-  scopes?: readonly (readonly [Right, string])[];
-  /** Unix seconds; 0 (default) never. */
-  expiresAt?: number;
-  /** The holder key's public key; undefined for a bearer credential. */
-  holderKey?: Uint8Array;
-}
+/** The wall time, read at each call (a faked `Date` included). */
+const wallTime = (): number => Date.now();
 
-class FakeCredential implements Credential {
-  readonly version = 1;
-  readonly kind: CredentialKind;
-  readonly keyId = Name.of('fake');
+/** The mesh authority: Ed25519, key id `auth1`. */
+export const authority: CredentialIssuer = await CredentialIssuer.ed25519FromSeed(
+  'auth1',
+  authoritySeed,
+  { wallTime },
+);
+
+/** Another key pair claiming the authority's key id: what it issues verifies nowhere. */
+export const rogue: CredentialIssuer = await CredentialIssuer.ed25519FromSeed('auth1', rogueSeed, {
+  wallTime,
+});
+
+/** The mesh's HMAC issuer, key id `mesh1`: bearer credentials only. */
+export const hmacAuthority: CredentialIssuer = CredentialIssuer.hmac('mesh1', meshKey, {
+  wallTime,
+});
+
+const authorityKey = await authority.publicKey();
+
+/** What {@link issueCredential} takes. */
+export interface TestCredentialInit {
   readonly identity: string;
-  readonly issuedAt = 0;
-  readonly expiresAt: number;
-  readonly holderKey: Uint8Array | undefined;
-  readonly scopes: readonly Scope[];
-  readonly signatureKind = SignatureKind.ed25519;
-  readonly signature = new Uint8Array(64);
-  readonly #bytes: Uint8Array;
-  revoked = false;
-
-  constructor(init: FakeCredentialInit) {
-    this.kind = init.kind ?? CredentialKind.node;
-    this.identity = init.identity;
-    this.expiresAt = init.expiresAt ?? 0;
-    this.holderKey = init.holderKey;
-    this.scopes = (init.scopes ?? []).map(([right, pattern]) => new FakeScope(right, pattern));
-    const key = `fake:${++serial}`;
-    this.#bytes = utf8Encode(key);
-    registry.set(key, this);
-  }
-
-  get isBearer(): boolean {
-    return this.holderKey === undefined;
-  }
-
-  isExpired(now: number = Date.now()): boolean {
-    return this.expiresAt !== 0 && now >= this.expiresAt * 1000;
-  }
-
-  allows(right: Right, name: Name): boolean {
-    return this.scopes.some(
-      (scope) => scope.right === Right.admin || (scope.right === right && scope.matches(name)),
-    );
-  }
-
-  get signedBytes(): Uint8Array {
-    return this.#bytes;
-  }
-
-  encode(): Uint8Array {
-    return this.#bytes.slice();
-  }
+  readonly kind?: CredentialKind;
+  /** `[right, pattern]` pairs, such as `[Right.open, 'echo']`. */
+  readonly scopes?: readonly (readonly [Right, string])[];
+  /**
+   * When it expires, in Unix seconds; 0 (default): the issuer's default
+   * lifetime from now (8 hours). One in the past issues a credential that
+   * has expired.
+   */
+  readonly expiresAt?: number;
+  /** The holder key's public key; undefined for a bearer credential. */
+  readonly holderKey?: Uint8Array;
+  /** The issuer; default the {@link authority}. */
+  readonly by?: CredentialIssuer;
 }
 
-/** A credential the {@link FakeVerifier} accepts. */
-export function fakeCredential(init: FakeCredentialInit): Credential {
-  return new FakeCredential(init);
+/** A credential of [init.by] (the {@link authority} by default), as `CredentialIssuer.issue` makes it. */
+export function issueCredential(init: TestCredentialInit): Promise<Credential> {
+  const issuer = init.by ?? authority;
+  const scopes = (init.scopes ?? []).map(([right, pattern]) => Scope.of(right, pattern));
+  const expiresAt = init.expiresAt ?? 0;
+  let issuedAt: number | undefined;
+  let lifetime: number | undefined;
+  if (expiresAt !== 0) {
+    const now = Math.floor(Date.now() / 1000);
+    const issued = expiresAt > now ? now : expiresAt - 3600;
+    issuedAt = issued * 1000;
+    lifetime = (expiresAt - issued) * 1000;
+  }
+  return issuer.issue({
+    kind: init.kind ?? CredentialKind.node,
+    identity: init.identity,
+    scopes,
+    holderKey: init.holderKey,
+    issuedAt,
+    lifetime,
+  });
 }
-
-/** Makes [credential] (a fake one) invalid for every verifier from now on. */
-export function revoke(credential: Credential): void {
-  (credential as FakeCredential).revoked = true;
-}
-
-/** The PKCS#8 encoding of an Ed25519 private key, before its 32-byte seed. */
-const pkcs8Ed25519 = hexBytes('302e020100300506032b657004220420');
 
 /**
- * A real Ed25519 holder key whose private key is [seed] (32 bytes), so
- * that the proofs of possession it signs verify where the binding checks
- * them (the frame mux; the toy mux checks no proofs). Deterministic: one
- * seed, one key.
+ * The receivers' verifier: the {@link authority}'s public key and the mesh
+ * key, checking expiry at the wall time of each call. Not the
+ * {@link rogue}'s.
  */
-export function fakeHolderKey(seed: Uint8Array = new Uint8Array(32).fill(7)): HolderKey {
-  if (seed.length !== 32) {
-    throw new RangeError(`an Ed25519 seed is 32 bytes, got ${seed.length}`);
-  }
-  const privateKey = createPrivateKey({
-    key: Buffer.from(concatBytes(pkcs8Ed25519, seed)),
-    format: 'der',
-    type: 'pkcs8',
-  });
-  const spki = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
-  return {
-    publicKey: new Uint8Array(spki.subarray(spki.length - 32)),
-    sign: async (message) => new Uint8Array(sign(null, message, privateKey)),
-  };
-}
-
-/** Verifies fake credentials; counts its calls. */
-export class FakeVerifier implements CredentialVerifier {
-  calls = 0;
-
-  async verify(bytes: Uint8Array, options: { now?: number } = {}): Promise<Credential> {
-    this.calls++;
-    const credential = registry.get(utf8Decode(bytes));
-    if (
-      credential === undefined ||
-      credential.revoked ||
-      credential.isExpired(options.now ?? Date.now())
-    ) {
-      throw SwitchboardError.of(StatusCode.unauthenticated, 'invalid credential');
-    }
-    return credential;
+export class TestVerifier extends CredentialVerifier {
+  constructor(options: CredentialVerifierOptions = {}) {
+    super({
+      ed25519Keys: { auth1: authorityKey },
+      hmacKeys: { mesh1: meshKey },
+      wallTime,
+      ...options,
+    });
   }
 }
 
-/** The identity a verified IDENT establishes. */
+/** The identity a verified IDENT establishes (`createPeerIdentity`, verified now). */
 export function peerIdentityOf(
-  credential: Credential,
+  credential: CredentialContract,
   intent: Uint8Array,
   receiver: string,
 ): PeerIdentity {
-  return {
-    credential,
-    intent,
-    verifiedAt: Date.now(),
-    receiver,
-    identity: credential.identity,
-    kind: credential.kind,
-    scopes: credential.scopes,
-    provedPossession: !credential.isBearer,
-    allows: (right, name) => credential.allows(right, name),
-    isExpired: (now) => credential.isExpired(now),
-  };
+  return createPeerIdentity({ credential, intent, verifiedAt: Date.now(), receiver });
 }

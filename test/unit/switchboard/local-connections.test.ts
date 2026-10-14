@@ -14,10 +14,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // `over-frame-mux/`, over the frame mux; the TCP and WebSocket variants of
 // the "to its own listener" group belong to the Node integration tests.
 
-import { describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { bytesEqual, utf8Decode } from '../../../src/core/bytes.ts';
-import { Right } from '../../../src/core/identity/contract.ts';
+import { type Credential, Right } from '../../../src/core/identity/contract.ts';
 import type { MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
@@ -29,7 +29,7 @@ import { proxyHandler } from '../../../src/core/switchboard/proxy.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { FakeVerifier, fakeCredential } from '../../support/node/fake-identity.ts';
+import { hmacAuthority, issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import {
   bytes,
   node,
@@ -245,12 +245,19 @@ test('endpointPolicy sees the pool key and credentialFor the endpoint as given',
 });
 
 describe('identity', () => {
-  const credential = fakeCredential({ identity: 'hub', scopes: [[Right.open, 'svc']] });
+  let credential: Credential;
+  beforeAll(async () => {
+    credential = await issueCredential({
+      identity: 'hub',
+      scopes: [[Right.open, 'svc']],
+      by: hmacAuthority,
+    });
+  });
 
   function identified(options: SwitchboardOptions = {}): Switchboard {
     return node({
       credential,
-      verifier: new FakeVerifier(),
+      verifier: new TestVerifier(),
       identityTimeout: 5000,
       expectedIdentityFor: () => 'hub',
       muxOptions: { requireNamedIdent: true },
