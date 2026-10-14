@@ -191,8 +191,11 @@ describeCells(
         type: 'kv-s',
         slot: 3,
       });
-      expect(refused.kind).toBe('status');
-      console.log('PIN claim', JSON.stringify(refused));
+      expect(refused).toMatchObject({
+        kind: 'status',
+        code: StatusCode.alreadyExists,
+        reason: `slot kv-s/3 is owned by kv-s/${instance}`,
+      });
       await peers.client.rpc('naming.release', { naming: owner, type: 'kv-s', slot: 3 });
       expect(
         await peers.client.rpc('naming.locate', { naming: other, type: 'kv-s', slot: 3 }),
