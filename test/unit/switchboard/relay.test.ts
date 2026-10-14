@@ -7,17 +7,20 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Ports of the Dart relay tests (`relay_test.dart`): the `_relay` service
 // over mem:// nodes, outbound-only workers registered without endpoints, a
 // relay node publishing `_relay` with its identity, and consumers that
-// listen nowhere and reach the workers through it. The Dart tests run a
-// naming service and `MeshNode`; until those land here, a fake mesh stands
-// in (a shared table and the naming service's CONNECT). Raw subframes stand
-// in for the workers' Talk requests; the tests that need Talk, slot-routed
-// opens or PeerSet are listed as todo.
+// listen nowhere and reach the workers through it, over the toy mux and,
+// from `over-frame-mux/`, over the frame mux. The Dart tests run a naming
+// service and `MeshNode`; until those land here, a fake mesh stands in (a
+// shared table and the naming service's CONNECT). The workers answer Talk
+// requests, as in Dart; the bulk payload case needs the frame mux's frame
+// limit and window (over the toy mux the payloads go inline) and runs over
+// it only. The cases that need slot-routed opens or `MeshNode` are listed
+// as todo.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import { type Credential, type PeerIdentity, Right } from '../../../src/core/identity/contract.ts';
-import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
+import { type MuxChannel, type MuxConnection, muxOptions } from '../../../src/core/mux/contract.ts';
 import { Name, type NameLike } from '../../../src/core/name.ts';
 import { MovedStatus, Services, serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, statusCodeName } from '../../../src/core/status.ts';
@@ -31,16 +34,25 @@ import type {
   ServiceRecord,
 } from '../../../src/core/switchboard/contract.ts';
 import { IncomingChannel as Incoming } from '../../../src/core/switchboard/incoming-channel.ts';
+import { type Peer, PeerSet } from '../../../src/core/switchboard/peer-set.ts';
 import { RelayService } from '../../../src/core/switchboard/relay.ts';
 import { RelayConfig } from '../../../src/core/switchboard/relay-config.ts';
 import type { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
+import { TalkChannel } from '../../../src/core/talk/index.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { Frames, nextText } from '../../support/node/channels.ts';
 import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
 import { FakeMesh, type MeshResolver } from '../../support/node/fake-mesh.ts';
-import { fast, node, onCleanup, rejectsWith, until } from '../../support/node/harness.ts';
-import { ToyMuxConnection, toyMux } from '../../support/node/toy-mux.ts';
+import {
+  fast,
+  node,
+  onCleanup,
+  overFrameMux,
+  rejectsWith,
+  testMux,
+  until,
+} from '../../support/node/harness.ts';
 
 const limit = 5000;
 
@@ -163,9 +175,9 @@ class Worker {
   }
 
   /**
-   * Answers every subframe with what it saw; an application payload
+   * Answers every Talk request with what it saw; an application payload
    * `moved` is refused with a MOVED naming owner 7 at epoch 3, `hold`
-   * keeps the channel open without answering.
+   * keeps the channel open without reading it.
    */
   #serve(incoming: IncomingChannel): void {
     const payload = utf8Decode(incoming.address.payload);
@@ -181,19 +193,13 @@ class Worker {
     if (payload === 'hold') {
       return;
     }
-    void (async () => {
-      const frames = new Frames(incoming.channel);
-      for (;;) {
-        const frame = await frames.next();
-        if (frame === undefined) return;
-        void incoming.channel.send(
-          bytes(
-            `${utf8Decode(frame)} by ${this.id} for ${incoming.peerIdentity?.identity} ` +
-              `with "${payload}"`,
-          ),
+    void incoming.talk().serve((m) => {
+      if (m.expectsReply) {
+        void m.reply(
+          `${m.text()} by ${this.id} for ${incoming.peerIdentity?.identity} with "${payload}"`,
         );
       }
-    })();
+    });
   }
 
   get address(): ServiceAddress {
@@ -222,11 +228,19 @@ class Relay {
   readonly node: Switchboard;
   readonly service: RelayService;
   readonly uri: string;
+  /** The address its `_relay` record is published under. */
+  readonly address: ServiceAddress;
 
-  private constructor(node: Switchboard, service: RelayService, uri: string) {
+  private constructor(
+    node: Switchboard,
+    service: RelayService,
+    uri: string,
+    address: ServiceAddress,
+  ) {
     this.node = node;
     this.service = service;
     this.uri = uri;
+    this.address = address;
   }
 
   static async start(mesh: FakeMesh, options: RelayOptions = {}): Promise<Relay> {
@@ -244,8 +258,8 @@ class Relay {
       maxChannelsPerConnection: options.maxChannelsPerConnection,
       resolver: options.resolver,
     });
-    mesh.publish(n, relayType, service.handler, { metadata: utf8Encode(identity) });
-    return new Relay(n, service, uri);
+    const id = mesh.publish(n, relayType, service.handler, { metadata: utf8Encode(identity) });
+    return new Relay(n, service, uri, new ServiceAddress(relayType, id));
   }
 }
 
@@ -314,12 +328,23 @@ async function consumer(
   return c;
 }
 
+const talks = new WeakMap<MuxChannel, TalkChannel>();
+
+/** The answer of a worker to the job [job] on [channel] (wrapped in Talk once). */
+async function ask(channel: MuxChannel, job: string): Promise<string> {
+  let talk = talks.get(channel);
+  if (talk === undefined) {
+    talk = new TalkChannel(channel);
+    talks.set(channel, talk);
+  }
+  return (await talk.request('RUN', job)).text();
+}
+
 /** A job on a fresh channel to [address] from [c]; its answer. */
 async function run(c: Switchboard, address: ServiceAddress, job: string): Promise<string> {
-  const channel = await c.openChannel(address);
+  const channel = await c.openTalk(address);
   try {
-    await channel.send(bytes(job));
-    return await nextText(channel);
+    return (await channel.request('RUN', job)).text();
   } finally {
     await channel.close();
   }
@@ -358,14 +383,23 @@ function collect(s: Switchboard): MuxConnection[] {
   return seen;
 }
 
-/** Counts reads of the next identity event. */
-class ObservedIdentityConnection extends ToyMuxConnection {
-  identityWaits = 0;
-
-  override get identityChanged(): Promise<void> {
-    this.identityWaits++;
-    return super.identityChanged;
+/** A connection of the run's mux whose reads of the next identity event are counted. */
+function observedIdentity(connection: MuxConnection): { readonly waits: number } {
+  let proto: object | null = Object.getPrototypeOf(connection);
+  let getter: (() => Promise<void>) | undefined;
+  while (proto !== null && getter === undefined) {
+    getter = Object.getOwnPropertyDescriptor(proto, 'identityChanged')?.get;
+    proto = Object.getPrototypeOf(proto);
   }
+  const read = getter as () => Promise<void>;
+  const counter = { waits: 0 };
+  Object.defineProperty(connection, 'identityChanged', {
+    get: () => {
+      counter.waits++;
+      return read.call(connection);
+    },
+  });
+  return counter;
 }
 
 describe('identity holds', () => {
@@ -374,12 +408,9 @@ describe('identity holds', () => {
       const host = newNode({ requireNamedIdent: true, identityTimeout: timedOut ? 5 : limit });
       const service = new RelayService(host);
       const [local, remote] = memoryTransportPair({ delay: 0 });
-      const incoming = new ObservedIdentityConnection(
-        local,
-        { ...host.muxOptions, ...fast },
-        false,
-      );
-      const peer = toyMux(remote, fast, true);
+      const incoming = testMux()(local, { ...host.muxOptions, ...fast }, false);
+      const observed = observedIdentity(incoming);
+      const peer = testMux()(remote, muxOptions(fast), true);
       onCleanup(() => incoming.close());
       onCleanup(() => peer.close());
       const work: Promise<unknown>[] = [];
@@ -398,7 +429,7 @@ describe('identity holds', () => {
         }
       }
       await Promise.all(work);
-      expect(incoming.identityWaits).toBe(1);
+      expect(observed.waits).toBe(1);
       expect(incoming.openChannelCount).toBe(0);
     });
   }
@@ -434,8 +465,7 @@ describe('relaying', () => {
     const c = await consumer(mesh);
     expect(c.canBroker).toBe(false);
     const mux = await c.openChannel(worker.address, { payload: bytes('token') });
-    await mux.send(bytes('job'));
-    expect(await nextText(mux)).toBe(`job by ${worker.id} for relay-1 with "token"`);
+    expect(await ask(mux, 'job')).toBe(`job by ${worker.id} for relay-1 with "token"`);
     // The channel went through the relay: a `_relay` channel whose payload
     // is the destination's open payload, instance filled in.
     const outer = ChannelAddress.decode(mux.openPayload);
@@ -456,7 +486,29 @@ describe('relaying', () => {
     await mux.close();
   });
 
-  it.todo('bulk payloads through the relay, both ways (needs Talk)');
+  if (overFrameMux()) {
+    it('bulk payloads through the relay, both ways', async () => {
+      const mesh = new FakeMesh();
+      await Relay.start(mesh);
+      const worker = Worker.start(mesh);
+      const c = await consumer(mesh);
+      const mux = await c.openChannel(worker.address, { payload: bytes('token') });
+      const channel = new TalkChannel(mux);
+      // 100 kB each way: too large for a frame, so a bulk payload through
+      // the relay's pipes, toward the worker and back.
+      const job = 'x'.repeat(100_000);
+      const reply = await channel.request('RUN', job);
+      expect(reply.isBulk).toBe(true);
+      expect(reply.text()).toBe(`${job} by ${worker.id} for relay-1 with "token"`);
+      const streamed = await channel.request('RUN', undefined, {
+        bulk: [bytes('a'.repeat(40_000)), bytes('b'.repeat(40_000))],
+      });
+      expect(streamed.text().startsWith(`${'a'.repeat(40_000)}${'b'.repeat(40_000)} by`)).toBe(
+        true,
+      );
+      await channel.close();
+    });
+  }
 
   it("the relay record carries the relay's identity; the consumer names it", async () => {
     const mesh = new FakeMesh();
@@ -609,8 +661,7 @@ describe('relaying', () => {
     expect(c.canBroker).toBe(true);
     const relayed = collect(relay.node);
     const mux = await c.openChannel(worker.address);
-    await mux.send(bytes('x'));
-    expect(await nextText(mux)).toBe(`x by ${worker.id} for consumer-1 with ""`);
+    expect(await ask(mux, 'x')).toBe(`x by ${worker.id} for consumer-1 with ""`);
     expect(ChannelAddress.decode(mux.openPayload).type?.equals(workerType)).toBe(true);
     // Only the worker's own dial-back for the consumer, no relay.
     expect(relayed).toHaveLength(0);
@@ -707,8 +758,7 @@ describe('refusals', () => {
       holderKey: key,
       receiver: 'relay-1',
     });
-    await held.send(bytes('h'));
-    expect(await nextText(held)).toBe(`h by ${worker.id} for relay-1 with "p"`);
+    expect(await ask(held, 'h')).toBe(`h by ${worker.id} for relay-1 with "p"`);
     await held.close();
   });
 
@@ -750,8 +800,7 @@ describe('refusals', () => {
     const open = await anonymous.connect(lenient.uri);
     const started = Date.now();
     const channel = openRelayed(open, innerOf(workerType, worker.id, 'p'));
-    await channel.send(bytes('r'));
-    expect(await nextText(channel)).toBe(`r by ${worker.id} for relay-2 with "p"`);
+    expect(await ask(channel, 'r')).toBe(`r by ${worker.id} for relay-2 with "p"`);
     // Held for the node's identity timeout first, in case an IDENT was on its way.
     expect(Date.now() - started).toBeGreaterThanOrEqual(hold - 5);
     await channel.close();
@@ -787,8 +836,7 @@ describe('refusals', () => {
     const second = await honest.dial(lenient.uri);
     const relayed = openRelayed(second, innerOf(workerType, worker.id, 'p'));
     await honest.identifyOn(second, { receiver: 'relay-2' });
-    await relayed.send(bytes('h'));
-    expect(await nextText(relayed)).toBe(`h by ${worker.id} for relay-2 with "p"`);
+    expect(await ask(relayed, 'h')).toBe(`h by ${worker.id} for relay-2 with "p"`);
     await relayed.close();
   });
 
@@ -1060,11 +1108,72 @@ describe('refusals', () => {
 });
 
 describe('PeerSet', () => {
-  it.todo(
-    'a peer without endpoints is connected through the relay, and comes back through the other ' +
-      'relay when its relay goes (needs PeerSet)',
-  );
-  it.todo('a node that can neither broker nor relay reports the brokering failure (needs PeerSet)');
-});
+  it('a peer without endpoints is connected through the relay, and comes back through the other relay when its relay goes', async () => {
+    const mesh = new FakeMesh();
+    const first = await Relay.start(mesh, { identity: 'relay-1' });
+    const worker = Worker.start(mesh);
+    const c = await consumer(mesh);
+    const set = PeerSet.watch(c, workerType, {
+      channel: new ChannelAddress({ type: workerType }),
+      onOpen: async (_peer, channel) => {
+        // A round trip confirms the channel reached the worker.
+        await new TalkChannel(channel).request('HELLO');
+      },
+      policy: ChannelPolicies.denyAll,
+      initialBackoff: 20,
+      maxBackoff: 100,
+    });
+    onCleanup(() => set.close());
+    const events: string[] = [];
+    set.on('event', (e) => events.push(e.type));
+    await until(() => set.online.length === 1);
+    const peer = set.peers.get(worker.id) as Peer;
+    expect(peer.viaRelay).toBe(true);
+    expect(peer.endpoint).toBe(first.uri);
+    const talk = await set.openTalk(worker.id);
+    expect((await talk.request('J', 'j')).text()).toBe(`j by ${worker.id} for relay-1 with ""`);
+    await talk.close();
+    // A second relay; the first goes away.
+    const second = await Relay.start(mesh, { identity: 'relay-2' });
+    expect((await c.resolveRelays()).map((r) => r.endpoints[0])).toContain(second.uri);
+    mesh.unpublish(first.address);
+    await first.node.close();
+    await until(() => peer.isOnline && peer.endpoint === second.uri);
+    expect(events[0]).toBe('added');
+    const order = ['online', 'offline', 'online'];
+    let at = 0;
+    for (const type of events) {
+      if (type === order[at]) at++;
+    }
+    expect(at).toBe(order.length);
+    const again = await set.openTalk(worker.id);
+    expect((await again.request('J', 'k')).text()).toBe(`k by ${worker.id} for relay-2 with ""`);
+    await again.close();
+    // The worker's connection to the relay is lost: the channel ends, and
+    // the peer is set up again through the relay.
+    const brokered = worker.brokeredConnections;
+    expect(brokered).toHaveLength(1);
+    await (brokered[0] as MuxConnection).close();
+    await until(() => !peer.isOnline);
+    await until(() => peer.isOnline);
+    expect(peer.viaRelay).toBe(true);
+  });
 
-// Keep the pull helper referenced for the PeerSet cases to come.
+  it('a node that can neither broker nor relay reports the brokering failure', async () => {
+    const mesh = new FakeMesh();
+    const worker = Worker.start(mesh);
+    const c = await consumer(mesh, { useRelay: false });
+    const set = PeerSet.watch(c, workerType, {
+      channel: new ChannelAddress({ type: workerType }),
+      policy: ChannelPolicies.denyAll,
+      initialBackoff: 20,
+      maxBackoff: 100,
+    });
+    onCleanup(() => set.close());
+    await until(() => set.peers.get(worker.id)?.lastStatus !== undefined);
+    const peer = set.peers.get(worker.id) as Peer;
+    expect(peer.isOnline).toBe(false);
+    expect(peer.viaRelay).toBe(false);
+    expectCode(peer.lastStatus as Status, StatusCode.failedPrecondition);
+  });
+});
