@@ -449,6 +449,24 @@ describe('a graceful close before the payloads', () => {
     expect([...(await within(started)).payload]).toEqual([1, 2, 3]);
     expect((await within(connection.done)).known).toBe(StatusCode.goingAway);
   });
+
+  test("after this side's GOAWAY, the late bulk channel Talk waits for is admitted, and the GOAWAY waits for it", async () => {
+    const { connection, raw, started } = await noteThenClose();
+    let drained = false;
+    const goingAway = connection.goAway().then(() => {
+      drained = true;
+    });
+    await raw.nextControlOf(MuxControlType.goAway);
+    // The drain hold keeps the connection: GOAWAY waits for the payload.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(drained).toBe(false);
+    const bulk = await sendBulk(raw, 1, [1, 2, 3]);
+    const [records] = await RawPeer.drain(bulk);
+    const close = records.find((r) => r.command === QuicRecordCommand.close);
+    expect(decodeCloseBody(close?.body as Uint8Array).isOk).toBe(true);
+    expect([...(await within(started)).payload]).toEqual([1, 2, 3]);
+    await within(goingAway);
+  });
 });
 
 describe('_bulk continuations after GOAWAY', () => {

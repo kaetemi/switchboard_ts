@@ -297,10 +297,11 @@ const routed = new WeakSet<MuxConnection>();
  * Installs bulk routing on [connection], once: a filter adopting every
  * channel the peer opens with an open payload of the reserved type `_bulk`
  * (routed to its parent's Talk layer, never reaching `incoming` nor a
- * listener policy), and the rule admitting such a channel for an open
- * parent after this side's GOAWAY (it continues work the connection
- * admitted already). A `TalkChannel` installs it on its connection; a node
- * installs it on every connection.
+ * listener policy), and the rule admitting such a channel after this
+ * side's GOAWAY for an open parent, or for one whose Talk layer still
+ * waits for its bulk channels after it ended ({@link lingerBulkTarget}):
+ * it continues work the connection admitted already. A `TalkChannel`
+ * installs it on its connection; a node installs it on every connection.
  *
  * @internal
  */
@@ -328,8 +329,12 @@ export function installBulkRouting(connection: MuxConnection): void {
 
 /**
  * Whether [openPayload] opens a bulk channel for a channel open on
- * [connection]: it carries the payload of a message of that channel, work
- * admitted before the GOAWAY.
+ * [connection], or for one that ended and whose target still waits for
+ * its bulk channels (a connection whose channels are not ordered, where
+ * the bulk stream may come after its parent's close): it carries the
+ * payload of a message of that channel, work admitted before the GOAWAY.
+ * The Dart QUIC binding admits the same, a parent open or retained for
+ * its drain.
  */
 function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array): boolean {
   let address: ChannelAddress;
@@ -341,8 +346,12 @@ function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array
   if (!TalkBulkOpen.isBulk(address) || address.payload.length < TalkBulkOpen.payloadLength) {
     return false;
   }
-  const parent = connection.channelWithId(readU48(address.payload, 0));
-  return parent !== undefined && parent.state !== 'closed';
+  const parentId = readU48(address.payload, 0);
+  const parent = connection.channelWithId(parentId);
+  if (parent !== undefined && parent.state !== 'closed') {
+    return true;
+  }
+  return endedParents.get(connection)?.targetOf(parentId) !== undefined;
 }
 
 function refuse(bulk: MuxChannel, status: Status): void {
