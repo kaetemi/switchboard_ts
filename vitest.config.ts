@@ -31,6 +31,7 @@ export default defineConfig({
         test: {
           name: 'interop',
           include: ['test/interop/**/*.test.ts'],
+          globalSetup: ['test/interop/global-setup.ts'],
           testTimeout: 120_000,
           hookTimeout: 180_000,
         },

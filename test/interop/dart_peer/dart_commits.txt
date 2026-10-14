@@ -1,0 +1,8 @@
+# The commits of the Dart reference implementation the interop tests run
+# against. CI checks both repositories out at these commits next to this
+# repository, where the path dependencies of pubspec.yaml find them
+# (switchboard_quic's own tool/core_commit.txt must name the same core
+# commit). Moving them is a deliberate commit: a protocol change upstream
+# shows up as one failing interop run. Lines starting with # are comments.
+switchboard 3816e6f1397f7719e3e897167332015e6d56c6ba
+switchboard_quic c5b32652cdcfe91e496fe853b7dcb3a354325bbe
