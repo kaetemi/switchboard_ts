@@ -271,6 +271,12 @@ export class TalkChannel implements TalkChannelContract {
   readonly _bulkOuts = new Set<BulkOut>();
   readonly #bulkUnclaimed = new Map<number, BulkIn>();
 
+  /** Bulk channels beyond `maxUnclaimedBulk` wait for the frames received before their OPENs to be read ({@link _adoptBulk}). */
+  #unclaimedRecount = false;
+
+  /** The reassemblies in progress, by bulk payload: a graceful end waits for those that arrived whole ({@link #peerEnded}). */
+  readonly #collecting = new Map<BulkIn, Promise<void>>();
+
   /** @internal Messages whose bulk channel was not adopted yet, by bulk number. */
   readonly _bulkAwaited = new Map<number, Awaited>();
 
@@ -1449,6 +1455,9 @@ export class TalkChannel implements TalkChannelContract {
           break;
         }
         this.#onData(value);
+        if (this.#unclaimedRecount) {
+          this.#recountUnclaimed();
+        }
       }
     } catch (e) {
       this.#onError(e);
@@ -1660,17 +1669,17 @@ export class TalkChannel implements TalkChannelContract {
     if (this.#claimAwaited(number, b)) {
       return;
     }
-    if (this.#bulkUnclaimed.size >= this.options.maxUnclaimedBulk) {
-      this._log(
-        'warn',
-        `peer opened more than ${this.options.maxUnclaimedBulk} bulk channels ahead of their ` +
-          `messages; refusing bulk channel ${number}`,
-      );
-      b.close(
-        Status.of(StatusCode.resourceExhausted, 'too many bulk channels before their messages'),
-      );
-      b.abandon();
+    // The frames of this channel received before the OPEN may not be read
+    // yet (this side reads them asynchronously, where the Dart mux delivers
+    // them as they arrive): the references among them claim bulk channels
+    // ahead of this one. Beyond the bound, the count waits for them.
+    const max = this.options.maxUnclaimedBulk;
+    if (this.#bulkUnclaimed.size >= max + this.#unreadReferences()) {
+      this.#refuseUnclaimed(b, number);
       return;
+    }
+    if (this.#bulkUnclaimed.size >= max) {
+      this.#unclaimedRecount = true;
     }
     this.#bulkUnclaimed.set(number, b);
     // A bulk channel no message references in time is not waited for.
@@ -1683,6 +1692,60 @@ export class TalkChannel implements TalkChannelContract {
         b.abandon();
       }
     }, this.options.bulkOpenTimeout);
+  }
+
+  /** A bulk channel beyond `maxUnclaimedBulk`: closed RESOURCE_EXHAUSTED. */
+  #refuseUnclaimed(b: BulkIn, number: number): void {
+    this._log(
+      'warn',
+      `peer opened more than ${this.options.maxUnclaimedBulk} bulk channels ahead of their ` +
+        `messages; refusing bulk channel ${number}`,
+    );
+    b.close(
+      Status.of(StatusCode.resourceExhausted, 'too many bulk channels before their messages'),
+    );
+    b.abandon();
+  }
+
+  /**
+   * At most how many BULK references the frames this channel received and
+   * did not read yet can carry: each costs at least what a message frame
+   * of a bare reference does.
+   */
+  #unreadReferences(): number {
+    const mux = this.#mux;
+    if (mux === undefined) {
+      return 0;
+    }
+    const buffered = mux.bufferedBytes;
+    return buffered > 0
+      ? Math.floor(buffered / mux.sendCost(TalkBulkReference.encodedLength + 1))
+      : 0;
+  }
+
+  /**
+   * Refuses the bulk channels still unclaimed beyond `maxUnclaimedBulk`
+   * (the highest numbers: the last opened) once the frames received before
+   * their OPENs were read ({@link _adoptBulk}).
+   */
+  #recountUnclaimed(): void {
+    const unread = this.#unreadReferences();
+    const max = this.options.maxUnclaimedBulk + unread;
+    if (this.#bulkUnclaimed.size > max) {
+      const numbers = [...this.#bulkUnclaimed.keys()].sort((x, y) => x - y);
+      for (const number of numbers.slice(max)) {
+        const b = this.#bulkUnclaimed.get(number) as BulkIn;
+        this.#bulkUnclaimed.delete(number);
+        if (b.unclaimedTimer !== undefined) {
+          this._clock.clearTimeout(b.unclaimedTimer);
+          b.unclaimedTimer = undefined;
+        }
+        this.#refuseUnclaimed(b, number);
+      }
+    }
+    if (unread === 0) {
+      this.#unclaimedRecount = false;
+    }
   }
 
   /** A bulk channel with a number that cannot be used again: a channel protocol error. */
@@ -1978,7 +2041,7 @@ export class TalkChannel implements TalkChannelContract {
       message._startDeferredTimer();
       return;
     }
-    b.collect(this.options.maxInlinePayload).then(
+    const collecting = b.collect(this.options.maxInlinePayload).then(
       (bytes) => {
         message._assembled = bytes;
         // Charged what it came to from now on, not what it might have.
@@ -1995,6 +2058,11 @@ export class TalkChannel implements TalkChannelContract {
         message._lane?.advance();
       },
     );
+    this.#collecting.set(b, collecting);
+    const collected = (): void => {
+      this.#collecting.delete(b);
+    };
+    collecting.then(collected, collected);
   }
 
   /** The bulk payload of [message] fails with [status] before it is read: its bulk channel is closed with it, and the message fails as a failed reassembly does. */
@@ -2339,6 +2407,21 @@ export class TalkChannel implements TalkChannelContract {
     const error = new SwitchboardError(status);
     if (graceful && !this.#orderedBulk) {
       await this.#linger(error);
+    } else if (graceful) {
+      // The bulk channels of the messages that arrived before the close
+      // arrived whole before it too, but their bytes are read
+      // asynchronously here (the Dart mux delivers them as they arrive):
+      // the reassemblies of those that ended finish before the channel
+      // ends, as there.
+      const arrived: Promise<void>[] = [];
+      for (const [b, collecting] of this.#collecting) {
+        if (b.channel.state === 'closed') {
+          arrived.push(collecting);
+        }
+      }
+      if (arrived.length > 0) {
+        await Promise.allSettled(arrived);
+      }
     }
     this.#terminate(error);
     // What waited for the peer's LIMITS goes nowhere: after the requests it
@@ -2539,13 +2622,14 @@ export class TalkChannel implements TalkChannelContract {
 
 /** What the bulk channel of [b], a payload of [length] bytes (undefined: unknown), may hold while nobody reads it: what arrived, and what its window still lets the peer send. */
 function streamHold(b: BulkIn, length: number | undefined): number {
-  let hold = 0;
-  for (const chunk of b._buffer) {
-    hold += chunk.length;
-  }
+  // What arrived is counted on the channel, at cost: [b] reads it through
+  // the channel's readable, so bytes delivered and not consumed (its
+  // buffer, unread, and what is on the way to it: heldBytes) or not yet
+  // delivered (bufferedBytes) are there even once the channel closed.
   const channel = b.channel;
+  let hold = channel.heldBytes + channel.bufferedBytes;
   if (channel.state !== 'closed') {
-    hold += channel.receiveWindow + channel.bufferedBytes;
+    hold += channel.receiveWindow;
   }
   return length !== undefined && length < hold ? length : hold;
 }
