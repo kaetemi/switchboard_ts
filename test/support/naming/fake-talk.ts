@@ -1014,13 +1014,17 @@ export class FakeTalkChannel implements TalkChannel {
     );
   }
 
-  /** The channel ended: from the peer (close or channel abort) or locally. */
-  #lost(status: Status, error: unknown): void {
+  /**
+   * The channel ended: from the peer (close or channel abort) or locally.
+   * Outstanding outgoing requests fail with [failure], by default
+   * `UNAVAILABLE`.
+   */
+  #lost(status: Status, error: unknown, failure?: SwitchboardError): void {
     if (!this.#open) {
       return;
     }
     this.#open = false;
-    const failure = SwitchboardError.of(
+    failure ??= SwitchboardError.of(
       StatusCode.unavailable,
       `Talk channel closed${status.isOk ? '' : `: ${status}`}`,
     );
@@ -1045,13 +1049,23 @@ export class FakeTalkChannel implements TalkChannel {
     }
     this.write({ kind: 'abort', requestId: 0, responseId: 0, status });
     this.write({ kind: 'close', status });
-    this.#lost(status, undefined);
+    this.#lost(status, undefined, new SwitchboardError(status));
   }
 
+  /**
+   * Closes the channel. As in Dart, outstanding outgoing requests fail with
+   * [status], or with `CANCELLED` if it is OK.
+   */
   close(status: Status = Status.ok): Promise<void> {
     if (this.#open) {
       this.write({ kind: 'close', status });
-      this.#lost(status, undefined);
+      this.#lost(
+        status,
+        undefined,
+        new SwitchboardError(
+          status.isOk ? Status.of(StatusCode.cancelled, 'channel closed') : status,
+        ),
+      );
     }
     return Promise.resolve();
   }
