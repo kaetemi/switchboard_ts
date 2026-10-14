@@ -553,7 +553,7 @@ describe.skipIf(!availability.available)(
           const bulk = await h.within(talk.request('BIG', big));
           h.ok(sb.bytesEqual(bulk.payload, big), 'the bulk reply');
           await h.within(talk.close());
-          await h.until(() => connection.openChannelCount === 0);
+          h.eq(connection.openChannelCount, 0, 'openChannelCount');
         });
       });
 
