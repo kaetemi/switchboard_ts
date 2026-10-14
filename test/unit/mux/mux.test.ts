@@ -1287,10 +1287,10 @@ describe('transport failures end to end', () => {
     expect(sent[0]?.goAwayStatus.known).toBe(StatusCode.unsupported);
   });
 
-  // Not ported: WebSocket › a text message: GOAWAY PROTOCOL_ERROR. Needs
-  // the WebSocket transports (step 5 of the core thread); port it with them.
-  // Not ported: WebSocket › a message over the limit: GOAWAY
-  // FRAME_TOO_LARGE. Same.
+  // Ported with the WebSocket transports, in
+  // test/integration/mux-websocket.test.ts: WebSocket › a text message:
+  // GOAWAY PROTOCOL_ERROR, and WebSocket › a message over the limit: GOAWAY
+  // FRAME_TOO_LARGE.
 
   test('memory transport limit: the sender sees GOAWAY FRAME_TOO_LARGE', async () => {
     const clock = new SteppingClock();
@@ -1387,11 +1387,9 @@ describe('real transports', () => {
     expectCode(await server.done, StatusCode.goingAway);
   }
 
-  // Not ported: TCP. Needs the Node TCP transport (src/node/transport,
-  // step 5 of the core thread); port it there, into test/integration.
-  // Not ported: TCP: GOAWAY reaches a peer that is still sending. Same; it
-  // checks the TCP transport's linger against a kernel reset.
-  // Not ported: WebSocket. Needs the WebSocket transports (step 5).
+  // Ported with the TCP and WebSocket transports, in
+  // test/integration/mux-tcp.test.ts and mux-websocket.test.ts: TCP; TCP:
+  // GOAWAY reaches a peer that is still sending; WebSocket.
 
   test('a stream transport over a byte pipe (the TCP and WebSocket exercise)', async () => {
     // Not a Dart test: the exercise of the three above over the stream

@@ -5,6 +5,8 @@
 // connection groups over the frame mux, and the codec half of its
 // "reasons" and "CONNECTION_LOST stays local" groups (core notes, appendix
 // A.12) on the status helpers alone.
+import { once } from 'node:events';
+import { connect } from 'node:net';
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
@@ -29,6 +31,7 @@ import { MovedStatus } from '../../../src/core/naming/naming-protocol.ts';
 import { ProtocolError, Status, StatusCode } from '../../../src/core/status.ts';
 import { StreamFraming } from '../../../src/core/transport/stream-framing.ts';
 import { StreamTransport } from '../../../src/core/transport/stream-transport.ts';
+import { listenTcp } from '../../../src/node/transport/tcp.ts';
 import {
   ByteDrain,
   ByteFeed,
@@ -458,11 +461,106 @@ describe('receive buffers', () => {
   });
 });
 
-// Not ported: output backpressure over TCP › a peer that never reads:
-// output stays bounded, input pauses, close destroys the socket. It fills
-// the kernel buffers of a real socket; it needs the Node TCP transport
-// (src/node/transport, step 5 of the core thread) and belongs in
-// test/integration.
+describe('output backpressure over TCP', () => {
+  test('a peer that never reads: output stays bounded, input pauses, close destroys the socket', async () => {
+    // On the loopback with the system clock. The client never reads: its
+    // kernel buffers and the server's fill with PONGs, the server's
+    // transport stops reading once its own output passes the mark, and
+    // the client's PINGs back up in turn.
+    const mark = 64 * 1024;
+    const listener = await listenTcp('127.0.0.1', 0, { outputHighWaterMark: mark });
+    const accepted = listener.transports[Symbol.asyncIterator]().next();
+    const client = connect(listener.port, '127.0.0.1');
+    client.on('error', () => {});
+    await once(client, 'connect');
+    client.pause();
+    const clientClosed = new Promise<void>((resolve) => {
+      client.once('close', () => resolve());
+    });
+    const next = await accepted;
+    if (next.done === true) {
+      throw new Error('no connection accepted');
+    }
+    await listener.close();
+    const transport = next.value.transport;
+    const mux = new FrameMuxConnection(transport, {
+      ...rawOptions,
+      keepAliveTimeout: 200,
+      isInitiator: false,
+    });
+
+    // PINGs with 1024 byte payloads, each answered by an equal PONG.
+    const ping = StreamFraming.encodeFrame(
+      new MuxControlMessage(MuxControlType.ping, new Uint8Array(1024)).toFrame().encode(),
+    );
+    const chunk = new Uint8Array(64 * ping.length);
+    for (let i = 0; i < 64; i++) {
+      chunk.set(ping, i * ping.length);
+    }
+    /** Writes [bytes] if the socket has taken everything before; whether it took them. */
+    const write = (bytes: Uint8Array): boolean => {
+      if (client.writableLength > 0) {
+        return false;
+      }
+      client.write(bytes);
+      return true;
+    };
+    const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+    write(StreamFraming.encodePreamble());
+    let sent = 0;
+    const started = Date.now();
+    while (!transport.isInputThrottled) {
+      if (Date.now() - started > 20_000 || sent > 512 * 1024 * 1024) {
+        throw new Error(`output never backed up after ${sent} bytes`);
+      }
+      if (write(chunk)) {
+        sent += chunk.length;
+      }
+      await tick();
+    }
+    await settle();
+    expect(transport.bufferedOutputBytes).toBeGreaterThan(mark);
+    // The mark plus the PONGs for what had already been read.
+    const bound = mark + 8 * 1024 * 1024;
+    expect(transport.bufferedOutputBytes).toBeLessThan(bound);
+
+    // The client keeps sending until its own kernel buffers are full: the
+    // server reads only while its output drains, so the backpressure
+    // reaches the client and the server's output stays bounded meanwhile.
+    let extra = 0;
+    let stuck = 0;
+    while (stuck < 20) {
+      if (write(chunk)) {
+        extra += chunk.length;
+        stuck = 0;
+      } else {
+        stuck++;
+      }
+      if (extra > 256 * 1024 * 1024) {
+        throw new Error('the server kept reading');
+      }
+      await tick();
+      expect(transport.bufferedOutputBytes).toBeLessThan(bound);
+    }
+    await settle();
+    expect(transport.bufferedOutputBytes).toBeLessThan(bound);
+    expect(transport.isInputThrottled).toBe(true);
+
+    // Closing cannot flush to a peer that does not read: after
+    // keepAliveTimeout the socket is destroyed.
+    const closing = Date.now();
+    await mux.close();
+    expect(Date.now() - closing).toBeLessThan(5000);
+    expect(transport.socket.destroyed).toBe(true);
+    // The socket lets go of what it buffered as its destroy completes.
+    await settle();
+    expect(transport.bufferedOutputBytes).toBe(0);
+    // The client learns of it once it reads.
+    client.resume();
+    await clientClosed;
+  }, 30_000);
+});
 
 test('keep-alive counts a throttled peer that reads as alive', async () => {
   const clock = new SteppingClock();

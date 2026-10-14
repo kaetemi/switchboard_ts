@@ -21,6 +21,7 @@ import {
 import { Name } from '../../../src/core/name.ts';
 import { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
+import { connectTcp, listenTcp } from '../../../src/node/transport/tcp.ts';
 import {
   AnsweringTransport,
   clockOf,
@@ -820,9 +821,25 @@ describe('between two connections', () => {
     await a.close();
   });
 
-  // Not ported: window accounting both ways over TCP. Needs the Node TCP
-  // transport (src/node/transport, step 5 of the core thread); port it
-  // there, into test/integration.
+  test('window accounting both ways over TCP', async () => {
+    // On the loopback, with the system clock: the TCP transport's close
+    // timers are real ones, and nothing here waits for them.
+    const listener = await listenTcp('127.0.0.1', 0);
+    const accepted = listener.transports[Symbol.asyncIterator]().next();
+    const a = new FrameMuxConnection(await connectTcp('127.0.0.1', listener.port), {
+      ...quiet,
+      isInitiator: true,
+    });
+    const next = await accepted;
+    if (next.done === true) {
+      throw new Error('no connection accepted');
+    }
+    const b = new FrameMuxConnection(next.value.transport, { ...quiet, isInitiator: false });
+    await listener.close();
+    await exchange(a, b);
+    await a.close();
+    await b.done;
+  });
 
   test('a slow consumer stalls its own channel, another one flows', async () => {
     const [a, b] = muxPair();
