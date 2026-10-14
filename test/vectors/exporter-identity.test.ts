@@ -1,20 +1,19 @@
 // The exporter-bound IDENT vector X of the wiki page "Polyverse Switchboard
 // Test Vectors", and P checked against it. Ports
 // `test/vectors/exporter_identity_vectors_test.dart`. The credential C2 is
-// checked by a stand-in verifier that knows its bytes, until the credential
-// verifier is ported; the proofs are checked for real.
+// verified with the authority's public key, as in Dart.
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
 import type { PeerIdentity } from '../../src/core/identity/contract.ts';
-import { ed25519KeyPairFromSeed, ed25519Sign } from '../../src/core/identity/ed25519.ts';
+import { CredentialVerifier } from '../../src/core/identity/credential-verifier.ts';
+import { Ed25519HolderKey } from '../../src/core/identity/holder-key.ts';
 import { secureRandomBytes } from '../../src/core/identity/secure-random.ts';
 import { MuxIdent, verifyIdent } from '../../src/core/mux/mux-protocol.ts';
 import { StatusCode, SwitchboardError } from '../../src/core/status.ts';
 import {
   at,
+  authorityPublic,
   ed25519Credential,
-  expiresAt,
-  holderPublic,
   holderSeed,
   intent,
   proof,
@@ -22,7 +21,6 @@ import {
   receiverNonce,
   senderNonce,
 } from '../support/identity/identity-vectors.ts';
-import { StubVerifier, stubCredential } from '../support/identity/stub-verifier.ts';
 
 async function expectCode(promise: Promise<unknown>, code: StatusCode): Promise<void> {
   const error = await promise.then(
@@ -51,14 +49,7 @@ describe('exporter-bound proof (QUIC and WebTransport binding, X)', () => {
     'CA 10 FA 3E 47 92 D2 BD 69 67 22 21 92 FC FC 44 ' +
     '96 73 EB 16 BA 43 02 AF 58 FE 19 A6 AF 53 7E 03';
 
-  const verifier = new StubVerifier(
-    stubCredential({
-      identity: 'worker-a1',
-      holderKey: hexBytes(holderPublic),
-      expiresAt,
-      bytes: hexBytes(ed25519Credential),
-    }),
-  );
+  const verifier = new CredentialVerifier({ ed25519Keys: { auth1: hexBytes(authorityPublic) } });
 
   const ident = (proofHex: string): MuxIdent =>
     new MuxIdent({
@@ -89,8 +80,8 @@ describe('exporter-bound proof (QUIC and WebTransport binding, X)', () => {
     expect(hexString(MuxIdent.exporterProofLabel)).toBe(
       hexString(new TextEncoder().encode('SWBIDTLS')),
     );
-    const holder = await ed25519KeyPairFromSeed(holderSeed);
-    expect(hexString(await ed25519Sign(signed, holder.privateKey))).toBe(x);
+    const holder = await Ed25519HolderKey.fromSeed(holderSeed);
+    expect(hexString(await holder.sign(signed))).toBe(x);
   });
 
   test('X verifies as an exporter-bound proof', async () => {

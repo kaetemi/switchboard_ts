@@ -5,6 +5,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { maxInstance, ServiceAddress } from '../address/index.ts';
+import type { Credential as CredentialContract } from '../identity/contract.ts';
+import { Credential } from '../identity/credential.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { ServiceEvent, ServiceRecord } from '../switchboard/contract.ts';
@@ -602,6 +604,43 @@ export class NamingClient implements AsyncDisposable {
       if (e.type.equals(type) && e.session === session) return true;
     }
     return false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Identity
+
+  /**
+   * Asks the naming service for a renewed credential (`RENEW`): the same
+   * identity, scopes and holder key, with a new expiry. `current` is sent as
+   * the credential to renew; without one, the service renews the one that
+   * identifies this client's channel (its connection's, or its payload's).
+   * `signal` cancels the request.
+   *
+   * Rejects with the naming service's {@link SwitchboardError}
+   * (`UNIMPLEMENTED` when it issues no credentials, `UNAUTHENTICATED` when
+   * the credential is not valid, `PERMISSION_DENIED` when it is not
+   * renewed), with `UNAVAILABLE` while disconnected, `FAILED_PRECONDITION`
+   * after {@link close}, and with {@link ProtocolError} for an answer that
+   * is not a credential.
+   */
+  async renew(
+    options: { current?: CredentialContract | undefined; signal?: AbortSignal | undefined } = {},
+  ): Promise<Credential> {
+    const current = options.current;
+    const request = this.#startRequest(
+      Procedures.renew,
+      current === undefined ? new Uint8Array(0) : current.encode(),
+      options.signal,
+    );
+    const response = await request.response;
+    try {
+      return Credential.decode(response.payload);
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        throw new ProtocolError(`RENEW answered ${error.status.reason}`, { cause: error });
+      }
+      throw error;
+    }
   }
 
   // -------------------------------------------------------------------------
