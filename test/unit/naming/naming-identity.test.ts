@@ -19,8 +19,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // connection (`updateCredential`, `identify`), and a `MeshNode` its naming
 // client. What only the node does (the `IDENT` exchange itself, brokered
 // connections, PeerSet) runs over real nodes in
-// `naming-identity-nodes.test.ts`; MeshNode's credential renewal is skipped
-// with the reason.
+// `naming-identity-nodes.test.ts`; MeshNode's credential renewal in
+// `test/unit/switchboard/mesh.test.ts`.
 
 import { afterEach, describe, expect, test } from 'vitest';
 import { ServiceAddress } from '../../../src/core/address/index.ts';
@@ -1238,13 +1238,10 @@ describe('expiry and RENEW', () => {
     expect(await call(c, Procedures.register, registerPayload(workerType))).toBe(ok);
   });
 
-  // Not ported: MeshNode's renewal schedule (`nextRenewalAt`,
-  // `Switchboard.credential`); `MeshNode` is not in this port yet.
-  test.skip(
-    'MeshNode renews at two thirds of the lifetime; a credential that is not renewed ends ' +
-      'the session at its expiry',
-    () => {},
-  );
+  // "MeshNode renews at two thirds of the lifetime; a credential that is
+  // not renewed ends the session at its expiry" is MeshNode's renewal
+  // schedule over real nodes: ported in `test/unit/switchboard/mesh.test.ts`
+  // (group "expiry and RENEW").
 });
 
 describe('CONNECT', () => {
