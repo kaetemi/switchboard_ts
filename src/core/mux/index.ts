@@ -5,6 +5,8 @@
 // `contract.ts`.
 export { BindingConnection } from './binding-connection.ts';
 export * from './contract.ts';
+export { FrameMuxChannel } from './frame-mux-channel.ts';
+export { FrameMuxConnection, type FrameMuxConnectionOptions } from './frame-mux-connection.ts';
 export * from './mux-frame.ts';
 export {
   checkMuxStatus,

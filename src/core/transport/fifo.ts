@@ -51,4 +51,11 @@ export class Fifo<T> {
     this.#items = [];
     this.#head = 0;
   }
+
+  /** The queued items, first to last. */
+  *[Symbol.iterator](): IterableIterator<T> {
+    for (let i = this.#head; i < this.#items.length; i++) {
+      yield this.#items[i] as T;
+    }
+  }
 }
