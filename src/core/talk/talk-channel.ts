@@ -254,6 +254,9 @@ export class TalkChannel implements TalkChannelContract {
 
   /** Writes to a channel that is not a mux channel. */
   readonly #writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+
+  /** The last write to {@link #writer}, never rejecting: a status close of the raw channel goes after it. */
+  #lastWrite: Promise<void> | undefined;
   #reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
   /** Reports frames consumed to a flow-controlled raw channel; undefined when it is not one. */
@@ -782,6 +785,9 @@ export class TalkChannel implements TalkChannelContract {
       const raw = this.#raw;
       if (isStatusClosable(raw)) {
         try {
+          // What is still queued in the writer goes before the close, as
+          // what was added to a sink goes before its close.
+          await this.#lastWrite;
           await raw.close(wireStatus(status));
         } catch (e) {
           this._log('debug', 'closing the raw channel failed', e);
@@ -1037,7 +1043,7 @@ export class TalkChannel implements TalkChannelContract {
       if (isMuxChannel(raw) || isCarrier(raw)) {
         sent = raw.send(bytes);
       } else {
-        (this.#writer as WritableStreamDefaultWriter<Uint8Array>)
+        this.#lastWrite = (this.#writer as WritableStreamDefaultWriter<Uint8Array>)
           .write(bytes)
           .catch((e: unknown) => this._log('debug', 'frame not written', e));
         onAccepted?.();
