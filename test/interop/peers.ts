@@ -25,13 +25,15 @@ declare module 'vitest' {
   }
 }
 
+const { SWITCHBOARD_INTEROP } = process.env;
+
 /** Whether interop peers are required (CI): `SWITCHBOARD_INTEROP=required`. */
-export const interopRequired = process.env.SWITCHBOARD_INTEROP === 'required';
+export const interopRequired = SWITCHBOARD_INTEROP === 'required';
 
 const tsPeerMain = fileURLToPath(new URL('./ts_peer/main.ts', import.meta.url));
 
 function locateDart(): Availability {
-  if (process.env.SWITCHBOARD_INTEROP === 'skip') {
+  if (SWITCHBOARD_INTEROP === 'skip') {
     return { reason: 'SWITCHBOARD_INTEROP=skip' };
   }
   const provided = inject('dartPeer');

@@ -188,7 +188,7 @@ export async function rawTcp(
   });
   socket.setNoDelay(true);
   const queue = new FrameQueue();
-  let buf = new Uint8Array(0);
+  let buf: Uint8Array = new Uint8Array(0);
   let gotPreamble: (b: Uint8Array) => void = () => {};
   const serverPreamble = new Promise<Uint8Array>((resolve) => {
     gotPreamble = resolve;
@@ -272,7 +272,8 @@ export async function rawWebSocket(
     ws.addEventListener('error', () => reject(new Error(`cannot open ${endpoint}`)));
   });
   return {
-    send: (f) => ws.send(f),
+    // A copy, since send() takes a view over a plain ArrayBuffer only.
+    send: (f) => ws.send(new Uint8Array(f)),
     next: (timeoutMs = 5_000) => queue.next(timeoutMs),
     nextMatching: (match, timeoutMs = 5_000) => queue.nextMatching(match, timeoutMs),
     ended,

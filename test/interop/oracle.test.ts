@@ -29,43 +29,68 @@ import {
 } from '../support/vectors.ts';
 import type { Peer } from './launcher.ts';
 import { startPeer, unavailable } from './peers.ts';
-import type { DecodeResult } from './protocol.ts';
+import type {
+  ControlFields,
+  DecodedFields,
+  DecodeResult,
+  MuxFields,
+  NameFields,
+  StatusFields,
+  TypedControlFields,
+} from './protocol.ts';
 
 const dartMissing = unavailable('dart');
-const seed = Number(process.env.SWITCHBOARD_FUZZ_SEED ?? 0x5357424e);
-const count = Number(process.env.SWITCHBOARD_FUZZ_COUNT ?? 3000);
+const { SWITCHBOARD_FUZZ_SEED, SWITCHBOARD_FUZZ_COUNT } = process.env;
+const seed = Number(SWITCHBOARD_FUZZ_SEED ?? 0x5357424e);
+const count = Number(SWITCHBOARD_FUZZ_COUNT ?? 3000);
 
 let dart: Peer;
 
 type Fields = Record<string, unknown>;
 
-async function decode(kind: string, hex: string): Promise<DecodeResult> {
-  const [r] = await decodeMany(kind, [hex]);
+async function decode<T extends DecodedFields = DecodedFields>(
+  kind: string,
+  hex: string,
+): Promise<DecodeResult<T>> {
+  const [r] = await decodeMany<T>(kind, [hex]);
   if (r === undefined) {
     throw new Error('decodeMany answered nothing');
   }
   return r;
 }
 
-async function decodeMany(kind: string, hexes: readonly string[]): Promise<DecodeResult[]> {
-  const out: DecodeResult[] = [];
+async function decodeMany<T extends DecodedFields = DecodedFields>(
+  kind: string,
+  hexes: readonly string[],
+): Promise<DecodeResult<T>[]> {
+  const out: DecodeResult<T>[] = [];
   for (let i = 0; i < hexes.length; i += 500) {
     out.push(
-      ...(await dart.rpc<DecodeResult[]>('decodeMany', { kind, hexes: hexes.slice(i, i + 500) })),
+      ...(await dart.rpc<DecodeResult<T>[]>('decodeMany', {
+        kind,
+        hexes: hexes.slice(i, i + 500),
+      })),
     );
   }
   return out;
 }
 
-/** Decodes [v] with the reference: refused when negative, else re-encoded to itself. */
-async function expectReference(kind: string, v: WikiVector, hex = v.hex): Promise<Fields> {
+/**
+ * Decodes [v] with the reference: refused when negative (no fields), else
+ * re-encoded to itself.
+ */
+async function expectReference<T extends DecodedFields = DecodedFields>(
+  kind: string,
+  v: WikiVector,
+  hex = v.hex,
+): Promise<T | undefined> {
   if (hex === null) {
     throw new Error(`${v.id} has no single value`);
   }
-  const r = await decode(kind, hex);
+  const r = await decode<T>(kind, hex);
   if (v.negative) {
     expect(r.ok, `${v.id} must be refused`).toBe(false);
-    return {};
+    return undefined;
   }
   if (!r.ok) {
     throw new Error(`${v.id}: the reference refuses it: ${r.error.message}`);
@@ -75,8 +100,8 @@ async function expectReference(kind: string, v: WikiVector, hex = v.hex): Promis
 }
 
 /** The typed payload fields of a decoded control message. */
-function typedFields(r: DecodeResult): Fields | null | undefined {
-  return r.ok ? (r.value.fields as Fields | null) : undefined;
+function typedFields(r: DecodeResult<ControlFields>): TypedControlFields | null | undefined {
+  return r.ok ? r.value.fields : undefined;
 }
 
 const tables = (prefix: string): WikiVector[] => wikiVectorsIn(prefix).filter((v) => !v.prose);
@@ -111,10 +136,10 @@ describe.skipIf(dartMissing !== undefined)(
       });
 
       test.each(tables('test-vectors/mux-frames/'))('mux: $case', async (v) => {
-        const fields = await expectReference('mux', v);
-        if (!v.negative && fields.channelId === 0) {
+        const fields = await expectReference<MuxFields>('mux', v);
+        if (fields?.channelId === 0) {
           // Control messages decode again as such, typed payload included.
-          const control = await decode('control', String(fields.payload));
+          const control = await decode<ControlFields>('control', fields.payload);
           expect(control.ok, v.id).toBe(true);
           expect(typedFields(control)?.error, v.id).toBeUndefined();
         }
@@ -146,7 +171,7 @@ describe.skipIf(dartMissing !== undefined)(
         const type = /LIMITS/.test(v.case) ? '04' : /CREDIT/.test(v.case) ? '07' : '06';
         // `00 00 41` is followed by 65 bytes of intent and a receiver length.
         const tail = v.hex === '00 00 41' ? ` ${Array(66).fill('00').join(' ')}` : '';
-        const r = await decode('control', `${type} ${v.hex}${tail}`);
+        const r = await decode<ControlFields>('control', `${type} ${v.hex}${tail}`);
         expect(r.ok, v.id).toBe(true);
         expect(typedFields(r)?.error, v.id).toBeDefined();
       });
@@ -172,8 +197,8 @@ describe.skipIf(dartMissing !== undefined)(
       });
 
       test.each(wikiVectorsIn('test-vectors/names/'))('name: $case', async (v) => {
-        const fields = await expectReference('name', v);
-        if (!v.negative) {
+        const fields = await expectReference<NameFields>('name', v);
+        if (fields !== undefined) {
           expect(fields.text, v.id).toBe(v.case.replace(/\s*\(.*\)$/, '').trim());
         }
       });
@@ -186,8 +211,8 @@ describe.skipIf(dartMissing !== undefined)(
           'test-vectors/sharding-payloads/prose-0a-00-2b-1a-00-00-00-00-07-00-00-00',
         ),
       )('status: $case', async (v) => {
-        const fields = await expectReference('status', v);
-        expect(fields.body, 'the fields after the code are kept as they are').toBe(
+        const fields = await expectReference<StatusFields>('status', v);
+        expect(fields?.body, 'the fields after the code are kept as they are').toBe(
           (v.hex ?? '').slice(6),
         );
       });

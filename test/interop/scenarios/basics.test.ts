@@ -13,7 +13,7 @@ import { expect, test } from 'vitest';
 import { hexString, utf8Encode } from '../../../src/core/bytes.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import { describeCells } from '../matrix.ts';
-import type { MessageInfo } from '../protocol.ts';
+import type { ChannelIncomingEvent, MessageInfo, TalkItemEvent } from '../protocol.ts';
 
 const hex = (text: string): string => hexString(utf8Encode(text));
 
@@ -62,7 +62,7 @@ describeCells('basics', {}, (peers) => {
       text: '3',
     });
     const done = await peers.client.events.waitFor({ event: 'talk.done', stream });
-    const items = peers.client.events.filter({ event: 'talk.item', stream });
+    const items = peers.client.events.filter<TalkItemEvent>({ event: 'talk.item', stream });
     expect(items.map((i) => i.payload)).toEqual([hex('1'), hex('2'), hex('3')]);
     expect(done).toMatchObject({ items: 3, payload: hex('done') });
   });
@@ -149,9 +149,9 @@ describeCells('basics', {}, (peers) => {
       connection,
       address: { type: 'raw', payload: '0A 0B' },
     });
-    const incoming = await peers.server.events.waitFor('channel.incoming');
+    const incoming = await peers.server.events.waitFor<ChannelIncomingEvent>('channel.incoming');
     expect(incoming).toMatchObject({ service: 'raw', type: 'raw', payload: '0A 0B' });
-    const far = incoming.channel as string;
+    const far = incoming.channel;
 
     await peers.client.rpc('channel.send', { channel, hex: '01 02 03' });
     await peers.server.events.waitFor({ event: 'channel.data', channel: far, hex: '01 02 03' });

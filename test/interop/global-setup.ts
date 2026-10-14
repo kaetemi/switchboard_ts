@@ -18,13 +18,13 @@ import type { Availability } from './peers.ts';
 
 /** Builds or locates the Dart peer and provides it to the test files. */
 export default function setup(project: TestProject): void {
-  const mode = process.env.SWITCHBOARD_INTEROP ?? 'auto';
+  const { SWITCHBOARD_INTEROP: mode = 'auto', SWITCHBOARD_INTEROP_BUILD } = process.env;
   let dart: Availability;
   if (mode === 'skip') {
     dart = { reason: 'SWITCHBOARD_INTEROP=skip' };
   } else {
     const r = ensurePeer({
-      build: process.env.SWITCHBOARD_INTEROP_BUILD !== '0',
+      build: SWITCHBOARD_INTEROP_BUILD !== '0',
       log: (line) => console.log(line),
     });
     for (const w of 'path' in r ? r.warnings : []) {

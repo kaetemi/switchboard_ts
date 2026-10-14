@@ -87,19 +87,20 @@ export class EventLog {
     return this.#events;
   }
 
-  /** The events so far that satisfy [match]. */
-  filter(match: EventMatch): PeerEvent[] {
-    return this.#events.filter((e) => eventMatches(e, match));
+  /** The events so far that satisfy [match]; `T` names their shape. */
+  filter<T extends PeerEvent = PeerEvent>(match: EventMatch): T[] {
+    return this.#events.filter((e) => eventMatches(e, match)) as T[];
   }
 
   /**
-   * The first event that satisfies [match], already logged or yet to come.
-   * Rejects after [timeoutMs] or when the peer exits first.
+   * The first event that satisfies [match], already logged or yet to come;
+   * `T` names its shape. Rejects after [timeoutMs] or when the peer exits
+   * first.
    */
-  waitFor(match: EventMatch, timeoutMs = 10_000): Promise<PeerEvent> {
+  waitFor<T extends PeerEvent = PeerEvent>(match: EventMatch, timeoutMs = 10_000): Promise<T> {
     const found = this.#events.find((e) => eventMatches(e, match));
     if (found !== undefined) {
-      return Promise.resolve(found);
+      return Promise.resolve(found as T);
     }
     if (this.#closed !== undefined) {
       return Promise.reject(this.#closed);
@@ -109,7 +110,7 @@ export class EventLog {
         match,
         resolve: (e: PeerEvent) => {
           clearTimeout(timer);
-          resolve(e);
+          resolve(e as T);
         },
         reject: (e: Error) => {
           clearTimeout(timer);
@@ -125,10 +126,14 @@ export class EventLog {
   }
 
   /** Waits until [count] events satisfy [match] and answers them. */
-  async waitForCount(match: EventMatch, count: number, timeoutMs = 10_000): Promise<PeerEvent[]> {
+  async waitForCount<T extends PeerEvent = PeerEvent>(
+    match: EventMatch,
+    count: number,
+    timeoutMs = 10_000,
+  ): Promise<T[]> {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
-      const got = this.filter(match);
+      const got = this.filter<T>(match);
       if (got.length >= count) {
         return got.slice(0, count);
       }

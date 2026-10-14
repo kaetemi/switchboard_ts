@@ -130,6 +130,35 @@ export interface PeerEvent {
   readonly [field: string]: unknown;
 }
 
+/** `channel.incoming`: a `raw` service accepted a channel. */
+export interface ChannelIncomingEvent extends PeerEvent {
+  readonly event: 'channel.incoming';
+  /** The channel's handle. */
+  readonly channel: string;
+  readonly connection: string;
+  readonly service: string;
+  readonly id: number;
+  /** The address's type as text, or null. */
+  readonly type: string | null;
+  readonly instance: number;
+  readonly shard: number | null;
+  readonly host: string | null;
+  /** The address payload, hex. */
+  readonly payload: string;
+}
+
+/** `talk.item`: one item of a `talk.stream` request. */
+export interface TalkItemEvent extends PeerEvent {
+  readonly event: 'talk.item';
+  readonly stream: string;
+  readonly index: number;
+  readonly procedure: string;
+  readonly bulk: boolean;
+  readonly payload?: string;
+  readonly size?: number;
+  readonly sha256?: string;
+}
+
 /** A Talk message as the client commands report it. */
 export interface MessageInfo {
   readonly procedure: string;
@@ -152,7 +181,52 @@ export interface AddressArg {
   payload?: string;
 }
 
-/** One result of `decodeMany`. */
-export type DecodeResult =
-  | { readonly ok: true; readonly value: Record<string, unknown> }
+/** What `decode` answers: the kind's fields, and the re-encoding for every kind but `stream`. */
+export interface DecodedFields {
+  /** The decoded value encoded again by the reference, hex. */
+  readonly reencoded?: string;
+  readonly [field: string]: unknown;
+}
+
+/** One result of `decodeMany`; `T` names the fields of the kind asked for. */
+export type DecodeResult<T extends DecodedFields = DecodedFields> =
+  | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: PeerErrorInfo };
+
+/** The fields of a decoded `name`. */
+export interface NameFields extends DecodedFields {
+  readonly text: string;
+  readonly length: number;
+}
+
+/** The fields of a decoded `status`. */
+export interface StatusFields extends DecodedFields {
+  readonly code: number;
+  readonly reason: string;
+  /** The bytes after the code, hex, kept as received. */
+  readonly body: string;
+}
+
+/** The fields of a decoded `mux` frame. */
+export interface MuxFields extends DecodedFields {
+  readonly command: 'data' | 'open' | 'close';
+  readonly channelId: number;
+  readonly longForm: boolean;
+  readonly payload: string;
+}
+
+/** The fields of a decoded `control` message. */
+export interface ControlFields extends DecodedFields {
+  readonly type: number;
+  /** The name of a known type, null for an unknown one. */
+  readonly typeName: string | null;
+  readonly payload: string;
+  /** The typed payload of LIMITS, CREDIT, GOAWAY and IDENT; null for the other types. */
+  readonly fields: TypedControlFields | null;
+}
+
+/** A typed control payload's fields, or the error that kept it from decoding. */
+export interface TypedControlFields {
+  readonly error?: PeerErrorInfo;
+  readonly [field: string]: unknown;
+}

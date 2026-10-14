@@ -22,7 +22,8 @@ import { describe, expect, test } from 'vitest';
 import { type WikiVector, wikiVectorFile } from '../support/vectors.ts';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
-const strict = process.env.SWITCHBOARD_VECTORS_STRICT === '1';
+const { SWITCHBOARD_VECTORS_STRICT } = process.env;
+const strict = SWITCHBOARD_VECTORS_STRICT === '1';
 const skipFiles = new Set(['test/support/vectors.ts', 'test/vectors/coverage.test.ts']);
 
 function sources(dir: string, out: string[] = []): string[] {
