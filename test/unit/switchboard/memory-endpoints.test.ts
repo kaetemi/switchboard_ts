@@ -6,8 +6,12 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // In-process listeners (`mem://<id>`): listenMemory, the registry of ids,
 // dialling, pooling and close over them. A port of the Dart
-// memory_endpoint_test.dart; requests go over plain channels until the
-// Talk layer lands, and the proxy case moves to the proxy tests.
+// memory_endpoint_test.dart, over the toy mux and, from `over-frame-mux/`,
+// over the frame mux. Two Dart cases live elsewhere: "a client closing
+// right after connecting sends GOAWAY" is in `switchboard.test.ts` (over
+// mem:// there too), and the "proxy over mem" group is the proxyHandler
+// case "a record pointing back at the proxy is refused at once" in
+// `proxy.test.ts`.
 
 import { describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/index.ts';
@@ -30,13 +34,11 @@ import {
 
 const echo = Name.of('echo');
 
-/** Answers every frame with `<instance>:<frame>`. */
+/** Answers every request with `<instance>:<payload>`. */
 function serveEcho(incoming: IncomingChannel): void {
-  void (async () => {
-    for await (const frame of incoming.channel.readable) {
-      await incoming.channel.send(bytes(`${incoming.address.instance}:${utf8Decode(frame)}`));
-    }
-  })().catch(() => {});
+  void incoming.talk().serve((m) => {
+    void m.reply(`${incoming.address.instance}:${m.text()}`);
+  });
 }
 
 /** The next frame [channel] receives, as text; leaves the readable usable (no cancel). */
@@ -53,24 +55,18 @@ async function nextFrame(channel: MuxChannel): Promise<string> {
   }
 }
 
-/** One frame on [channel] and its answer. */
-async function request(channel: MuxChannel, text: string): Promise<string> {
-  await channel.send(bytes(text));
-  return nextFrame(channel);
-}
-
-/** One request on a fresh channel to [address] at [endpoint]. */
+/** One request on a fresh Talk channel to [address] at [endpoint]. */
 async function ask(
   from: Switchboard,
   endpoint: string,
   address: ChannelAddress,
-  text: string,
+  payload: string,
 ): Promise<string> {
-  const channel = await from.openChannelAt(endpoint, address);
+  const talk = await from.openTalkAt(endpoint, address);
   try {
-    return await request(channel, text);
+    return (await talk.request('ECHO', payload)).text();
   } finally {
-    await channel.close();
+    await talk.close();
   }
 }
 
@@ -152,7 +148,7 @@ describe('connecting', () => {
     return { server, uri, accepted, client: node() };
   }
 
-  test('a request and its answer through dispatch', async () => {
+  test('talk request and reply through dispatch', async () => {
     const { uri, accepted, client } = await setUp();
     expect(await ask(client, uri, new ChannelAddress({ type: echo, instance: 3 }), 'hi')).toBe(
       '3:hi',
@@ -177,12 +173,12 @@ describe('connecting', () => {
     setTimeout(() => {
       fired = true;
     }, 20);
-    const channel = await client.openChannelAt(uri, new ChannelAddress({ type: echo }));
+    const talk = await client.openTalkAt(uri, new ChannelAddress({ type: echo }));
     let requests = 0;
     while (!fired && requests < 20000) {
-      await request(channel, `${requests++}`);
+      await talk.request('ECHO', `${requests++}`);
     }
-    await channel.close();
+    await talk.close();
     expect(fired).toBe(true);
     expect(requests).toBeGreaterThan(0);
     expect(requests).toBeLessThan(20000);

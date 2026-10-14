@@ -13,12 +13,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // schedule (a stepping clock), the outgoing policy and the per-worker
 // credential, resolver errors, and close. The consumer side of the
 // untrusted worker fleet (wiki page "Polyverse Switchboard Use Cases",
-// entry 5). A port of the Dart peer_set_test.dart.
-//
-// Until the Talk layer lands, the workers answer every frame of a raw
-// channel with `<id>:<frame>` where the Dart workers ran a Talk echo, the
-// exchanges the Dart tests make with Talk requests are made with raw frames,
-// and `openTalk` is checked for its interim UNIMPLEMENTED.
+// entry 5). A port of the Dart peer_set_test.dart, over the toy mux and,
+// from `over-frame-mux/`, over the frame mux.
 
 import { beforeEach, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
@@ -46,6 +42,7 @@ import {
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { SwitchboardRuntime } from '../../../src/core/switchboard/runtime.ts';
 import { Switchboard, type SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
+import { TalkChannel } from '../../../src/core/talk/index.ts';
 import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
@@ -77,16 +74,6 @@ const gpuChannel = new ChannelAddress({ type: gpu });
 /** The well-known name of [status]'s code. */
 function code(status: Status | undefined): string | undefined {
   return status === undefined ? undefined : statusCodeName(status.code);
-}
-
-/** The well-known code name of the `SwitchboardError` [promise] rejects with. */
-async function failure(promise: Promise<unknown>): Promise<string | undefined> {
-  try {
-    await promise;
-  } catch (e) {
-    return e instanceof Error && 'status' in e ? code((e as { status: Status }).status) : String(e);
-  }
-  return undefined;
 }
 
 /** Whether [needle] occurs anywhere in [haystack]. */
@@ -129,19 +116,9 @@ async function within<T>(promise: Promise<T>): Promise<T> {
   }
 }
 
-/** Sends [question] on [channel] and returns the first frame that comes back, as text. */
-async function ask(channel: MuxChannel, question: string): Promise<string> {
-  const reader = channel.readable.getReader();
-  try {
-    await channel.send(bytes(question));
-    const { value, done } = await reader.read();
-    if (done) {
-      throw new Error('the channel ended without an answer');
-    }
-    return utf8Decode(value);
-  } finally {
-    reader.releaseLock();
-  }
+/** Sends the request [procedure] with [question] on [talk] and returns the answer as text. */
+async function ask(talk: TalkChannel, question: string, procedure = 'ECHO'): Promise<string> {
+  return (await talk.request(procedure, question)).text();
 }
 
 /** The single element of [items]. */
@@ -201,7 +178,7 @@ let names = 0;
 /**
  * A worker: a node listening at a fixed mem:// name, serving `gpu` under
  * whatever instance it is addressed as (a registrar registered it), with a
- * raw echo `<id>:<frame>`. It records every OPEN payload as received.
+ * Talk echo `<id>:<payload>`. It records every OPEN payload as received.
  */
 class Worker {
   readonly id: number;
@@ -275,20 +252,11 @@ class Worker {
       void incoming.reject(status);
       return;
     }
-    void this.#echo(incoming.channel);
-  }
-
-  async #echo(channel: MuxChannel): Promise<void> {
-    const reader = channel.readable.getReader();
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        await channel.send(bytes(`${this.id}:${utf8Decode(value)}`));
+    void incoming.talk().serve((message) => {
+      if (message.expectsReply) {
+        void message.reply(`${this.id}:${message.text()}`);
       }
-    } catch {
-      // The channel ended.
-    }
+    });
   }
 
   /** The connection accepted last. */
@@ -560,20 +528,20 @@ test('onConnect, the per-peer channel and onOpen, on every connection', async ()
     onConnect: async (peer) => {
       const self = ref.set as PeerSet;
       hooks.push(`connect ${peer.state} ${peer.connection !== undefined}`);
-      // The connection is usable for a handshake already (Talk: not yet).
-      hooks.push(`talk ${await failure(self.openTalk(peer.address.instance))}`);
-      const channel = await self.openChannel(peer.address.instance);
-      hooks.push(await ask(channel, 'hi'));
-      await channel.close();
+      // The connection is usable for a handshake already.
+      const talk = await self.openTalk(peer.address.instance);
+      hooks.push(await ask(talk, 'hi', 'HELLO'));
+      await talk.close();
     },
     channel: gpuChannel,
     onOpen: async (_peer, channel) => {
-      hooks.push(`open ${await ask(channel, 'caps')}`);
+      const talk = new TalkChannel(channel);
+      hooks.push(`open ${await ask(talk, 'caps', 'CAPS')}`);
     },
   });
   ref.set = set;
   await eventually(() => isOnline(set), 'online');
-  expect(hooks).toEqual(['connect connecting true', 'talk unimplemented', '1:hi', 'open 1:caps']);
+  expect(hooks).toEqual(['connect connecting true', '1:hi', 'open 1:caps']);
   // Online only once the hooks are done.
   await eventually(() => log.includes('online 1'));
   const channel = peerOf(set, 1).channel as MuxChannel;
@@ -584,7 +552,7 @@ test('onConnect, the per-peer channel and onOpen, on every connection', async ()
   await eventually(() => !isOnline(set));
   await w.start();
   await eventually(() => isOnline(set), 'online again');
-  expect(hooks).toEqual(['connect connecting true', 'talk unimplemented', '1:hi', 'open 1:caps']);
+  expect(hooks).toEqual(['connect connecting true', '1:hi', 'open 1:caps']);
   expect(peerOf(set, 1).channel).not.toBe(channel);
   expect(log).toEqual(['added 1', 'online 1', 'offline 1', 'online 1']);
 });
@@ -688,20 +656,21 @@ test('openChannel and openTalk on a peer', async () => {
   resolver.add(keyed(w));
   const set = watch();
   await eventually(() => isOnline(set), 'online');
-  const channel = await set.openChannel(1);
-  expect(await ask(channel, 'x')).toBe('1:x');
-  await channel.close();
-  const explicit = await set.openChannel(1, { payload: bytes('given') });
-  expect(await ask(explicit, 'y')).toBe('1:y');
+  const talk = await set.openTalk(1);
+  expect(await ask(talk, 'x')).toBe('1:x');
+  await talk.close();
+  const explicit = await set.openTalk(1, { payload: bytes('given') });
+  await explicit.request('ECHO');
   await explicit.close();
-  expect(w.payloads).toEqual(['key-1', 'given']);
+  // openChannel, raw.
+  const channel = await set.openChannel(1);
+  expect(await ask(new TalkChannel(channel), 'y')).toBe('1:y');
+  await channel.close();
+  expect(w.payloads).toEqual(['key-1', 'given', 'key-1']);
   const header = ChannelAddress.decode(w.raw[0] as Uint8Array);
   expect(header.address?.equals(new ServiceAddress(gpu, 1))).toBe(true);
   await rejectsWith(set.openChannel(9), StatusCode.notFound);
-  // openTalk: the Talk layer has not landed yet; its channel is closed.
-  await rejectsWith(set.openTalk(1), StatusCode.unimplemented);
-  await eventually(() => w.raw.length === 3);
-  expect(w.payloads[2]).toBe('key-1');
+  await rejectsWith(set.openTalk(9), StatusCode.notFound);
   await w.stop();
   await eventually(() => !isOnline(set));
   await rejectsWith(set.openChannel(1), StatusCode.failedPrecondition);
@@ -746,9 +715,9 @@ test('credentials: each worker sees its own key, never the mesh credential', asy
   const set = watch({ channel: gpuChannel });
   await eventually(() => set.online.length === 4, 'all online');
   for (const w of ws) {
-    const channel = await set.openChannel(w.id);
-    expect(await ask(channel, 'echo')).toBe(`${w.id}:echo`);
-    await channel.close();
+    const talk = await set.openTalk(w.id);
+    expect(await ask(talk, 'echo')).toBe(`${w.id}:echo`);
+    await talk.close();
   }
   for (const w of ws) {
     expect(w.payloads, w.name).toEqual([`key-${w.id}`, `key-${w.id}`]);
@@ -1053,10 +1022,9 @@ describe('removal hold-down', () => {
     expect(set.online).toEqual([]);
     expect(set.peers.get(1)).toBe(peer);
     // Still usable for the jobs in flight, and for new ones.
-    const job = await set.openChannel(1);
-    expect(await ask(job, 'x')).toBe('1:x');
-    await job.close();
-    await rejectsWith(set.openTalk(1), StatusCode.unimplemented);
+    const talk = await set.openTalk(1);
+    expect(await ask(talk, 'x')).toBe('1:x');
+    await talk.close();
     resolver.add(keyed(w));
     await eventually(() => peer.isOnline, 'online again');
     expect(peer.connection).toBe(connection);
@@ -1383,15 +1351,15 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
     void (peer.channel as MuxChannel).done.then((s) => {
       firstChannelEnd = s;
     });
-    // An application channel on the first connection (raw: no Talk yet).
-    let app: MuxChannel | undefined;
-    void set.openChannel(1).then((channel) => {
-      app = channel;
+    // An application channel on the first connection.
+    let app: TalkChannel | undefined;
+    void set.openTalk(1).then((talk) => {
+      app = talk;
     });
     await clock.elapse(10);
     const answers: string[] = [];
     const question = (text: string): void => {
-      void ask(app as MuxChannel, text).then((answer) => answers.push(answer));
+      void ask(app as TalkChannel, text, 'Q').then((answer) => answers.push(answer));
     };
     question('before');
     await clock.elapse(10);

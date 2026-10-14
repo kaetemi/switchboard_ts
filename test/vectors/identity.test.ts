@@ -2,11 +2,11 @@
 // "Polyverse Switchboard Test Vectors", section "Mux frames", with the
 // proof P, and the IDENT payloads that section lists as protocol errors.
 // Ports the "connection identity control messages" group of
-// `test/vectors/identity_vectors_test.dart`; its credential groups come
-// with the credential codec.
+// `test/vectors/identity_vectors_test.dart`; its credential groups are in
+// `credential.test.ts`.
 import { describe, expect, test } from 'vitest';
 import { concatBytes, hexBytes, hexString } from '../../src/core/bytes.ts';
-import { ed25519KeyPairFromSeed, ed25519Sign } from '../../src/core/identity/ed25519.ts';
+import { Ed25519HolderKey } from '../../src/core/identity/holder-key.ts';
 import { MuxControlMessage, MuxFrame } from '../../src/core/mux/mux-frame.ts';
 import { MuxIdent } from '../../src/core/mux/mux-protocol.ts';
 import { ProtocolError } from '../../src/core/status.ts';
@@ -62,9 +62,9 @@ describe('connection identity control messages', () => {
         '08 63 6F 6E 73 75 6D 65 72',
     );
     expect(message).toHaveLength(86);
-    const holder = await ed25519KeyPairFromSeed(holderSeed);
+    const holder = await Ed25519HolderKey.fromSeed(holderSeed);
     expect(hexString(holder.publicKey)).toBe(holderPublic);
-    expect(hexString(await ed25519Sign(message, holder.privateKey))).toBe(proof);
+    expect(hexString(await holder.sign(message))).toBe(proof);
     const ident = new MuxIdent({
       credential: hexBytes(ed25519Credential),
       intent,

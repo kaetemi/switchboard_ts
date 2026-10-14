@@ -298,9 +298,10 @@ const routed = new WeakSet<MuxConnection>();
  * channel the peer opens with an open payload of the reserved type `_bulk`
  * (routed to its parent's Talk layer, never reaching `incoming` nor a
  * listener policy), and the rule admitting such a channel for an open
- * parent after this side's GOAWAY (it continues work the connection
- * admitted already). A `TalkChannel` installs it on its connection; a node
- * installs it on every connection.
+ * parent, or for one a binding connection retains for the drain, after
+ * this side's GOAWAY (it continues work the connection admitted already).
+ * A `TalkChannel` installs it on its connection; a node installs it on
+ * every connection.
  *
  * @internal
  */
@@ -328,8 +329,10 @@ export function installBulkRouting(connection: MuxConnection): void {
 
 /**
  * Whether [openPayload] opens a bulk channel for a channel open on
- * [connection]: it carries the payload of a message of that channel, work
- * admitted before the GOAWAY.
+ * [connection], or for one that ended while its reader still waits for its
+ * bulk channels (a binding connection retains it for the drain:
+ * {@link lingerBulkTarget}): it carries the payload of a message of that
+ * channel, work admitted before the GOAWAY.
  */
 function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array): boolean {
   let address: ChannelAddress;
@@ -341,8 +344,16 @@ function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array
   if (!TalkBulkOpen.isBulk(address) || address.payload.length < TalkBulkOpen.payloadLength) {
     return false;
   }
-  const parent = connection.channelWithId(readU48(address.payload, 0));
-  return parent !== undefined && parent.state !== 'closed';
+  const parentId = readU48(address.payload, 0);
+  const parent = connection.channelWithId(parentId);
+  if (parent !== undefined && parent.state !== 'closed') {
+    return true;
+  }
+  const retained = (connection as { retainedForDrain?: unknown }).retainedForDrain;
+  return (
+    typeof retained === 'function' &&
+    (retained as (id: number) => boolean).call(connection, parentId) === true
+  );
 }
 
 function refuse(bulk: MuxChannel, status: Status): void {

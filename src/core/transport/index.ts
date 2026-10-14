@@ -8,3 +8,4 @@ export * from './memory-endpoints.ts';
 export * from './memory-transport.ts';
 export * from './stream-framing.ts';
 export * from './stream-transport.ts';
+export * from './websocket-transport.ts';
