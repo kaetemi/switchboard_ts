@@ -11,8 +11,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // self-signed certificate; the dialler does not verify it, so the
 // identification rules of the binding page apply (QuicIdentityRules.initiator
 // and .listener). The connection-level cases of switchboard_quic's
-// test/native_integration_test.dart; its node-level cases (Talk, policies,
-// the proxy) wait for the node.
+// test/native_integration_test.dart; its cases between nodes (Talk,
+// policies, the proxy, throughput) are in quic-node-native.test.ts.
 //
 // Without the addon (`npm run build:native`) the file is skipped with the
 // reason; with SWITCHBOARD_NATIVE=required (CI) a missing addon fails it.
