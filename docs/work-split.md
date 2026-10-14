@@ -1,8 +1,21 @@
 # Work split and integration process
 
-_Owned by the lead thread. v1, 2026-10-14. Line counts are the Dart sources being ported, as a size guide._
+_Owned by the lead thread. v1, 2026-10-14; status marks added on 2026-10-14 after the continuation's merges. Line counts are the Dart sources being ported, as a size guide._
 
 Six threads port the package in parallel. Each owns directories and their tests, programs against the contracts in `src/core/*/contract.ts`, and opens pull requests into the integration branch. The lead reviews, merges in dependency order, runs the full suite including interop, and keeps `docs/design.md`, `docs/work-split.md` and `docs/wiki/` in step.
+
+This is the original assignment. The first phase went through pull requests #1 to #18 into `claude/switchboard-ts-design-s5r9na`; `main` was initialised from it at the first hand-off and is the integration branch since. The continuation worked on topic branches `claude/<topic>` (one git worktree each), merged into `main` by the lead with merge commits. Each deliverable below is marked **Done** (with where it landed), **In flight** (the topic branch working on it) or **Open**; `docs/handoff.md` has the current state.
+
+## Status at a glance
+
+| Thread | Deliverables | State |
+| --- | --- | --- |
+| 1. Protocol core | 1 to 5 | Done: transports (#5, `claude/transports`), codecs and binding base (#9), frame mux (#14) with every Dart mux suite (`claude/mux-tests`), identity (`claude/identity`). Acceptance: the raw probe against a TS server waits on the TS peer. |
+| 2. Talk | 1 to 4 | Done (#1, #4, #11), with the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`). Acceptance: the Talk scenarios wait on the TS peer. |
+| 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`), except `MeshNode`'s sharded half (in flight on `claude/sharding`). Acceptance: the interop cells wait on the TS peer. |
+| 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`); the `test/integration/sharding/` port is in flight on `claude/sharding`. Acceptance: interop with the Dart naming service waits on the TS peer. |
+| 5. QUIC | 1 to 5 | Done (#2, #8, #15, `claude/webtransport`, `claude/quic-identity`); publishing is the user's call. Acceptance: Chromium reaches a TS WebTransport listener (done); interop over raw QUIC and WebTransport waits on the TS peer. |
+| 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 in flight on `claude/ts-peer`. |
 
 ## Ground rules for every thread
 
@@ -30,11 +43,11 @@ Branch suggestion: `claude/sb-ts-core`. Dart: `lib/src/transport/*` (2 700 lines
 
 **Deliverables, in order (one PR each or grouped as marked)**
 
-1. `endpoint.ts`, `stream-framing.ts`, `memory-transport.ts`, `stream-transport.ts`, vectors for the stream binding. Lands first: the Talk and node threads test over the memory pair.
-2. `mux-frame.ts`, `mux-protocol.ts` with every wiki and Dart vector; `binding-connection.ts` as an abstract class the QUIC thread extends, with Dart's scope: drain holds and neutral diagnostics; the identity exchange, `adoptIncoming` and `admitAfterGoAway` are each binding's own (landed as PR #9). Land this before step 3 so the QUIC thread is unblocked.
-3. `frame-mux-connection.ts`, `frame-mux-channel.ts`, `output-scheduler.ts`: the full `MuxConnection` and `MuxChannel` over a `FrameTransport`, porting `mux_connection_test.dart`, `mux_channel_test.dart`, `frame_mux_*` tests and the limits, credit, scheduler, keep-alive, GOAWAY, close, held-frame and pending-rejection tests with `ManualClock`.
-4. Identity: codecs with vectors, verifiers, issuer, the IDENT exchange on the connection (transport paused while verifying, held frames), `identity_test.dart` ports.
-5. `websocket-transport.ts`, `src/node/transport/*`, integration tests over the loopback, the Dart `web_socket_*` and `stream_transport_*` test ports.
+1. `endpoint.ts`, `stream-framing.ts`, `memory-transport.ts`, `stream-transport.ts`, vectors for the stream binding. Lands first: the Talk and node threads test over the memory pair. **Done** (#5).
+2. `mux-frame.ts`, `mux-protocol.ts` with every wiki and Dart vector; `binding-connection.ts` as an abstract class the QUIC thread extends, with Dart's scope: drain holds and neutral diagnostics; the identity exchange, `adoptIncoming` and `admitAfterGoAway` are each binding's own (landed as PR #9). Land this before step 3 so the QUIC thread is unblocked. **Done** (#9).
+3. `frame-mux-connection.ts`, `frame-mux-channel.ts`, `output-scheduler.ts`: the full `MuxConnection` and `MuxChannel` over a `FrameTransport`, porting `mux_connection_test.dart`, `mux_channel_test.dart`, `frame_mux_*` tests and the limits, credit, scheduler, keep-alive, GOAWAY, close, held-frame and pending-rejection tests with `ManualClock`. **Done**: the implementation (#14) and the Dart suites `mux_test`, `mux_flow_test`, `mux_limits_test`, `mux_schedule_test`, `mux_vectors_test` and the IDENT gating of `binding_protocol_test` (`claude/mux-tests`, `test/unit/mux/`).
+4. Identity: codecs with vectors, verifiers, issuer, the IDENT exchange on the connection (transport paused while verifying, held frames), `identity_test.dart` ports. **Done** (`claude/identity`): `Credential`, `Scope`, `CredentialIssuer`, `CredentialVerifier`, `Ed25519HolderKey`, the credential vectors, `identity_test.dart`; the node and QUIC fixtures use real credentials (`claude/quic-identity`), and `test/support/identity/stub-verifier.ts` remains only for the mux IDENT tests, which check IDENT verification on its own.
+5. `websocket-transport.ts`, `src/node/transport/*`, integration tests over the loopback, the Dart `web_socket_*` and `stream_transport_*` test ports. **Done** (`claude/transports`): `connectWebSocket`, `connectTcp`, `listenTcp`, the `ws` server and client, `connectTransport`, `transport_test.dart` and `web_socket_server_test.dart`, `test/integration/mux-{tcp,websocket}.test.ts`.
 
 **Acceptance:** every Dart test under `test/mux`, `test/transport`, `test/identity` and `test/vectors` for these codecs has a TS counterpart or a documented reason; the interop thread's raw probe exchanges frames with a `FrameMuxConnection` over TCP and WebSocket; `npm run check` green.
 
@@ -49,10 +62,10 @@ Branch suggestion: `claude/sb-ts-talk`. Dart: `lib/src/talk/*` (8 100 lines).
 
 **Deliverables, in order**
 
-1. `talk-frame.ts` with every wiki and Dart vector (the frame codec is independent of the mux).
-2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a fake `MuxChannel` pair under `test/support/talk/fake-channel.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too.
-3. Bulk transfers: `talk-bulk.ts`, `talk-bulk-transfer.ts`, the `_bulk` filter, `streamBulk`, budgets and timeouts.
-4. `talk-forward.ts`, the forwarding tests.
+1. `talk-frame.ts` with every wiki and Dart vector (the frame codec is independent of the mux). **Done** (#1).
+2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a fake `MuxChannel` pair under `test/support/talk/fake-channel.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too. **Done** (#4, #11).
+3. Bulk transfers: `talk-bulk.ts`, `talk-bulk-transfer.ts`, the `_bulk` filter, `streamBulk`, budgets and timeouts. **Done** (#11).
+4. `talk-forward.ts`, the forwarding tests. **Done** (#11), and the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`, `test/integration/talk-*.test.ts`).
 
 **Acceptance:** every Dart `test/talk/*` has a TS counterpart or a documented reason; the interop thread's scenarios (request, stream, abort, bulk over 32752 bytes, forward) pass TS to Dart and Dart to TS over TCP and WebSocket once the node lands.
 
@@ -62,18 +75,18 @@ Branch suggestion: `claude/sb-ts-node`. Dart: `lib/src/switchboard/{switchboard,
 
 **Owns**
 
-- `src/core/switchboard/` except `contract.ts`: `switchboard.ts` (the runtime-neutral node over a `Runtime` of connectors and listener factories), `dispatch.ts`, `channel-policy.ts` (`ChannelPolicies`), `incoming-channel.ts`, `outgoing-policy.ts`, `resolver.ts` (`StaticResolver`, `EndpointResolver`, selection), `proxy.ts` (`pipeChannels`, `proxyHandler`), `relay.ts`, `relay-config.ts`, `identity-wait.ts`, `forwarding.ts`, `peer-set.ts`, `mesh-node.ts`, `index.ts`.
+- `src/core/switchboard/` except `contract.ts` (as landed, dispatch and the outgoing policy live in `switchboard.ts`): `switchboard.ts` (the runtime-neutral node over a `Runtime` of connectors and listener factories), `dispatch.ts`, `channel-policy.ts` (`ChannelPolicies`), `incoming-channel.ts`, `outgoing-policy.ts`, `resolver.ts` (`StaticResolver`, `EndpointResolver`, selection), `proxy.ts` (`pipeChannels`, `proxyHandler`), `relay.ts`, `relay-config.ts`, `identity-wait.ts`, `forwarding.ts`, `peer-set.ts`, `mesh-node.ts`, `index.ts`.
 - `src/core/client/`: `backoff.ts`, `reconnecting-client.ts`, `persistent-channel.ts`, `index.ts`.
 - `src/node/switchboard.ts` (the Node `Switchboard` with `listenTcp`, `listenWebSocket`, `listenMemory`, `accept`, `acceptWebSocket`, `connect` and `dial` for `tcp`, `ws`, `wss`, `mem`, and the `quic` and `https` schemes delegated to the QUIC thread's `connectQuic`/`listenQuic` through the `quic` option), `src/node/index.ts` exports for it, `src/web/switchboard.ts` (connect-only node for browsers), `src/web/index.ts` exports for it.
 - Tests: `test/unit/switchboard/**`, `test/unit/client/**` (ports of `switchboard_test.dart`, `policy_test.dart`, `proxy_test.dart`, `relay_test.dart`, `reconnecting_client_test.dart`, `peer_set_test.dart`, `mesh_test.dart`), `test/integration/node-*.test.ts` over memory, TCP and WebSocket.
 
 **Deliverables, in order**
 
-1. `ChannelPolicies`, `IncomingChannel`, dispatch and registration over the memory transport (thread 1 step 1) with a stub Talk until thread 2 step 2 lands: `registerService`, `openChannelOn`, `accept`, `connections`, `close`.
-2. Resolvers, the connection pool, `connect`/`dial`, `openChannel`/`openTalk`/`openChannelAt`, identity on connections (`credential`, `identifyOn`, `expectedIdentityFor`, `credentialFor`), `localConnections` and `isOwnEndpoint`.
-3. `ReconnectingClient`, `Backoff`, persistent channels with `ManualClock`.
-4. Proxy, relay, forwarding; `PeerSet`, `MeshNode`.
-5. The Node and web entry points with the listeners and schemes; slot-routed opens (`openChannelToSlot`, `selectAndConnect` with a `SlotResolver`) wired to thread 4's types.
+1. `ChannelPolicies`, `IncomingChannel`, dispatch and registration over the memory transport (thread 1 step 1) with a stub Talk until thread 2 step 2 lands: `registerService`, `openChannelOn`, `accept`, `connections`, `close`. **Done** (#6; the Talk seam wired on `claude/node-talk`).
+2. Resolvers, the connection pool, `connect`/`dial`, `openChannel`/`openTalk`/`openChannelAt`, identity on connections (`credential`, `identifyOn`, `expectedIdentityFor`, `credentialFor`), `localConnections` and `isOwnEndpoint`. **Done** (#6, #17); the node suites run over the toy mux and over the frame mux (`test/unit/switchboard/over-frame-mux/`).
+3. `ReconnectingClient`, `Backoff`, persistent channels with `ManualClock`. **Done** (#10).
+4. Proxy, relay, forwarding; `PeerSet`, `MeshNode`. **Done** (#16, `claude/node-talk`, `claude/mesh`; `MeshNode` lives in `src/core/switchboard/mesh-node.ts`), except `MeshNode`'s sharded half (`publishSharded`, `claimSlot`, `releaseSlot`, `gates`, the hand-over in `leave`): **in flight** on `claude/sharding`.
+5. The Node and web entry points with the listeners and schemes; slot-routed opens (`openChannelToSlot`, `selectAndConnect` with a `SlotResolver`) wired to thread 4's types. **Done**: the entry points on `claude/transports` (`src/node/switchboard.ts`, `src/web/switchboard.ts`); slot routing on `claude/slot-routing` (`openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups).
 
 **Acceptance:** the Dart `test/switchboard/*`, `test/client/*` and the node-level `test/integration/*` have TS counterparts or a documented reason; the interop thread's Dart peer completes requests against a TS node and a TS node completes requests against the Dart peer over TCP and WebSocket.
 
@@ -88,10 +101,10 @@ Branch suggestion: `claude/sb-ts-naming`. Dart: `lib/src/naming/*` (9 100 lines)
 
 **Deliverables, in order**
 
-1. `naming-protocol.ts` with vectors; `slot-key.ts`, `slot-table.ts`.
-2. `NamingClient` and `NamingResolver` over a `TalkChannel` (thread 2 step 2; until then the fake channel fixture).
-3. `NamingService` with leases, watches, CONNECT brokering.
-4. Slot spaces: client and service halves, `SlotGate`, `SlotChannel`, reopen on MOVED, migration (ASSIGN, DRAIN, FORWARD, RESUME).
+1. `naming-protocol.ts` with vectors; `slot-key.ts`, `slot-table.ts`. **Done** (#3).
+2. `NamingClient` and `NamingResolver` over a `TalkChannel` (thread 2 step 2; until then the fake channel fixture). **Done** (#13; `renew()` on `claude/identity`; the suites over real Talk on `claude/slot-routing`).
+3. `NamingService` with leases, watches, CONNECT brokering. **Done** (#13).
+4. Slot spaces: client and service halves, `SlotGate`, `SlotChannel`, reopen on MOVED, migration (ASSIGN, DRAIN, FORWARD, RESUME). **Done** (#13, `claude/slot-routing`: `SlotGate`, `SlotLifecycle`, `SlotGates` in `src/core/naming/slot-gate.ts`, `slot_gate_test.dart`, `slot_gate_credential_test.dart`, `slot_routing_test.dart`). The integration port of `test/integration/sharding/*` is **in flight** on `claude/sharding`.
 
 **Acceptance:** the Dart `test/naming/*` and slot tests have TS counterparts or a documented reason; a TS naming service serves the Dart peer's registrations and watches and the reverse, in the interop matrix.
 
@@ -102,7 +115,7 @@ Branch suggestion: `claude/sb-ts-quic`. Dart: `switchboard_quic/lib/src/binding/
 **Owns**
 
 - `src/core/quic/` except `contract.ts`: `records.ts` (record header codec and reader), `hello.ts`, `quic-binding-connection.ts` (extends thread 1's `BindingConnection`; until it lands, extend a local stub that implements the identity parts you need and swap when it does), `quic-binding-channel.ts`, `quic-dial.ts` (`connectQuic`), `quic-listen.ts` (`listenQuic` producing `MuxConnection`s for the node), `quic-options.ts`, `quic-identity-rules.ts`, `exporter.ts`, `index.ts`.
-- `src/web/quic/webtransport-provider.ts` (`webTransport()` returning a `QuicConnector` provider; `quicConnector(url, provider, init)` in `quic-dial.ts` gives a client its `ConnectionConnector`), `src/web/quic/index.ts`.
+- `src/web/quic/webtransport-provider.ts` (`webTransport()` returning a `QuicConnector` provider; `quicConnector(url, provider, init)` in `quic-dial.ts` gives a client its `ConnectionConnector`, and `webTransportConnector(url, init)` the same over `webTransport()`), `src/web/quic/index.ts`.
 - `src/node/quic/native-provider.ts` (`nativeQuic()`, lazy `createRequire` load of the addon, `selfSignedCertificate`), `src/node/quic/index.ts`.
 - `native/`: the N-API crate (`napi-rs`), `Cargo.toml`, `build.rs` as needed, `package.json` scripts for `napi build`, the per-platform package manifests under `native/npm/<target>/`, `native/README.md` (how to build locally, supported targets, how `sbq` is reused). Reuse `switchboard_quic/native/sbq` as a vendored copy under `native/sbq-vendor/` (the user's decision: duplicate now, possibly a shared shim repository later, so the copy must stay separable): `tool/sync-sbq.mjs` copies it from a `switchboard_quic` checkout at the commit recorded in `native/sbq-vendor.commit` (outside the copy, so the copy stays byte-identical to upstream apart from the crate-type line), adding `"rlib"` to the crate types, and a CI check verifies the copy equals upstream except for that line. The exported JS surface of the addon is yours; keep it minimal (sessions, streams, events through a thread-safe function) and keep all protocol logic in TypeScript.
 - `src/testing/fake-quic-provider.ts` (the in-memory provider: independent stream delivery with configurable delays, flow control, a stream limit, resets, an exporter) and its export from `src/testing/index.ts`.
@@ -110,11 +123,11 @@ Branch suggestion: `claude/sb-ts-quic`. Dart: `switchboard_quic/lib/src/binding/
 
 **Deliverables, in order**
 
-1. `records.ts`, `hello.ts`, vectors; the fake provider.
-2. The binding over the fake provider: `QuicBindingConnection`, `QuicBindingChannel`, control stream, HELLO, GOAWAY and drain holds, exporter-bound identity, the Dart binding test ports.
-3. The native provider and addon for Linux x64 (CI), then macOS and Windows targets; `connectQuic` and `listenQuic`; the loopback integration test; the `native` CI job building the addon with cargo and running the integration test.
-4. The WebTransport provider and the browser test; the `browser` CI job.
-5. Prebuilt packaging: the per-target optional dependencies and a `release` workflow building them (a draft is enough; publishing is the user's call).
+1. `records.ts`, `hello.ts`, vectors; the fake provider. **Done** (#2).
+2. The binding over the fake provider: `QuicBindingConnection`, `QuicBindingChannel`, control stream, HELLO, GOAWAY and drain holds, exporter-bound identity, the Dart binding test ports. **Done** (#8).
+3. The native provider and addon for Linux x64 (CI), then macOS and Windows targets; `connectQuic` and `listenQuic`; the loopback integration test; the `native` CI job building the addon with cargo and running the integration test. **Done** (#8, #15; node-level native tests on `claude/quic-identity`). CI builds Linux x64; the other targets are built by the release workflow.
+4. The WebTransport provider and the browser test; the `browser` CI job. **Done** (`claude/webtransport`: 34 browser tests in Chromium 141, the `browser` job, the man-in-the-middle group).
+5. Prebuilt packaging: the per-target optional dependencies and a `release` workflow building them (a draft is enough; publishing is the user's call). **Done** (`claude/quic-identity`: `native/npm/<target>/`, `optionalDependencies`, `.github/workflows/release.yml`). Musl prebuilds are open.
 
 **Acceptance:** every `switchboard_quic` test has a TS counterpart over the fake provider or a documented reason; a TS node over the native provider interoperates with the Dart peer over raw QUIC and WebTransport in both directions; Chromium reaches a TS WebTransport listener.
 
@@ -131,8 +144,8 @@ Branch suggestion: `claude/sb-ts-interop`. Your proposal in `notes/interop.md` i
 
 **Deliverables, in order**
 
-1. The Dart peer moved from the prototype into `test/interop/dart_peer/` with `dart_commits.txt`, the launcher, `tool/dart-peer.mjs`, the vectors JSON and extractor, the coverage test and the `test/support/vectors.ts` helper, the `interop` CI job (skips cleanly when Dart cannot be installed). The oracle test over the existing codecs (status, name, address) and the raw probe scripts as tests.
-2. The TS peer and the scenario matrix for the mux and Talk scenarios (request, stream, abort, extend, bulk, close, GOAWAY, protocol-error injection), running as cells become available.
+1. The Dart peer moved from the prototype into `test/interop/dart_peer/` with `dart_commits.txt`, the launcher, `tool/dart-peer.mjs`, the vectors JSON and extractor, the coverage test and the `test/support/vectors.ts` helper, the `interop` CI job (skips cleanly when Dart cannot be installed). The oracle test over the existing codecs (status, name, address) and the raw probe scripts as tests. **Done** (#7, #12).
+2. The TS peer and the scenario matrix for the mux and Talk scenarios (request, stream, abort, extend, bulk, close, GOAWAY, protocol-error injection), running as cells become available. **In flight** (`claude/ts-peer`), as are 3 and 4.
 3. Identity scenarios (NONCE/IDENT both directions, holder key and bearer, exporter-bound over QUIC), naming and sharding scenarios, relay and proxy, mixed-language meshes.
 4. A Dart driver that spawns the TS peer, so the Dart repositories' own interop scenarios can run against TS later (a tool under `test/interop/dart_driver/`, not a change to the Dart repositories).
 
@@ -143,7 +156,7 @@ Branch suggestion: `claude/sb-ts-interop`. Your proposal in `notes/interop.md` i
 - Owns `docs/`, every `contract.ts`, the barrels outside thread directories, `package.json`, the configs, the `lint`, `typecheck` and `test` CI jobs, `src/core/{bytes,name,status}.ts`, `src/core/address/`, `src/core/util/`, `src/testing/manual-clock.ts`.
 - Reviews and merges thread PRs into `claude/switchboard-ts-design-s5r9na` in dependency order; runs `npm run check` and `npm run test:interop` on the merged result; resolves conflicts; keeps the design, the work split and the wiki pages current; raises contract changes to the threads they affect.
 - Merge order expected: 1.1, 1.2, 2.1, 5.1, 6.1 in the first days; then 1.3, 2.2, 3.1, 4.1, 5.2; then the rest as they come.
-- `main`: initialised from the integration branch at the first green end-to-end state, with the user's go-ahead.
+- `main`: initialised from the integration branch at the first hand-off; the integration branch since.
 
 ## Dependency graph
 
