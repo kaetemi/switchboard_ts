@@ -65,6 +65,14 @@ interface PendingPing {
   readonly result: Deferred<number>;
 }
 
+/**
+ * Most frames handed to the transport's writable and not taken by it yet.
+ * Node's WritableStream takes its queued writes with `Array#shift`, which
+ * turns quadratic once some 16K writes are queued; a burst beyond this
+ * waits in the connection's own queue instead, in order.
+ */
+const maxWritesInFlight = 1024;
+
 /** The status of the GOAWAY sent for an IDENT that fails verification. */
 const unauthenticated = Status.of(StatusCode.unauthenticated, 'identification failed');
 
@@ -163,6 +171,14 @@ export class FrameMuxConnection implements MuxConnection {
   #peerGoAway: Status | undefined;
   readonly #peerGoAwayStatus = new Deferred<Status>();
   #sentBytes = 0;
+  // Frames written past maxWritesInFlight, in order, and the writes the
+  // transport has not taken yet. The output scheduler holds DATA while
+  // frames wait here, as when the transport is not ready.
+  readonly #backlog = new Fifo<Uint8Array>();
+  #writesInFlight = 0;
+  #backlogDrained: Deferred<void> | undefined;
+  // The transport's output failed: nothing more is handed to it.
+  #outputFailed = false;
   #receivedBytes = 0;
   #peerLimits: MuxLimits | undefined;
   // False until the peer's first frame (its LIMITS, normally) arrived, or
@@ -263,8 +279,14 @@ export class FrameMuxConnection implements MuxConnection {
     this.#scheduler = new OutputScheduler(
       {
         writable: () => this.#writable,
-        outputReady: () => this.#transport.isOutputReady ?? true,
-        whenOutputReady: () => this.#transport.outputReady,
+        outputReady: () => this.#backlog.length === 0 && (this.#transport.isOutputReady ?? true),
+        whenOutputReady: () => {
+          if (this.#backlog.length > 0) {
+            this.#backlogDrained ??= new Deferred<void>();
+            return this.#backlogDrained.promise;
+          }
+          return this.#transport.outputReady;
+        },
         link: (id) => this.#links.get(id),
         writeOpening: (bytes, opens) => this.#writeOpening(bytes, opens),
       },
@@ -1008,13 +1030,60 @@ export class FrameMuxConnection implements MuxConnection {
       this.#writable = false;
       return;
     }
-    this.#writer.write(bytes).catch((error: unknown) => {
-      if (this.#writable) {
-        this.#log('debug', `${this}: transport write failed: ${error}`);
-        this.#writable = false;
-      }
-    });
     this.#sentBytes += bytes.length;
+    if (this.#backlog.length > 0 || this.#writesInFlight >= maxWritesInFlight) {
+      this.#backlog.push(bytes);
+      return;
+    }
+    this.#hand(bytes);
+  }
+
+  /** Hands [bytes] to the transport's writable. */
+  #hand(bytes: Uint8Array): void {
+    this.#writesInFlight++;
+    this.#writer.write(bytes).then(
+      () => {
+        this.#writesInFlight--;
+        this.#drainBacklog();
+      },
+      (error: unknown) => {
+        this.#writesInFlight--;
+        if (!this.#outputFailed) {
+          this.#outputFailed = true;
+          if (this.#writable) {
+            this.#log('debug', `${this}: transport write failed: ${error}`);
+            this.#writable = false;
+          }
+          this.#backlog.clear();
+          this.#drainBacklog();
+        }
+      },
+    );
+  }
+
+  /** Hands the frames of the backlog over as the transport takes the writes before them. */
+  #drainBacklog(): void {
+    while (
+      this.#backlog.length > 0 &&
+      this.#writesInFlight < maxWritesInFlight &&
+      !this.#outputFailed
+    ) {
+      this.#hand(this.#backlog.shift() as Uint8Array);
+    }
+    if (this.#backlog.length === 0) {
+      const drained = this.#backlogDrained;
+      this.#backlogDrained = undefined;
+      drained?.resolve();
+    }
+  }
+
+  /** Resolves once every frame of the backlog was handed to the transport (or the output failed). */
+  #backlogHandedOver(): Promise<void> {
+    if (this.#backlog.length === 0) {
+      return Promise.resolve();
+    }
+    this.#backlogDrained ??= new Deferred<void>();
+    return this.#backlogDrained.promise;
   }
 
   /** Hands [frame] of [link] to the output: held with the channel while it holds frames, else scheduled. */
@@ -1870,9 +1939,12 @@ export class FrameMuxConnection implements MuxConnection {
       this.#reader.cancel().catch((e: unknown) => {
         this.#log('debug', `${this}: transport close: ${e}`);
       }),
-      this.#writer.close().catch((e: unknown) => {
-        this.#log('debug', `${this}: transport close: ${e}`);
-      }),
+      // What was written before goes first, the backlog included.
+      this.#backlogHandedOver()
+        .then(() => this.#writer.close())
+        .catch((e: unknown) => {
+          this.#log('debug', `${this}: transport close: ${e}`);
+        }),
     ]).then(() => false);
     const late = await Promise.race([closed, timedOut]);
     if (timer !== undefined) {

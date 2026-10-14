@@ -7,7 +7,7 @@ import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
-import { MuxControlType } from '../../../src/core/mux/mux-frame.ts';
+import { MuxCommand, MuxControlType, type MuxFrame } from '../../../src/core/mux/mux-frame.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { stubCredential } from '../../support/identity/stub-verifier.ts';
@@ -363,5 +363,86 @@ describe('argument checks', () => {
     await channel.done;
     expect(mux.channelWithId(2)).toBeUndefined();
     await mux.close();
+  });
+});
+
+describe('a burst of frames', () => {
+  // Beyond 1024 writes the transport has not taken, frames wait in the
+  // connection, so that Node's WritableStream queue stays short.
+  test('goes out whole and in order, and closing waits for it', async () => {
+    const [mux, raw] = rawPair();
+    const count = 20000;
+    for (let i = 0; i < count; i++) {
+      mux.open(empty);
+    }
+    void mux.ping(hexBytes('AB'));
+    const closing = mux.close();
+    const frames = await raw.rest();
+    await closing;
+    expect(frames).toHaveLength(count + 1);
+    for (let i = 0; i < count; i++) {
+      const frame = frames[i] as MuxFrame;
+      expect(frame.command).toBe(MuxCommand.open);
+      // Even ids from 2, short then long.
+      expect(frame.channelId).toBe(i < 0x7fff ? 2 + 2 * i : 0x10000 + 2 * (i - 0x7fff));
+    }
+    expect(hexString((frames[count] as MuxFrame).payload)).toBe('01 AB');
+    expect(mux.sentBytes).toBe(frames.reduce((n, f) => n + f.encode().length, 0));
+  });
+
+  test('holds DATA in the scheduler while it waits, then sends it behind', async () => {
+    const [mux, raw] = rawPair();
+    const channels = Array.from({ length: 3000 }, () => mux.open(empty));
+    const first = channels[0] as MuxChannel;
+    await first.send(hexBytes('01'));
+    expect(mux.heldOutputBytes).toBe(4);
+    const frames: MuxFrame[] = [];
+    while (frames.length < 3001) {
+      frames.push(await raw.next());
+    }
+    expect(frames.slice(0, 3000).every((f) => f.command === MuxCommand.open)).toBe(true);
+    expect(hexString((frames[3000] as MuxFrame).encode())).toBe('02 02 00 01');
+    expect(mux.heldOutputBytes).toBe(0);
+    await mux.close();
+  });
+
+  test('a transport that fails drops what waits', async () => {
+    const clock = new SteppingClock();
+    let fail: ((error: unknown) => void) | undefined;
+    const written: number[] = [];
+    const writable = new WritableStream<Uint8Array>(
+      {
+        write: (frame) => {
+          written.push(frame.length);
+          // The first write never completes until the transport fails.
+          if (written.length === 1) {
+            return new Promise<void>((_, reject) => {
+              fail = reject;
+            });
+          }
+          return undefined;
+        },
+      },
+      { highWaterMark: 4096 },
+    );
+    const readable = new ReadableStream<Uint8Array>({}, { highWaterMark: 0 });
+    const mux = new FrameMuxConnection(
+      { readable, writable },
+      { ...rawOptions, clock, isInitiator: true },
+    );
+    for (let i = 0; i < 2000; i++) {
+      mux.open(empty);
+    }
+    await settle();
+    // One write waits at the sink: the rest of the first 1024 are queued
+    // in the stream, the others in the connection.
+    expect(written).toHaveLength(1);
+    fail?.(new Error('gone'));
+    await settle();
+    expect(written).toHaveLength(1);
+    const closing = mux.close();
+    await clock.elapse(10_000);
+    await closing;
+    expectCode(await mux.done, StatusCode.connectionLost);
   });
 });

@@ -511,20 +511,9 @@ describe('rejection and limits', () => {
 });
 
 describe('channel ids', () => {
-  // Dart opens tens of thousands of channels in one go. Here they are
-  // opened in batches with a turn between: the OPENs go to the transport's
-  // WritableStream, whose queue Node empties in quadratic time once it
-  // holds more than about 16K writes. Nothing reads the ids in between.
-  async function openMany(mux: FrameMuxConnection, count: number): Promise<MuxChannel[]> {
-    const channels: MuxChannel[] = [];
-    while (channels.length < count) {
-      const batch = Math.min(4096, count - channels.length);
-      for (let i = 0; i < batch; i++) {
-        channels.push(mux.open(empty));
-      }
-      await settle();
-    }
-    return channels;
+  /** Opens [count] channels on [mux] in one go. */
+  function openMany(mux: FrameMuxConnection, count: number): MuxChannel[] {
+    return Array.from({ length: count }, () => mux.open(empty));
   }
 
   test('parity and increment', async () => {
@@ -542,7 +531,7 @@ describe('channel ids', () => {
     const remote = takeIncoming(b);
     // Even ids 2 to 0xFFFE.
     const count = Math.floor(0xfffe / 2);
-    const channels = await openMany(a, count);
+    const channels = openMany(a, count);
     expect(channels[0]?.id).toBe(2);
     expect(channels.at(-1)?.id).toBe(0xfffe);
     expectThrowsStatus(() => a.open(empty), StatusCode.resourceExhausted);
@@ -578,7 +567,7 @@ describe('channel ids', () => {
     const atB = takeIncoming(b);
     const atA = takeIncoming(a);
     // The long range is only used once every short id is in use.
-    await openMany(a, 0x7fff);
+    openMany(a, 0x7fff);
     a.nextChannelIdForTesting = 0xfffefffffffe;
     expect(a.open(empty).id).toBe(0xfffefffffffe);
     expect(a.open(empty).id).toBe(0xffff00000002);
@@ -592,7 +581,7 @@ describe('channel ids', () => {
     ]);
 
     // Odd ids 3 to 0xFFFD, skipping the reserved 0xFFFF.
-    await openMany(b, 0x7ffe);
+    openMany(b, 0x7ffe);
     b.nextChannelIdForTesting = 0xfffffffffffd;
     expect(b.open(empty).id).toBe(0xfffffffffffd);
     expect(b.open(empty).id).toBe(0x10001);
@@ -604,7 +593,7 @@ describe('channel ids', () => {
 
   test('long ids use the long form on the wire', async () => {
     const [mux, raw] = rawPair();
-    await openMany(mux, 0x7fff);
+    openMany(mux, 0x7fff);
     for (let i = 0; i < 0x7fff; i++) {
       await raw.frames.nextBytes();
     }
@@ -616,7 +605,7 @@ describe('channel ids', () => {
   test('ids wrap within the short range first', async () => {
     const [a, b] = muxPair({ acceptor: { ...quiet, maxChannels: 0 } });
     takeIncoming(b);
-    const channels = await openMany(a, 0x7fff);
+    const channels = openMany(a, 0x7fff);
     expect(channels[0]?.id).toBe(2);
     expect(channels.at(-1)?.id).toBe(0xfffe);
     // Every short id of our parity is in use: the next one is long.
