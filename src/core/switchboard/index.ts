@@ -8,6 +8,14 @@ export { ChannelPolicies } from './channel-policy.ts';
 export * from './contract.ts';
 export { IncomingChannel } from './incoming-channel.ts';
 export {
+  LeaveReport,
+  MeshNode,
+  type MeshNodeOptions,
+  type NamingClientForOptions,
+  namingClientFor,
+  type PublishOptions,
+} from './mesh-node.ts';
+export {
   Peer,
   PeerEvent,
   PeerEventType,
