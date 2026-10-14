@@ -13,6 +13,7 @@ import {
   type Logger,
   type LogLevel,
   nativeQuic,
+  QuicBindingConnection,
   QuicIdentityRules,
   Switchboard,
   selfSignedCertificate,
@@ -20,6 +21,7 @@ import {
 import { Client, clientOps } from './client.ts';
 import { type PeerConfig, peerConfig } from './config.ts';
 import { PeerContext } from './context.ts';
+import { channelPolicy, nodeIdentity } from './identity.ts';
 import { decodeKind, encodeKind, oracleKinds } from './oracle.ts';
 import {
   ArgumentProblem,
@@ -126,7 +128,7 @@ class Peer {
   readonly #ctx: PeerContext;
   readonly #watchdogSeconds: number;
   readonly #client: Client;
-  readonly #node: Switchboard;
+  #node!: Switchboard;
   #ready: Json = {};
   #stopping = false;
 
@@ -134,12 +136,6 @@ class Peer {
     this.#ctx = ctx;
     this.#watchdogSeconds = watchdogSeconds;
     this.#client = new Client(ctx);
-    this.#node = new Switchboard({
-      localConnections: false,
-      muxOptions: ctx.config.mux,
-      talkOptions: ctx.config.talk,
-      ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
-    });
   }
 
   async run(): Promise<void> {
@@ -148,6 +144,37 @@ class Peer {
       process.exit(3);
     }, this.#watchdogSeconds * 1000);
     watchdog.unref();
+    const ctx = this.#ctx;
+    const id = ctx.config.identity;
+    const identity = await nodeIdentity(id);
+    const node = new Switchboard({
+      localConnections: false,
+      muxOptions: ctx.config.mux,
+      talkOptions: ctx.config.talk,
+      credential: identity.credential,
+      holderKey: identity.holderKey,
+      verifier: identity.verifier,
+      identifyOutgoing: id.identifyOutgoing,
+      identityTimeout: id.identityTimeout,
+      ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
+    });
+    this.#node = node;
+    this.#client.identify(identity);
+    // Accepted connections are reported once their peer identified; with
+    // identifyInReturn the node identifies in return on those whose peer
+    // asked (the QUIC listener does so itself).
+    void (async () => {
+      for await (const c of node.connections) {
+        void c.peerIdentified.then(() => ctx.trackConnection(c, node));
+        if (
+          id.identifyInReturn &&
+          identity.credential !== undefined &&
+          !(c instanceof QuicBindingConnection)
+        ) {
+          void c.identityRequested.then(() => node.identifyOn(c).catch(() => {}));
+        }
+      }
+    })();
     for (const s of this.#ctx.config.services) {
       registerService(this.#node, s, this.#ctx, this.#client);
     }
@@ -179,22 +206,29 @@ class Peer {
     const loopback = '127.0.0.1';
     const endpoints: Json = {};
     const own = this.#ctx.endpoints;
+    const policy = channelPolicy(config.identity);
     if (config.listen.includes('tcp')) {
-      endpoints['tcp'] = await node.listenTcp(loopback, 0);
+      endpoints['tcp'] = await node.listenTcp(loopback, 0, { policy });
       own.push(endpoints['tcp'] as string);
     }
     if (config.listen.includes('ws')) {
-      endpoints['ws'] = await node.listenWebSocket(loopback, 0, { path: config.path });
+      endpoints['ws'] = await node.listenWebSocket(loopback, 0, { path: config.path, policy });
       own.push(endpoints['ws'] as string);
     }
     if (config.listen.includes('quic') || config.listen.includes('webtransport')) {
       // One self-signed certificate for both, as the Dart peer has; nobody
       // is asked to identify (QuicIdentityRules.none, as the Dart peer).
       const certificate = selfSignedCertificate(loopback);
+      const rules = config.identity.quicRules;
+      if (rules !== 'none' && rules !== 'listener') {
+        throw new ArgumentProblem(`unknown QUIC identity rules ${rules}`);
+      }
       const options = {
         certificate,
         provider: nativeQuic(),
-        identityRules: QuicIdentityRules.none,
+        policy,
+        identityRules: rules === 'none' ? QuicIdentityRules.none : QuicIdentityRules.listener,
+        identifyInReturn: config.identity.identifyInReturn,
       };
       if (config.listen.includes('quic')) {
         endpoints['quic'] = await node.listenQuic(loopback, 0, options);

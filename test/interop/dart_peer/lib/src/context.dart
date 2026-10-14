@@ -11,9 +11,10 @@ library;
 import 'dart:async';
 import 'dart:io';
 
-import 'package:switchboard/core.dart';
+import 'package:switchboard/switchboard.dart';
 
 import 'config.dart';
+import 'identity.dart';
 import 'protocol.dart';
 
 /// Shared state of one peer process.
@@ -33,13 +34,41 @@ class PeerContext {
   /// The endpoints this peer listens on, in the order of `listen`.
   final List<String> endpoints = [];
 
-  /// Registers [connection] and reports its GOAWAY and its end as events.
-  String trackConnection(MuxConnection connection) {
+  final Map<MuxConnection, Switchboard> _owners = Map.identity();
+
+  /// The node [connection] belongs to, if known.
+  Switchboard? ownerOf(MuxConnection connection) => _owners[connection];
+
+  /// Registers [connection] (of [node], when known) and reports its
+  /// identification, its GOAWAY and its end as events.
+  String trackConnection(MuxConnection connection, [Switchboard? node]) {
+    if (node != null) {
+      _owners[connection] = node;
+    }
     final existing = handles.nameOf(connection);
     if (existing != null) {
       return existing;
     }
     final handle = handles.add('c', connection);
+    // Every valid IDENT, the first and those replacing it.
+    void report(PeerIdentity identity) => out.event('connection.identified', {
+      'connection': handle,
+      ...identityJson(identity),
+    });
+    unawaited(
+      connection.peerIdentified.then((first) async {
+        report(first);
+        var last = first;
+        while (connection.isOpen) {
+          await connection.identityChanged;
+          final now = connection.peerIdentity;
+          if (now != null && !identical(now, last)) {
+            report(now);
+            last = now;
+          }
+        }
+      }),
+    );
     unawaited(
       connection.peerGoAwayStatus.then(
         (s) => out.event('connection.goAway', {

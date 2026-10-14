@@ -31,7 +31,7 @@ void registerService(
   final type = Name(spec.type);
   final ChannelHandler handler = switch (spec.behaviour) {
     'echo' => (incoming) => _serveEcho(incoming, spec, ctx),
-    'raw' => (incoming) => _serveRaw(incoming, spec, ctx),
+    'raw' => (incoming) => _serveRaw(incoming, spec, ctx, node),
     // Accepts the channel and never reads it: its window fills up.
     'sink' => (incoming) {},
     'forward' => (incoming) => _serveForward(incoming, spec, ctx, client),
@@ -85,8 +85,13 @@ void _serveForward(
 
 /// `raw`: the channel becomes a handle; its subframes and its end are
 /// events, and `channel.send` and `channel.close` drive it.
-void _serveRaw(IncomingChannel incoming, ServiceSpec spec, PeerContext ctx) {
-  final connection = ctx.trackConnection(incoming.connection);
+void _serveRaw(
+  IncomingChannel incoming,
+  ServiceSpec spec,
+  PeerContext ctx,
+  Switchboard node,
+) {
+  final connection = ctx.trackConnection(incoming.connection, node);
   final handle = ctx.trackChannel(incoming.channel, listen: false);
   ctx.out.event('channel.incoming', {
     'channel': handle,
@@ -94,6 +99,7 @@ void _serveRaw(IncomingChannel incoming, ServiceSpec spec, PeerContext ctx) {
     'service': spec.type,
     'id': incoming.channel.id,
     ..._addressJson(incoming.address),
+    'identity': incoming.peerIdentity?.identity,
   });
   incoming.channel.stream.listen(
     (subframe) => ctx.out.event('channel.data', {

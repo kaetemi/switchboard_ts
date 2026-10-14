@@ -18,6 +18,7 @@ import 'package:switchboard_quic/switchboard_quic.dart';
 import 'package:switchboard_quic/switchboard_quic_native.dart';
 
 import 'context.dart';
+import 'identity.dart';
 import 'protocol.dart';
 import 'services.dart' show pattern;
 
@@ -47,13 +48,26 @@ class Client {
     'connection.ping',
     'connection.goAway',
     'connection.close',
+    'connection.identify',
     'request',
   ];
+
+  NodeIdentity? _identity;
+
+  /// Sets the identity the client node is made with; before its first use.
+  Future<void> identify(NodeIdentity identity) async {
+    _identity = identity;
+  }
 
   Switchboard get _client => _node ??= Switchboard(
     localConnections: false,
     muxOptions: ctx.config.mux,
     talkOptions: ctx.config.talk,
+    credential: _identity?.credential,
+    holderKey: _identity?.holderKey,
+    verifier: _identity?.verifier,
+    identifyOutgoing: ctx.config.identity.identifyOutgoing,
+    identityTimeout: ctx.config.identity.identityTimeout,
     bindings: [
       QuicSwitchboardBinding(
         NativeQuicProvider(),
@@ -67,10 +81,22 @@ class Client {
     final h = ctx.handles;
     switch (op) {
       case 'connect':
+        final intent = cmd['intent'];
         final c = await _client.dial(
           Uri.parse(requiredString(cmd, 'endpoint')),
+          intent: intent == null ? null : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
         );
-        return {'connection': ctx.trackConnection(c)};
+        return {'connection': ctx.trackConnection(c, _client)};
+      case 'connection.identify':
+        final c = h.get<MuxConnection>(cmd['connection'], 'connection');
+        final intent = cmd['intent'];
+        await (ctx.ownerOf(c) ?? _client).identifyOn(
+          c,
+          intent: intent == null ? null : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
+        );
+        return null;
       case 'open':
         final ch = h
             .get<MuxConnection>(cmd['connection'], 'connection')
@@ -243,7 +269,7 @@ class Client {
     String? connection = stringArg(cmd, 'connection');
     if (connection == null) {
       final c = await _client.dial(Uri.parse(requiredString(cmd, 'endpoint')));
-      connection = ctx.trackConnection(c);
+      connection = ctx.trackConnection(c, _client);
     }
     final ch = h
         .get<MuxConnection>(connection, 'connection')

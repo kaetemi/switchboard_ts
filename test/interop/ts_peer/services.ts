@@ -39,7 +39,7 @@ export function registerService(
 ): void {
   const handlers: Record<ServiceSpec['behaviour'], ChannelHandler> = {
     echo: (incoming) => serveEcho(incoming, spec, ctx),
-    raw: (incoming) => serveRaw(incoming, spec, ctx),
+    raw: (incoming) => serveRaw(incoming, spec, ctx, node),
     // Accepts the channel and never reads it: its window fills up.
     sink: () => {},
     forward: (incoming) => serveForward(incoming, spec, ctx, client),
@@ -102,8 +102,13 @@ function serveForward(
 }
 
 /** `raw`: the channel becomes a handle; its subframes and its end are events. */
-function serveRaw(incoming: IncomingChannel, spec: ServiceSpec, ctx: PeerContext): void {
-  const connection = ctx.trackConnection(incoming.connection);
+function serveRaw(
+  incoming: IncomingChannel,
+  spec: ServiceSpec,
+  ctx: PeerContext,
+  node: Switchboard,
+): void {
+  const connection = ctx.trackConnection(incoming.connection, node);
   const handle = ctx.trackChannel(incoming.channel, false);
   ctx.out.event('channel.incoming', {
     channel: handle,
@@ -111,6 +116,7 @@ function serveRaw(incoming: IncomingChannel, spec: ServiceSpec, ctx: PeerContext
     service: spec.type,
     id: incoming.channel.id,
     ...addressJson(incoming.address),
+    identity: incoming.peerIdentity?.identity ?? null,
   });
   ctx.reportData(incoming.channel, handle);
 }

@@ -8,6 +8,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // as dart_peer/lib/src/config.dart reads it: absent keys keep the defaults.
 
 import type { MuxOptions, TalkOptions } from '../../../src/node/index.ts';
+import { type IdentityConfig, identityConfig } from './identity.ts';
 import {
   ArgumentProblem,
   arrayArg,
@@ -62,6 +63,8 @@ export interface PeerConfig {
   readonly talk: Partial<TalkOptions>;
   /** The services the node registers. */
   readonly services: readonly ServiceSpec[];
+  /** What the peer presents and verifies. */
+  readonly identity: IdentityConfig;
 }
 
 const noTarget: ForwardTarget = { endpoint: undefined, type: undefined, instance: 0 };
@@ -90,6 +93,7 @@ export function peerConfig(json: Json): PeerConfig {
     path: stringArg(json, 'path') ?? '/sb',
     mux: muxConfig(objectArg(json, 'mux') ?? {}),
     talk: talkConfig(objectArg(json, 'talk') ?? {}),
+    identity: identityConfig(objectArg(json, 'identity')),
     services:
       services === undefined
         ? defaultServices

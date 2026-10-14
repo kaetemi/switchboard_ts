@@ -54,6 +54,40 @@ export interface PeerConfig {
   talk?: TalkConfig;
   /** Services to register; default `echo`, `raw` and `sink` at instance 1. */
   services?: readonly ServiceConfig[];
+  /** What the peer presents and verifies; default nothing. */
+  identity?: IdentityConfig;
+}
+
+/** A credential a peer presents, issued at its start by one of the shared test authorities. */
+export interface CredentialConfig {
+  identity: string;
+  /** `ed25519` (default, `auth1`), `hmac` (`mesh1`, bearer only) or `rogue` (untrusted). */
+  authority?: 'ed25519' | 'hmac' | 'rogue';
+  /** Whether it names a holder key; default true but for `hmac`. */
+  holder?: boolean;
+  /** Default `node`. */
+  kind?: 'node' | 'client' | 'device';
+  /** Default open, register, watch and claim on `*`. */
+  scopes?: readonly { right: string; pattern: string }[];
+  /** Flip the signature's last byte. */
+  forge?: boolean;
+}
+
+/** The `identity` configuration (README, "Identity"). */
+export interface IdentityConfig {
+  /** Verify IDENTs with the shared authorities. */
+  verify?: boolean;
+  credential?: CredentialConfig;
+  /** Identify on dialled connections; default true. */
+  identifyOutgoing?: boolean;
+  /** Identify in return on accepted connections whose peer asked. */
+  identifyInReturn?: boolean;
+  /** How long a channel waits for its connection's IDENT. */
+  identityTimeoutMs?: number;
+  /** The listeners' policy. */
+  policy?: 'scoped' | 'requireIdentity' | 'denyReserved';
+  /** The QUIC listeners' identification rules; default `none`. */
+  quicRules?: 'none' | 'listener';
 }
 
 /** Mux options by the Dart names; durations in milliseconds. */

@@ -9,6 +9,7 @@ library;
 
 import 'package:switchboard/core.dart';
 
+import 'identity.dart';
 import 'protocol.dart';
 
 /// The transports a peer can listen on.
@@ -58,7 +59,8 @@ class PeerConfig {
     this.mux = const MuxOptions(),
     this.talk = const TalkOptions(),
     this.services = defaultServices,
-  });
+    IdentityConfig? identity,
+  }) : identity = identity ?? IdentityConfig.none();
 
   /// `echo`, `raw` and `sink` at instance 1.
   static const List<ServiceSpec> defaultServices = [
@@ -84,6 +86,9 @@ class PeerConfig {
       path: stringArg(json, 'path') ?? '/sb',
       mux: _mux(objectArg(json, 'mux') ?? const {}),
       talk: _talk(objectArg(json, 'talk') ?? const {}),
+      identity: objectArg(json, 'identity') == null
+          ? null
+          : IdentityConfig.fromJson(objectArg(json, 'identity')!),
       services: services == null
           ? defaultServices
           : [
@@ -107,6 +112,9 @@ class PeerConfig {
 
   /// The services the node registers.
   final List<ServiceSpec> services;
+
+  /// What the peer presents and verifies.
+  final IdentityConfig identity;
 
   static ServiceSpec _service(Map<String, Object?> s) {
     final target = objectArg(s, 'target') ?? const {};

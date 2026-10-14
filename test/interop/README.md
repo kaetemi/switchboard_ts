@@ -101,7 +101,25 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
 | `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
 
+| `identity` | none | what the peer presents and verifies (below) |
+
 The options apply to the listeners' connections and to the connections the client commands make.
+
+### Identity
+
+Both peers derive the same test authorities, so a credential one issues verifies at the other: an Ed25519 authority with key id `auth1` and seed bytes `3 × i`, an HMAC key `mesh1` of bytes `0 … 31`, and a rogue Ed25519 authority claiming `auth1` with seed bytes `5 × i + 1` that nobody trusts. A holder key's seed is the SHA-256 of `holder:<identity>`. The `identity` object:
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `verify` | false | verify IDENTs with `auth1` and `mesh1` (the node's `verifier`) |
+| `credential` | none | `{identity, authority, holder, kind, scopes, forge}`: issued at start by `authority` (`ed25519`, `hmac` or `rogue`; default `ed25519`), naming a holder key unless `holder` is false (always false for `hmac`), of `kind` (`node`, `client`, `device`; default `node`), with `scopes` (`[{right, pattern}]`, rights by name; default open, register, watch and claim on `*`); `forge` flips the signature's last byte. Both the listening node and the client node present it |
+| `identifyOutgoing` | true | identify on every connection the client dials |
+| `identifyInReturn` | false | identify in return on an accepted connection whose peer sent NONCE first (the QUIC listener's `identifyInReturn`) |
+| `identityTimeoutMs` | 10000 | how long a channel waits for its connection's IDENT |
+| `policy` | none | the listeners' policy: `scoped`, `requireIdentity` or `denyReserved` |
+| `quicRules` | `none` | the QUIC listeners' identification rules: `none` or `listener` (`QuicIdentityRules.listener`: exporter-bound IDENTs only) |
+
+`connect` takes `intent` (hex) and `receiver`, and `connection.identify {connection, intent, receiver}` identifies again on a live connection (the server's own, for a connection a service reported). Every valid IDENT of a connection, the first and those replacing it, is reported as `connection.identified {connection, identity, kind, provedPossession, intent, receiver}`; the listening side reports a connection once its peer identified. `channel.incoming` carries the peer's `identity` (null without one), and `WHOAMI` answers it.
 
 ### Services
 
@@ -149,7 +167,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `decode` | `kind`, `hex` | the reference decoder's fields and `reencoded` (see the oracle) |
 | `decodeMany` | `kind`, `hexes` | `[{ok: true, value} \| {ok: false, error}]`, one per input |
 | `encode` | `kind`, `fields` | hex |
-| `connect` | `endpoint` | `{connection}`: a new connection, not pooled |
+| `connect` | `endpoint`, `intent`, `receiver` | `{connection}`: a new connection, not pooled, identified with `intent` and naming `receiver` when given |
 | `open` | `connection`, `address` or `openHex` | `{channel, id}`: a raw channel, its data and end reported as events |
 | `talk.open` | `connection` or `endpoint`, `address` or `openHex` | `{talk, channel, connection}`; messages the far side sends on it are `talk.message {talk, requestId, procedure, bulk, payload}` |
 | `talk.request` | `talk`, `procedure`, payload, `timeoutMs`, `digest` | the final response: `{procedure, bulk, payload}`, or with `digest` `{procedure, bulk, size, sha256}`; a status error for an abort. Each `EXTEND` of the responder is reported as `talk.extend {talk, requestId, deadlineMs, renewMs}` (null for an absent field) |
@@ -163,6 +181,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connection.ping` | `connection`, `payload` | `{rttMs}` |
 | `connection.goAway` | `connection`, `code` (default 33), `reason` | `null` |
 | `connection.close` | `connection` | `null` |
+| `connection.identify` | `connection`, `intent`, `receiver` | `null`: identifies with the peer's credential |
 | `request` | `endpoint`, `service`, `instance`, `procedure`, payload, `timeoutMs`, `digest` | one request on a connection of its own, closed afterwards |
 
 An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes); `talk.request`, `talk.stream` and `talk.send` also take `bulkPattern: {length, chunk, declared}`, an empty payload with the `BIG` pattern of `length` bytes as a bulk source in pieces of `chunk` bytes (default 1000), its length declared unless `declared` is false. Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.

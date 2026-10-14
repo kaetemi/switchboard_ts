@@ -12,10 +12,13 @@ import type {
   Logger,
   MuxChannel,
   MuxConnection,
+  PeerIdentity,
+  Switchboard,
   TalkChannel,
   TalkStream,
 } from '../../../src/node/index.ts';
 import type { PeerConfig } from './config.ts';
+import { identityJson } from './identity.ts';
 import { errorJson, Handles, hex, type Output, statusJson } from './protocol.ts';
 
 /** What the handles name, by prefix. */
@@ -66,13 +69,41 @@ export class PeerContext {
     this.logger = logger;
   }
 
-  /** Registers [connection] and reports its GOAWAY and its end as events. */
-  trackConnection(connection: MuxConnection): string {
+  readonly #owners = new WeakMap<MuxConnection, Switchboard>();
+
+  /** The node [connection] belongs to, if known. */
+  ownerOf(connection: MuxConnection): Switchboard | undefined {
+    return this.#owners.get(connection);
+  }
+
+  /**
+   * Registers [connection] (of [node], when known) and reports its
+   * identification, its GOAWAY and its end as events.
+   */
+  trackConnection(connection: MuxConnection, node?: Switchboard): string {
+    if (node !== undefined) {
+      this.#owners.set(connection, node);
+    }
     const existing = this.handles.nameOf(connection);
     if (existing !== undefined) {
       return existing;
     }
     const handle = this.handles.add('c', connection);
+    // Every valid IDENT, the first and those replacing it.
+    const report = (identity: PeerIdentity): void =>
+      this.out.event('connection.identified', { connection: handle, ...identityJson(identity) });
+    void connection.peerIdentified.then(async (first) => {
+      report(first);
+      let last = first;
+      while (connection.isOpen) {
+        await connection.identityChanged;
+        const now = connection.peerIdentity;
+        if (now !== undefined && now !== last) {
+          report(now);
+          last = now;
+        }
+      }
+    });
     void connection.peerGoAwayStatus.then((s) =>
       this.out.event('connection.goAway', { connection: handle, ...statusJson(s) }),
     );

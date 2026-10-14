@@ -20,6 +20,7 @@ import 'package:switchboard_quic/switchboard_quic_native.dart';
 import 'client.dart';
 import 'config.dart';
 import 'context.dart';
+import 'identity.dart';
 import 'oracle.dart';
 import 'protocol.dart';
 import 'services.dart';
@@ -95,11 +96,34 @@ class _Peer {
       stderr.writeln('dart_peer: watchdog after $watchdog, exiting');
       exit(3);
     });
+    final id = ctx.config.identity;
+    final identity = await NodeIdentity.of(id);
     node = Switchboard(
       localConnections: false,
       muxOptions: ctx.config.mux,
       talkOptions: ctx.config.talk,
+      credential: identity.credential,
+      holderKey: identity.holderKey,
+      verifier: identity.verifier,
+      identifyOutgoing: id.identifyOutgoing,
+      identityTimeout: id.identityTimeout,
     );
+    await client.identify(identity);
+    // Accepted connections are reported once their peer identified; with
+    // identifyInReturn the node identifies in return on those whose peer
+    // asked (the QUIC listener does so itself).
+    node.connections.listen((c) {
+      unawaited(c.peerIdentified.then((_) => ctx.trackConnection(c, node)));
+      if (id.identifyInReturn &&
+          identity.credential != null &&
+          c is! QuicBindingConnection) {
+        unawaited(
+          c.identityRequested.then(
+            (_) => node.identifyOn(c).catchError((Object _) {}),
+          ),
+        );
+      }
+    });
     for (final s in ctx.config.services) {
       registerService(node, s, ctx, client);
     }
@@ -133,13 +157,14 @@ class _Peer {
     final listen = ctx.config.listen;
     final path = ctx.config.path;
     final endpoints = <String, Object?>{};
+    final policy = ctx.config.identity.channelPolicy;
     if (listen.contains('tcp')) {
-      endpoints['tcp'] = '${await node.listenTcp(loopback, 0)}';
+      endpoints['tcp'] = '${await node.listenTcp(loopback, 0, policy: policy)}';
       ctx.endpoints.add(endpoints['tcp']! as String);
     }
     if (listen.contains('ws')) {
       endpoints['ws'] =
-          '${await node.listenWebSocket(loopback, 0, path: path)}';
+          '${await node.listenWebSocket(loopback, 0, path: path, policy: policy)}';
       ctx.endpoints.add(endpoints['ws']! as String);
     }
     if (listen.contains('quic') || listen.contains('webtransport')) {
@@ -155,7 +180,13 @@ class _Peer {
         final l = await QuicSwitchboardListener.start(
           node,
           raw,
-          identityRules: QuicIdentityRules.none,
+          policy: policy,
+          identityRules: switch (ctx.config.identity.quicRules) {
+            'none' => QuicIdentityRules.none,
+            'listener' => QuicIdentityRules.listener,
+            final r => throw ArgumentError('unknown QUIC identity rules $r'),
+          },
+          identifyInReturn: ctx.config.identity.identifyInReturn,
         );
         _quicListeners.add(l);
         ctx.endpoints.add('${l.endpoint}');

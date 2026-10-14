@@ -23,6 +23,7 @@ import {
   utf8Encode,
 } from '../../../src/node/index.ts';
 import type { PeerContext } from './context.ts';
+import type { NodeIdentity } from './identity.ts';
 import {
   ArgumentProblem,
   boolArg,
@@ -54,6 +55,7 @@ export const clientOps = [
   'connection.ping',
   'connection.goAway',
   'connection.close',
+  'connection.identify',
   'request',
 ] as const;
 
@@ -66,13 +68,26 @@ export class Client {
     this.#ctx = ctx;
   }
 
+  #identity: NodeIdentity | undefined;
+
+  /** Sets the identity the client node is made with; before its first use. */
+  identify(identity: NodeIdentity): void {
+    this.#identity = identity;
+  }
+
   get #client(): Switchboard {
     if (this.#node === undefined) {
       const ctx = this.#ctx;
+      const identity = this.#identity;
       this.#node = new Switchboard({
         localConnections: false,
         muxOptions: ctx.config.mux,
         talkOptions: ctx.config.talk,
+        credential: identity?.credential,
+        holderKey: identity?.holderKey,
+        verifier: identity?.verifier,
+        identifyOutgoing: ctx.config.identity.identifyOutgoing,
+        identityTimeout: ctx.config.identity.identityTimeout,
         // Dials quic:// and https:// (WebTransport) without verifying the
         // listener's self-signed certificate, as the Dart peer does.
         ...(nativeQuicAvailability().available
@@ -89,8 +104,21 @@ export class Client {
     const h = this.#ctx.handles;
     switch (op) {
       case 'connect': {
-        const c = await this.#client.dial(requiredString(cmd, 'endpoint'));
-        return { connection: this.#ctx.trackConnection(c) };
+        const intent = cmd['intent'];
+        const c = await this.#client.dial(requiredString(cmd, 'endpoint'), {
+          intent: intent === undefined || intent === null ? undefined : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
+        });
+        return { connection: this.#ctx.trackConnection(c, this.#client) };
+      }
+      case 'connection.identify': {
+        const c = h.get(cmd['connection'], 'c', 'connection');
+        const intent = cmd['intent'];
+        await (this.#ctx.ownerOf(c) ?? this.#client).identifyOn(c, {
+          intent: intent === undefined || intent === null ? undefined : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
+        });
+        return null;
       }
       case 'open': {
         const ch = h.get(cmd['connection'], 'c', 'connection').open(openPayload(cmd));
@@ -181,7 +209,7 @@ export class Client {
     let connection = stringArg(cmd, 'connection');
     if (connection === undefined) {
       const c = await this.#client.dial(requiredString(cmd, 'endpoint'));
-      connection = ctx.trackConnection(c);
+      connection = ctx.trackConnection(c, this.#client);
     }
     const ch = ctx.handles.get(connection, 'c', 'connection').open(openPayload(cmd));
     const channel = ctx.trackChannel(ch, false);
