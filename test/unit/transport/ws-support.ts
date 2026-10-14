@@ -30,6 +30,14 @@ export const opClose = 0x8;
 export const opPing = 0x9;
 export const opPong = 0xa;
 
+/**
+ * Whether this runs on Bun, whose `ws` is its own stand-in for the
+ * package: it drops a connection that breaks the protocol (close 1006, no
+ * close frame, no error event), does not enforce `maxPayload`, and assembles
+ * a message before anyone sees it. Its tests say where they expect that.
+ */
+export const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
+
 /** The sample nonce of RFC 6455 section 1.3 and its accept value. */
 export const sampleKey = 'dGhlIHNhbXBsZSBub25jZQ==';
 export const sampleAccept = 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=';

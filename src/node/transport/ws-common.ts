@@ -79,6 +79,9 @@ export function wsFailure(error: unknown): unknown {
   return new ProtocolError(message, { cause: error });
 }
 
+/** How often a wait for the output to drain checks `bufferedAmount`, in milliseconds. */
+const pollInterval = 10;
+
 /** Options of {@link wsConnection}. */
 export interface WsConnectionOptions {
   /** Told of every sign of life from the peer: a message, a ping or a pong. */
@@ -96,6 +99,10 @@ export function wsConnection(
 ): WebSocketConnection {
   const onActivity = options.onActivity;
   const waiters: { readonly bytes: number; readonly resolve: () => void }[] = [];
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  // Checked on every send callback, and polled while someone waits: a send
+  // callback does not always mean the bytes left (Bun's stand-in for `ws`
+  // calls it at once).
   const check = (): void => {
     const buffered = socket.bufferedAmount;
     const gone = socket.readyState === WebSocketReadyState.closed;
@@ -106,8 +113,14 @@ export function wsConnection(
         waiter.resolve();
       }
     }
+    if (waiters.length > 0 && poll === undefined) {
+      poll = setTimeout(() => {
+        poll = undefined;
+        check();
+      }, pollInterval);
+    }
   };
-  return {
+  const connection: WebSocketConnection = {
     get readyState() {
       return socket.readyState;
     },
@@ -149,20 +162,25 @@ export function wsConnection(
     close(code, reason) {
       socket.close(code, reason);
     },
-    terminate() {
-      socket.terminate();
-    },
-    pause() {
-      socket.pause();
-    },
-    resume() {
-      socket.resume();
-    },
     whenBufferedAtMost(bytes) {
       if (socket.bufferedAmount <= bytes || socket.readyState === WebSocketReadyState.closed) {
         return Promise.resolve();
       }
-      return new Promise<void>((resolve) => waiters.push({ bytes, resolve }));
+      return new Promise<void>((resolve) => {
+        waiters.push({ bytes, resolve });
+        check();
+      });
     },
   };
+  // What the socket can do: Bun's stand-in for `ws`, for one, cannot pause
+  // the server's sockets.
+  const optional = socket as Partial<Pick<WsWebSocket, 'terminate' | 'pause' | 'resume'>>;
+  if (typeof optional.terminate === 'function') {
+    connection.terminate = () => socket.terminate();
+  }
+  if (typeof optional.pause === 'function' && typeof optional.resume === 'function') {
+    connection.pause = () => socket.pause();
+    connection.resume = () => socket.resume();
+  }
+  return connection;
 }

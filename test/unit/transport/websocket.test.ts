@@ -31,6 +31,7 @@ import {
   closeCodeOfWs,
   eager,
   Harness,
+  isBun,
   onCleanup,
   pattern,
   plainWsServer,
@@ -136,8 +137,9 @@ for (const [name, connect] of clients) {
       expect(await queue.hasNext()).toBe(false);
       // The global WebSocket checks the assembled message and closes with
       // 1000, as Dart's client does; `ws` refuses it before assembly and
-      // closes with 1009 itself.
-      expect(await code).toBe(name === 'ws' ? 1009 : WebSocketTransport.normalClosure);
+      // closes with 1009 itself (Bun's stand-in for `ws` does not, and the
+      // transport's own check closes with 1000).
+      expect(await code).toBe(name === 'ws' && !isBun ? 1009 : WebSocketTransport.normalClosure);
     });
 
     test('the default limit is 1 MiB', async () => {
@@ -240,7 +242,9 @@ describe('the WebSocket capabilities', () => {
     expect(client.isInputThrottled).toBeUndefined();
   });
 
-  test('over ws: output readiness and throttling', async () => {
+  // Bun's stand-in for `ws` cannot pause a server's socket, which is how
+  // this case holds the output back.
+  test.skipIf(isBun)('over ws: output readiness and throttling', async () => {
     const server = await plainWsServer();
     const client = await connectWsWebSocket(server.url, { outputHighWaterMark: 256 * 1024 });
     onCleanup(() => client.abort());
@@ -249,7 +253,7 @@ describe('the WebSocket capabilities', () => {
     expect(client.isInputThrottled).toBe(false);
     await client.outputReady;
     // The server stops reading: the output piles up.
-    (ws as unknown as { _socket: Socket })._socket.pause();
+    ws.pause();
     const writer = client.writable.getWriter();
     for (let i = 0; i < 64; i++) void writer.write(pattern(256 * 1024, i));
     await writer.ready;
@@ -259,7 +263,7 @@ describe('the WebSocket capabilities', () => {
     expect(client.bufferedOutputBytes).toBeGreaterThan(256 * 1024);
     const ready = client.outputReady;
     const received = wsMessages(ws);
-    (ws as unknown as { _socket: Socket })._socket.resume();
+    ws.resume();
     await ready;
     for (let i = 0; i < 64; i++) await received.next();
     expect(client.isInputThrottled).toBe(false);
@@ -378,7 +382,7 @@ describe('IOWebSocketTransport (acceptWebSocket and the ws client)', () => {
     const ws = new WebSocket(h.uri, ['chat']);
     const failed = await new Promise<boolean>((resolve) => {
       ws.once('open', () => resolve(false));
-      ws.once('error', () => resolve(true));
+      ws.on('error', () => resolve(true));
     });
     expect(failed).toBe(true);
     await new Promise((resolve) => setTimeout(resolve, 10));
