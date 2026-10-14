@@ -20,7 +20,7 @@ import type { MessageInfo, TalkItemEvent } from '../protocol.ts';
 import { connect, nextSubframe, rawTalk } from './support.ts';
 
 /** A request frame: flags 0x03, the procedure, the request id, the payload. */
-function request(procedure: string, id: number, payload = new Uint8Array(0)): string {
+function request(procedure: string, id: number, payload: Uint8Array = new Uint8Array(0)): string {
   return hexString(concatBytes([0x03], name8(procedure), le(id, 3), payload));
 }
 

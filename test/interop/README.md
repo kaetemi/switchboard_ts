@@ -77,7 +77,7 @@ Version 1. The peer is started as `<peer> [--config <json>] [--log <level>] [--w
   {"protocol": 1, "implementation": "dart", "tcp": "tcp://127.0.0.1:41234",
    "ws": "ws://127.0.0.1:41235/sb", "quic": "quic://127.0.0.1:41236",
    "webtransport": "https://127.0.0.1:41237/sb", "certificateSha256": "<64 hex digits>",
-   "pid": 1234, "oracle": ["name", "status", "address", "mux", "control", "talk", "stream"]}
+   "pid": 1234, "oracle": ["name", "status", "address", "mux", "control", "talk", "stream", ...]}
   ```
 
   Only the transports the peer listens on appear; the QUIC listeners share one self-signed ECDSA P-256 certificate whose SHA-256 is `certificateSha256` (for WebTransport's `serverCertificateHashes`).
@@ -180,8 +180,17 @@ Connections report `connection.goAway {connection, code, reason}` when the far s
 | `control` | `type`, `typeName`, `payload`, `fields` (LIMITS, CREDIT, GOAWAY, IDENT decoded; `{error}` when the typed payload does not decode) |
 | `talk` | `kind`, `procedure` (hex or null), `requestId`, `responseId`, `stream`, `window`, `bulk`, `payload` |
 | `stream` | `preamble`, `frames` (hex each), `buffered`: a byte stream of the stream binding |
+| `record`, `register`, `registerResponse`, `unregister`, `watch`, `up`, `down`, `connect`, `connectResponse`, `dialBack` | the naming payload's fields by their Dart names: names as the 8 bytes in hex, endpoints as text, bytes as hex (`up` and `down`: `{up, record}`) |
+| `slotSpace`, `slots`, `holding`, `holdingResponse`, `claim`, `claimResponse`, `release`, `locate`, `locateResponse`, `migrate`, `phase`, `assign`, `assignResponse`, `drain`, `forward`, `resume`, `slot` | the sharding payload's fields by their Dart names, enums as their codes |
+| `moved` | `owner`, `epoch`, `reason` of a `MOVED` or `RELOCATED` status payload (code included); re-encoded with the code it had |
+| `credential` | `version`, `kind`, `keyId`, `identity`, `issuedAt`, `expiresAt`, `holderKey` (or null), `scopes` (`[{right, pattern}]`), `signatureKind`, `signature`, `signed` (the signed bytes) |
+| `slotKey` | `fnv1a32` and `slots`, the key's slot among 1, 7, 16, 1000, 65536 and 2^32 - 1 slots (no `reencoded`) |
+| `quicRecords` | `records` (`[{command, body}]`, an `OPEN` with `channelId` and `openPayload`, a `CLOSE` with `code` and `reason`), `buffered`: a channel stream's bytes from its first one (no `reencoded`) |
+| `quicHello` | `recordLimit`, `channels`, `exporter` of a `HELLO` payload |
+| `quicCode` | for a status code (2 bytes, little endian): `raw` and `rawVarint`, its error code on raw QUIC (null for an application code), `http3` and `http3Varint`, its WebTransport code as HTTP/3 carries it, and `back`, that code read again (no `reencoded`) |
+| `exporter` | for a WebTransport session id (8 bytes, big endian): `context`, the TLS exporter context of its exporter-bound `IDENT`, and the labels `webTransportLabel`, `rawQuicLabel`, `identLabel` (no `reencoded`) |
 
-Every kind but `stream` also answers `reencoded`. The naming, sharding, credential, identity and QUIC record kinds come with the scenarios that need them.
+The kinds without a note also answer `reencoded`. The oracle test compares the Dart peer's answers with the TS peer's oracle (`ts_peer/oracle.ts`, the same JSON from the TS codecs) on the wiki vectors and on random and mutated inputs. One difference is documented rather than compared: Dart parses an endpoint as a `Uri` and sends its normalised text (scheme and host lower-cased, characters escaped), where TS carries endpoints as written and refuses what a URI cannot hold (`endpointProblem` in `src/core/naming/naming-protocol.ts`); for such an input the test checks that what Dart sends instead decodes alike in TS.
 
 ## Test vectors
 

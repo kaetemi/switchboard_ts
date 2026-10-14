@@ -26,7 +26,7 @@ const malformed = wikiVectorsIn('test-vectors/talk-messages/').filter(
 );
 
 /** A request frame: flags 0x03, the procedure, the request id. */
-function request(procedure: string, id: number, payload = new Uint8Array(0)): string {
+function request(procedure: string, id: number, payload: Uint8Array = new Uint8Array(0)): string {
   return hexString(concatBytes([0x03], name8(procedure), [id, 0, 0], payload));
 }
 
