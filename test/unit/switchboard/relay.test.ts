@@ -13,8 +13,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // shared table and the naming service's CONNECT). The workers answer Talk
 // requests, as in Dart; the bulk payload case needs the frame mux's frame
 // limit and window (over the toy mux the payloads go inline) and runs over
-// it only. The cases that need slot-routed opens or `MeshNode` are listed
-// as todo.
+// it only.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
@@ -739,7 +738,22 @@ describe('relaying', () => {
     );
   });
 
-  it.todo('openTalkToSlot reaches a slot owner through the relay (needs slot-routed opens)');
+  it('openTalkToSlot reaches a slot owner through the relay', async () => {
+    const mesh = new FakeMesh();
+    await Relay.start(mesh);
+    const worker = Worker.start(mesh);
+    const c = await consumer(mesh);
+    // A type without a slot table: the slot picks among the instances.
+    const slotChannel = await c.openChannelToSlot(workerType, 5);
+    const channel = new TalkChannel(slotChannel);
+    expect((await channel.request('S', 's')).text()).toBe(`s by ${worker.id} for relay-1 with ""`);
+    const inner = ChannelAddress.decode(
+      ChannelAddress.decode(slotChannel.channel.openPayload).payload,
+    );
+    expect(inner.shard).toBe(5);
+    expect(inner.instance).toBe(worker.id);
+    await channel.close();
+  });
 });
 
 describe('refusals', () => {

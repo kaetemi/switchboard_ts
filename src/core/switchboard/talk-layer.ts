@@ -5,7 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import type { ChannelAddress } from '../address/index.ts';
-import type { MuxChannel, MuxConnection } from '../mux/contract.ts';
+import type { MuxChannel, MuxChannelCarrier, MuxConnection } from '../mux/contract.ts';
 import {
   routeBulk,
   TalkBulkOpen,
@@ -26,8 +26,11 @@ export function isBulkAddress(address: ChannelAddress): boolean {
   return TalkBulkOpen.isBulk(address);
 }
 
-/** [channel] wrapped in the Talk layer with [options]. */
-export function talkOver(channel: MuxChannel, options: Partial<TalkOptions>): TalkChannel {
+/** [channel] (a mux channel, or a slot channel carrying one) wrapped in the Talk layer with [options]. */
+export function talkOver(
+  channel: MuxChannel | MuxChannelCarrier,
+  options: Partial<TalkOptions>,
+): TalkChannel {
   return new TalkChannel(channel, options);
 }
 

@@ -4,16 +4,26 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// A pair of in-memory Talk channels for the naming tests, standing in for
-// the Talk thread's `TalkChannel` until it lands (the port of the Dart
-// harness's `TalkChannel` over a `StreamChannelController`). It implements
-// what the naming client and service use of `talk/contract.ts`, with the
-// Dart semantics: requests and replies, stream items, aborts and cancels,
-// requester and responder timeouts, EXTEND, `ordered` answers, the request
-// limits, close and channel abort. Frames are objects, not bytes, delivered
-// one per microtask as the controller's asynchronous stream delivers them
-// (or synchronously, with `sync`); bulk payloads and replies that are
-// requests are not supported.
+// A pair of in-memory Talk channels with the Dart semantics, written for the
+// naming tests before the Talk thread's `TalkChannel` landed (the port of
+// the Dart harness's `TalkChannel` over a `StreamChannelController`). The
+// naming harness now links real Talk channels (`talk-link.ts`); this pair
+// stays for the tests that need its synchronous delivery (`sync`: what the
+// service sends in one step reaches the client in one burst, as Dart's mux
+// delivers a batch of frames), which the real channel, reading through Web
+// Streams, never does: in `naming.test.ts`, "a watch on the registering
+// channel has the UP before the reply", "the reply follows the whole
+// snapshot, even when it arrives in one burst", "REGISTER racing a WATCH
+// snapshot: exactly one UP" (its synchronous rounds) and "synced means
+// complete, even over a link that delivers in bursts". It implements what
+// the naming client and service use of `talk/contract.ts`: requests and
+// replies, stream items, aborts and cancels, requester and responder
+// timeouts, EXTEND, `ordered` answers, the request limits, close and
+// channel abort. Frames are objects, not bytes, delivered one per
+// microtask as the controller's asynchronous stream delivers them (or
+// synchronously, with `sync`); bulk payloads and replies that are requests
+// are not supported. Its frame shape (`FakeFrame`) is also what the tests
+// see of the real links' wire.
 
 import { type PayloadLike, toPayload, utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';

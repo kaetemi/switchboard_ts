@@ -4,18 +4,18 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Port of the Dart `slot_routing_test.dart`, group "MOVED": the retry of a
-// slot channel the owner rejects, over nodes on the in-memory transport.
-// The "routing" group tests the node's slot routing (`selectAndConnect`
-// with a SlotResolver, `resolveSlotOwner`, the proxy), which lands with the
-// node's slot-routed opens; until then `openChannelToSlot` below stands in
-// for `Switchboard.openChannelToSlot`, routing the first channel to the
-// owner in the table as the node will.
+// Port of the Dart `slot_routing_test.dart`: the node's slot routing
+// (`selectAndConnect` and the opens with a SlotResolver, `resolveSlotOwner`,
+// the proxy) and the MOVED retry of `openChannelToSlot` and
+// `openTalkToSlot`, over nodes on the in-memory transport (Dart: TCP), over
+// the toy mux and, from `over-frame-mux/`, over the frame mux (the bulk
+// case there only).
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
-import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
+import { type ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { utf8Decode } from '../../../src/core/bytes.ts';
-import type { Name } from '../../../src/core/name.ts';
+import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { Name } from '../../../src/core/name.ts';
 import {
   MovedStatus,
   SlotEntry,
@@ -23,20 +23,24 @@ import {
   SlotSpace,
   serviceRecord,
 } from '../../../src/core/naming/naming-protocol.ts';
-import { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
-import { reopenAtSlotOwner } from '../../../src/core/naming/slot-reopen.ts';
-import { type SlotEvent, SlotTable } from '../../../src/core/naming/slot-table.ts';
-import { type Status, StatusCode } from '../../../src/core/status.ts';
-import type {
-  IncomingChannel,
-  ServiceEvent,
-  ServiceRecord,
-  SlotResolver,
-} from '../../../src/core/switchboard/contract.ts';
-import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
+import type { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
+import { Status, StatusCode } from '../../../src/core/status.ts';
+import type { IncomingChannel, ServiceRecord } from '../../../src/core/switchboard/contract.ts';
+import { proxyHandler } from '../../../src/core/switchboard/proxy.ts';
+import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
+import type { TalkMessage } from '../../../src/core/talk/index.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { bytes, node, rejectsWith, svc, until } from '../../support/node/harness.ts';
+import { Pull } from '../../support/node/channels.ts';
+import {
+  bytes,
+  node,
+  onCleanup,
+  overFrameMux,
+  rejectsWith,
+  svc,
+  until,
+} from '../../support/node/harness.ts';
 
 const limit = 5000;
 
@@ -44,61 +48,13 @@ function text(data: Uint8Array): string {
   return utf8Decode(data);
 }
 
-/** A static resolver with configured slot tables whose `LOCATE` answers are scripted. */
-class LocatingResolver implements SlotResolver {
-  readonly inner: StaticResolver;
+/** A static resolver whose `LOCATE` answers are scripted. */
+class LocatingResolver extends StaticResolver {
   readonly located: number[] = [];
   answer: (slot: number) => SlotEntry | undefined | Promise<SlotEntry | undefined> = () =>
     undefined;
-  readonly #tables = new Map<string, { table: SlotTable; entries: Map<number, SlotEntry> }>();
 
-  constructor(records: ServiceRecord[]) {
-    this.inner = new StaticResolver(records);
-  }
-
-  resolve(type: Name): Promise<ServiceRecord[]> {
-    return this.inner.resolve(type);
-  }
-
-  get events(): AsyncIterable<ServiceEvent> {
-    return this.inner.events;
-  }
-
-  get ready(): Promise<void> {
-    return this.inner.ready;
-  }
-
-  close(): Promise<void> {
-    return this.inner.close();
-  }
-
-  defineSlots(space: SlotSpace): void {
-    const entries = new Map<number, SlotEntry>();
-    this.#tables.set(space.type.key, { table: new SlotTable(space, entries), entries });
-  }
-
-  setSlot(type: Name, slot: number, entry: SlotEntry): void {
-    this.#tables.get(type.key)?.entries.set(slot, entry);
-  }
-
-  slotTable(type: Name): SlotTable | undefined {
-    return this.#tables.get(type.key)?.table;
-  }
-
-  slotOwner(type: Name, slot: number): SlotEntry | undefined {
-    const entry = this.#tables.get(type.key)?.entries.get(slot);
-    return entry === undefined || entry.isFree ? undefined : entry;
-  }
-
-  slotOwners(type: Name): Set<number> {
-    return this.#tables.get(type.key)?.table.owners ?? new Set();
-  }
-
-  get slotEvents(): AsyncIterable<SlotEvent> {
-    return { [Symbol.asyncIterator]: async function* () {} };
-  }
-
-  async locateSlot(_type: Name, slot: number): Promise<SlotEntry | undefined> {
+  override async locateSlot(_type: Name, slot: number): Promise<SlotEntry | undefined> {
     this.located.push(slot);
     return this.answer(slot);
   }
@@ -118,6 +74,10 @@ const Mode = {
   movedAfterData: 'movedAfterData',
   /** Sends a greeting, then closes with MOVED. */
   greetThenMoved: 'greetThenMoved',
+  /** Talk: sends a `HELLO` message, answers requests with `<name>:<data>`. */
+  talk: 'talk',
+  /** Talk without the `HELLO`: the first frame it sends is a reply. */
+  quietTalk: 'quietTalk',
   /** Sends nothing; records what arrives in `received`. */
   collect: 'collect',
 } as const;
@@ -194,6 +154,15 @@ class Backend {
         void channel.send(bytes(`${this.name} ${incoming.address.shard}`));
         void incoming.reject(moved);
         break;
+      case Mode.talk: {
+        const talk = incoming.talk();
+        void talk.send('HELLO', this.name).catch(() => {});
+        void talk.serve((m) => m.reply(`${this.name}:${m.text()}`));
+        break;
+      }
+      case Mode.quietTalk:
+        void incoming.talk().serve((m) => m.reply(`${this.name}:${m.text()}`));
+        break;
       case Mode.collect:
         void readAll(channel.readable, (d) => this.received.push(text(d)));
         break;
@@ -201,50 +170,11 @@ class Backend {
   }
 }
 
-/**
- * Stands in for `Switchboard.openChannelToSlot` until the node routes shard
- * slots: the first channel goes to the owner in the table, the `MOVED`
- * retry is the one the node will use.
- */
-async function openChannelToSlot(
-  router: Switchboard,
-  type: Name,
-  slot: number,
-  options: { payload?: Uint8Array; where?: (record: ServiceRecord) => boolean } = {},
-): Promise<SlotChannel> {
-  const header = new ChannelAddress({
-    type,
-    shard: slot,
-    ...(options.payload === undefined ? {} : { payload: options.payload }),
-  });
-  const resolver = router.resolver as LocatingResolver;
-  const owner = resolver.slotOwner(type, slot)?.owner ?? 0;
-  const implicitPayload = options.payload === undefined;
-  const { channel: first, header: selected } = await router.openSelected(
-    new ServiceAddress(type, owner),
-    header,
-    { where: options.where, implicitPayload, mayRelay: true },
-  );
-  const rejectedBy = selected.instance;
-  return new SlotChannel(
-    type,
-    slot,
-    first,
-    (moved) =>
-      reopenAtSlotOwner(router, header, rejectedBy, moved, {
-        where: options.where,
-        implicitPayload,
-        mayRelay: true,
-      }),
-    { maxHeldBytes: router.muxOptions.initialWindow },
-  );
-}
-
-/** The subframes of a slot channel, read one by one as text. */
+/** The subframes of a channel, read one by one as text. */
 class Subframes {
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
 
-  constructor(channel: SlotChannel) {
+  constructor(channel: SlotChannel | MuxChannel) {
     this.#reader = channel.readable.getReader();
   }
 
@@ -265,7 +195,7 @@ class Subframes {
 }
 
 /** The greeting of a `greet` backend on [channel]. */
-function greeting(channel: SlotChannel): Promise<string> {
+function greeting(channel: SlotChannel | MuxChannel): Promise<string> {
   return new Subframes(channel).next();
 }
 
@@ -294,18 +224,102 @@ describe('slot routing', () => {
     );
   }
 
+  /** The greeting of a channel opened to [slot] (and [instance]) of `svc`. */
+  async function greetingOf(slot: number, instance = 0): Promise<string> {
+    return greeting(await router.openChannel(new ServiceAddress(svc, instance), { shard: slot }));
+  }
+
   describe('routing', () => {
-    // The node's slot routing (`selectAndConnect` with a SlotResolver,
-    // `resolveSlotOwner`, the proxy) lands with the node's slot-routed opens.
-    test.todo('without a slot table: sorted[slot mod n]');
-    test.todo('to the owner, the old owner while migrating');
-    test.todo('a free slot: LOCATE in a managed space');
-    test.todo('a free slot: UNAVAILABLE in a static space, no LOCATE');
-    test.todo('an owner that registered while the slot was located');
-    test.todo('a slot outside the space: OUT_OF_RANGE');
-    test.todo('an owner missing from the service table or unreachable: UNAVAILABLE');
-    test.todo('resolveSlotOwner');
-    test.todo('a proxy routes by slot');
+    test('without a slot table: sorted[slot mod n]', async () => {
+      expect(await greetingOf(2)).toBe('A 2');
+      expect(await greetingOf(3)).toBe('B 3');
+    });
+
+    test('to the owner, the old owner while migrating', async () => {
+      define();
+      resolver.setSlot(svc, 2, SlotEntry.owned(2, { epoch: 1 }));
+      resolver.setSlot(svc, 3, SlotEntry.migrating(1, 2, { epoch: 4 }));
+      expect(await greetingOf(2)).toBe('B 2');
+      expect(await greetingOf(3)).toBe('A 3');
+      // The header names the owner, so that its dispatch is exact.
+      expect(b.opened).toHaveLength(1);
+      expect(b.opened[0]?.instance).toBe(2);
+      expect(b.opened[0]?.shard).toBe(2);
+      // An explicit instance is not rerouted.
+      expect(await greetingOf(2, 1)).toBe('A 2');
+      expect(resolver.located).toEqual([]);
+    });
+
+    test('a free slot: LOCATE in a managed space', async () => {
+      define();
+      resolver.answer = () => SlotEntry.owned(2, { epoch: 1 });
+      expect(await greetingOf(5)).toBe('B 5');
+      expect(resolver.located).toEqual([5]);
+      resolver.answer = () => undefined;
+      await rejectsWith(greetingOf(6), StatusCode.unavailable);
+    });
+
+    test('a free slot: UNAVAILABLE in a static space, no LOCATE', async () => {
+      define({ mode: SlotMode.static });
+      await rejectsWith(greetingOf(5), StatusCode.unavailable);
+      expect(resolver.located).toEqual([]);
+    });
+
+    test('an owner that registered while the slot was located', async () => {
+      define();
+      const c = new Backend('C', 3);
+      await c.start();
+      resolver.answer = () => {
+        // Not in the records the router read before asking.
+        resolver.add(c.record);
+        return SlotEntry.owned(3, { epoch: 1 });
+      };
+      expect(await greetingOf(4)).toBe('C 4');
+      expect(resolver.located).toEqual([4]);
+      expect(c.opened.map((o) => o.instance)).toEqual([3]);
+    });
+
+    test('a slot outside the space: OUT_OF_RANGE', async () => {
+      define({ count: 4 });
+      await rejectsWith(greetingOf(4), StatusCode.outOfRange);
+    });
+
+    test('an owner missing from the service table or unreachable: UNAVAILABLE, no other instance', async () => {
+      define();
+      resolver.setSlot(svc, 1, SlotEntry.owned(9, { epoch: 1 }));
+      await rejectsWith(greetingOf(1), StatusCode.unavailable);
+      resolver.setSlot(svc, 1, SlotEntry.owned(2, { epoch: 1 }));
+      await b.sb.close();
+      await rejectsWith(greetingOf(1), StatusCode.unavailable);
+      expect(a.opened).toEqual([]);
+    });
+
+    test('resolveSlotOwner', async () => {
+      define();
+      resolver.setSlot(svc, 1, SlotEntry.owned(2, { epoch: 1 }));
+      expect((await router.resolveSlotOwner(svc, 1)).equals(new ServiceAddress(svc, 2))).toBe(true);
+      resolver.answer = () => SlotEntry.owned(1, { epoch: 2 });
+      expect(
+        (await router.resolveSlotOwner(svc, 1, { refresh: true })).equals(
+          new ServiceAddress(svc, 1),
+        ),
+      ).toBe(true);
+      expect(resolver.located).toEqual([1]);
+      await rejectsWith(router.resolveSlotOwner(Name.of('none'), 1), StatusCode.notFound);
+      router.resolver = new EndpointResolver(a.uri);
+      await rejectsWith(router.resolveSlotOwner(svc, 1), StatusCode.failedPrecondition);
+    });
+
+    test('a proxy routes by slot', async () => {
+      define();
+      resolver.setSlot(svc, 3, SlotEntry.owned(2, { epoch: 1 }));
+      router.catchAll = proxyHandler(router);
+      const endpoint = await router.listenMemory();
+      const client = node({ resolver: new EndpointResolver(endpoint) });
+      const channel = await client.openChannel(new ServiceAddress(svc), { shard: 3 });
+      expect(await greeting(channel)).toBe('B 3');
+      expect(b.opened.map((o) => o.instance)).toEqual([2]);
+    });
   });
 
   describe('MOVED', () => {
@@ -317,7 +331,7 @@ describe('slot routing', () => {
     test('retried once at the owner the reason names', async () => {
       a.mode = Mode.moved;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       const answers = new Subframes(channel);
       expect(await answers.next()).toBe('B 1');
       expect(channel.retried).toBe(true);
@@ -335,7 +349,7 @@ describe('slot routing', () => {
     test('whenWritable waits for the replacement and follows it', async () => {
       a.mode = Mode.moved;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       const first = channel.channel;
       await first.done;
       // Rejected with nothing sent: a replacement is on its way.
@@ -353,7 +367,7 @@ describe('slot routing', () => {
     test('whenWritable fails when no replacement comes', async () => {
       a.mode = Mode.moved;
       resolver.answer = () => SlotEntry.owned(1, { epoch: 1 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       await channel.channel.done;
       await rejectsWith(channel.whenWritable, StatusCode.failedPrecondition);
       expect((await channel.done).code).toBe(StatusCode.moved);
@@ -362,7 +376,7 @@ describe('slot routing', () => {
     test('the open payload is sent again', async () => {
       a.mode = Mode.moved;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1, { payload: bytes('token') });
+      const channel = await router.openChannelToSlot(svc, 1, { payload: bytes('token') });
       expect(await greeting(channel)).toBe('B 1');
       expect(a.opened.map((o) => text(o.payload))).toEqual(['token']);
       expect(b.opened.map((o) => text(o.payload))).toEqual(['token']);
@@ -371,7 +385,7 @@ describe('slot routing', () => {
     test('a reason without an owner: the router asks', async () => {
       a.mode = Mode.moved;
       resolver.answer = () => SlotEntry.owned(2, { epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       expect(await greeting(channel)).toBe('B 1');
       expect(resolver.located).toEqual([1]);
     });
@@ -379,7 +393,7 @@ describe('slot routing', () => {
     test('a newer table entry wins over the reason', async () => {
       a.mode = Mode.moved;
       a.moved = new MovedStatus({ owner: 9, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       resolver.setSlot(svc, 1, SlotEntry.owned(2, { epoch: 3 }));
       expect(await greeting(channel)).toBe('B 1');
     });
@@ -387,7 +401,7 @@ describe('slot routing', () => {
     test('a newer table entry naming the rejecting owner wins too', async () => {
       a.mode = Mode.movedOnce;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       // The slot came back to A after it rejected the channel: the retry goes
       // to A, not to B, which the older MOVED names.
       resolver.setSlot(svc, 1, SlotEntry.owned(1, { epoch: 3 }));
@@ -401,7 +415,7 @@ describe('slot routing', () => {
     test('nowhere else to go: MOVED is surfaced', async () => {
       a.mode = Mode.moved;
       resolver.answer = () => SlotEntry.owned(1, { epoch: 1 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       expect(await new Subframes(channel).rest()).toEqual([]);
       expect((await channel.done).code).toBe(StatusCode.moved);
       expect(channel.retried).toBe(true);
@@ -413,7 +427,7 @@ describe('slot routing', () => {
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
       b.mode = Mode.moved;
       b.moved = new MovedStatus({ owner: 1, epoch: 3 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       expect((await channel.done).code).toBe(StatusCode.moved);
       expect(a.opened).toHaveLength(1);
       expect(b.opened).toHaveLength(1);
@@ -422,7 +436,7 @@ describe('slot routing', () => {
     test('never on RELOCATED: the slot moved after work started', async () => {
       a.mode = Mode.relocated;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       const status = await channel.done;
       expect(status.code).toBe(StatusCode.relocated);
       expect(MovedStatus.fromStatus(status).equals(new MovedStatus({ owner: 2, epoch: 2 }))).toBe(
@@ -435,7 +449,7 @@ describe('slot routing', () => {
     test('not after the first send; the fields still name the owner', async () => {
       a.mode = Mode.movedAfterData;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       void channel.send(bytes('x'));
       const status = await channel.done;
       expect(status.code).toBe(StatusCode.moved);
@@ -449,7 +463,7 @@ describe('slot routing', () => {
     test('not after the first subframe received', async () => {
       a.mode = Mode.greetThenMoved;
       a.moved = new MovedStatus({ owner: 2, epoch: 2 });
-      const channel = await openChannelToSlot(router, svc, 1);
+      const channel = await router.openChannelToSlot(svc, 1);
       expect(await new Subframes(channel).rest()).toHaveLength(1);
       expect((await channel.done).code).toBe(StatusCode.moved);
       expect(channel.retried).toBe(false);
@@ -481,7 +495,7 @@ describe('slot routing', () => {
       });
 
       test("are sent on it, in order, within the node's buffer limit", async () => {
-        const channel = await openChannelToSlot(small, svc, 1);
+        const channel = await small.openChannelToSlot(svc, 1);
         await asked.promise;
         const held = [0, 1, 2].map((i) => `${i}`.repeat(300));
         for (const subframe of held) {
@@ -500,7 +514,7 @@ describe('slot routing', () => {
       });
 
       test('beyond it: RESOURCE_EXHAUSTED at once, the replacement closed unused', async () => {
-        const channel = await openChannelToSlot(small, svc, 1);
+        const channel = await small.openChannelToSlot(svc, 1);
         await asked.promise;
         for (let i = 0; i < 3; i++) {
           channel.send(bytes('x'.repeat(300))).catch(() => {});
@@ -524,10 +538,81 @@ describe('slot routing', () => {
       });
     });
 
-    // Talk over slot channels needs the Talk channel (and its bulk routes);
-    // the proxy needs `proxyHandler`. Both land in other threads.
-    test.todo('Talk: a server that speaks first gets the retry');
-    test.todo('Talk: bulk payloads both ways on the retried slot channel');
-    test.todo('through a resolver without slot tables: the same address once more');
+    test('Talk: a server that speaks first gets the retry', async () => {
+      a.mode = Mode.moved;
+      a.moved = new MovedStatus({ owner: 2, epoch: 2 });
+      b.mode = Mode.talk;
+      const talk = await router.openTalkToSlot(svc, 1);
+      const messages = new Pull<TalkMessage>(talk.messages);
+      const hello = await messages.next();
+      expect(hello.procedureName).toBe('HELLO');
+      expect(hello.text()).toBe('B');
+      expect((await talk.request('GET', 'k')).text()).toBe('B:k');
+      await talk.close();
+    });
+
+    // Over the frame mux, whose window sends a payload this size bulk.
+    if (overFrameMux()) {
+      test('Talk: bulk payloads both ways on the retried slot channel', async () => {
+        a.mode = Mode.moved;
+        a.moved = new MovedStatus({ owner: 2, epoch: 2 });
+        b.mode = Mode.talk;
+        const talk = await router.openTalkToSlot(svc, 1);
+        await new Pull<TalkMessage>(talk.messages).next();
+        const big = 'k'.repeat(100_000);
+        const answer = await talk.request('GET', big);
+        expect(answer.isBulk).toBe(true);
+        expect(utf8Decode(await answer.bytes())).toBe(`B:${big}`);
+        await talk.close();
+      });
+
+      // Not in the Dart file: the bulk channel of a reply that is the first
+      // frame the new owner sends reaches the Talk channel, because the slot
+      // channel moved Talk's bulk route to the replacement (Dart
+      // `BulkRoutes.follow`) before reading it.
+      test('Talk: a bulk reply as the first frame on the retried slot channel', async () => {
+        a.mode = Mode.moved;
+        a.moved = new MovedStatus({ owner: 2, epoch: 2 });
+        b.mode = Mode.quietTalk;
+        const talk = await router.openTalkToSlot(svc, 1);
+        // The retry happens before the first request (sent earlier, it would
+        // surface the MOVED: see SlotChannel).
+        const slot = talk.rawChannel as SlotChannel;
+        await slot.channel.done;
+        await slot.whenWritable;
+        expect(slot.retried).toBe(true);
+        const big = 'q'.repeat(100_000);
+        const answer = await talk.request('GET', big);
+        expect(answer.isBulk).toBe(true);
+        expect(utf8Decode(await answer.bytes())).toBe(`B:${big}`);
+        await talk.close();
+      });
+    }
+
+    test('through a resolver without slot tables: the same address once more', async () => {
+      // A proxy without slot tables forwards MOVED; its client retries.
+      const proxyTable = new StaticResolver([a.record]);
+      onCleanup(() => proxyTable.close());
+      const proxy = node();
+      proxy.catchAll = proxyHandler(proxy, { resolver: proxyTable });
+      const endpoint = await proxy.listenMemory();
+      const client = node({ resolver: new EndpointResolver(endpoint) });
+      // The slot moves while the first open is on its way.
+      let opens = 0;
+      a.sb.registerService(
+        svc,
+        (incoming) => {
+          opens++;
+          proxyTable.remove(new ServiceAddress(svc, 1));
+          proxyTable.add(b.record);
+          void incoming.reject(Status.of(StatusCode.moved));
+        },
+        { instance: 1 },
+      );
+      const channel = await client.openChannelToSlot(svc, 1);
+      expect(await greeting(channel)).toBe('B 1');
+      expect(opens).toBe(1);
+      expect(channel.retried).toBe(true);
+    });
   });
 });

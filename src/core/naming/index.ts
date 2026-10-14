@@ -25,6 +25,15 @@ export {
   type NamingServiceOptions,
 } from './naming-service.ts';
 export { SlotChannel, type SlotChannelOptions, type SlotReopen } from './slot-channel.ts';
+export {
+  type SlotDrainOptions,
+  SlotGate,
+  type SlotGateOptions,
+  SlotGateState,
+  SlotGates,
+  SlotLifecycle,
+  type SlotLoadOptions,
+} from './slot-gate.ts';
 export * from './slot-key.ts';
-export { isSlotResolver, reopenAtSlotOwner, type SlotReopenOptions } from './slot-reopen.ts';
+export { reopenAtSlotOwner, type SlotReopenOptions } from './slot-reopen.ts';
 export * from './slot-table.ts';

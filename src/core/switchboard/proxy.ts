@@ -8,7 +8,6 @@ import type { ChannelAddress } from '../address/index.ts';
 import type { MuxChannel } from '../mux/contract.ts';
 import type { Name } from '../name.ts';
 import { MovedStatus, SlotMode } from '../naming/naming-protocol.ts';
-import { isSlotResolver } from '../naming/slot-reopen.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
 import {
   type BulkTarget,
@@ -26,6 +25,7 @@ import type { LogLevel } from '../util/logger.ts';
 import type { ChannelHandler, IncomingChannel, Resolver, SlotResolver } from './contract.ts';
 import { ForwardingBound, type ForwardTarget, openForwarded, routerLogName } from './forwarding.ts';
 import { genericStatus } from './generic-status.ts';
+import { isSlotResolver } from './resolver.ts';
 import { type SlotCarrier, slotCarrier } from './slot-layer.ts';
 import type { Switchboard } from './switchboard.ts';
 
@@ -988,13 +988,11 @@ export function proxyHandler(
           resolver: slots,
           mayLocate: () => locates.take(client),
         });
-        if (carrier !== undefined) {
-          await pipe(new MuxEnd(incoming.channel), new SlotEnd(carrier), {
-            toA: hide,
-            bulkBound: forwarding,
-          });
-          return;
-        }
+        await pipe(new MuxEnd(incoming.channel), new SlotEnd(carrier), {
+          toA: hide,
+          bulkBound: forwarding,
+        });
+        return;
       }
       await pipe(new MuxEnd(incoming.channel), new MuxEnd(channel), {
         toA: hide,

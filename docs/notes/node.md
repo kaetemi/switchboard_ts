@@ -86,3 +86,20 @@ Information for the lead and the other threads, not instructions.
 - A signal only abandons the caller's wait: a shared pooled attempt goes on
   for the other callers; a late connection of an abandoned `dial` is sent
   GOAWAY.
+
+## Slot routing (branch claude/slot-routing)
+
+- `Switchboard.openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`
+  and slot routing in `selectAndConnect` (Dart `_slotOwner`,
+  `_recordsOf`); `slotRefreshTimeout` bounds every LOCATE on the node's
+  clock.
+- `slot-layer.ts` builds the slot channels: the node's (retry through the
+  node's resolver, may relay, holds one initial window) and the proxy's
+  carrier (no byte bound, own endpoints excluded, LOCATEs counted).
+- `StaticResolver` is a `SlotResolver` (`defineSlots`, `setSlot`,
+  `removeSlots`, `locateSlot` from the configured table).
+- Ported: the slot cases of `selection_test`, the slot half of
+  `resolver_test`, the proxy's slot-table groups (22), the relay's
+  `openTalkToSlot`. The flaky authorize-timeout case runs the proxy on a
+  manual clock.
+

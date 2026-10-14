@@ -8,14 +8,21 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // records, the node's selection policy) and the dispatch of a registration
 // that accepts any instance: the naming side of the untrusted worker fleet
 // (wiki page "Polyverse Switchboard Use Cases", entry 5). A port of the
-// Dart selection_test.dart; the slot routing cases come with slot routing.
+// Dart selection_test.dart, with its slot routing cases (the filter on the
+// owner, and on the MOVED retry).
 
 import { beforeEach, describe, expect, test } from 'vitest';
 import { ChannelAddress, maxInstance, ServiceAddress } from '../../../src/core/address/index.ts';
 import { utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
-import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
+import {
+  MovedStatus,
+  SlotEntry,
+  SlotMode,
+  SlotSpace,
+  serviceRecord,
+} from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import type {
   ChannelHandler,
@@ -209,6 +216,93 @@ describe('selection', () => {
   test('random selection keeps shard selection', async () => {
     const client = node({ resolver, selection: 'random', random: seeded(1) });
     expect(await instancesOf(client, 4, { shard: 6 })).toEqual([3, 3, 3, 3]);
+  });
+
+  test('slot routing: an owner the filter refuses is NOT_FOUND', async () => {
+    resolver.defineSlots(new SlotSpace(gpu, { count: 8, mode: SlotMode.static }));
+    resolver.setSlot(gpu, 1, SlotEntry.owned(3, { epoch: 1 }));
+    const client = node({ resolver });
+    const channel = await client.openChannelToSlot(gpu, 1, { where: offers('b') });
+    const frames: Uint8Array[] = [];
+    for await (const frame of channel.readable) frames.push(frame);
+    expect(frames.map((frame) => utf8Decode(frame))).toEqual(['w 3']);
+    await rejectsWith(
+      client.openChannelToSlot(gpu, 1, { where: offers('a') }),
+      StatusCode.notFound,
+    );
+    await rejectsWith(client.openTalkToSlot(gpu, 1, { where: offers('a') }), StatusCode.notFound);
+  });
+});
+
+describe('where on the MOVED retry', () => {
+  let resolver: StaticResolver;
+  let seen: string[];
+
+  beforeEach(async () => {
+    // Instance 1 rejects every channel with MOVED to 2; 2 answers.
+    const one = node();
+    const two = node();
+    seen = [];
+    one.registerService(
+      gpu,
+      (incoming) => {
+        seen.push('1');
+        void incoming.reject(new MovedStatus({ owner: 2, epoch: 2 }).toStatus());
+      },
+      { instance: 1 },
+    );
+    two.registerService(
+      gpu,
+      (incoming) => {
+        seen.push('2');
+        void answering('w')(incoming);
+      },
+      { instance: 2 },
+    );
+    resolver = new StaticResolver([
+      serviceRecord(new ServiceAddress(gpu, 1), {
+        endpoints: [await one.listenMemory()],
+        metadata: offering(['a']),
+      }),
+      serviceRecord(new ServiceAddress(gpu, 2), {
+        endpoints: [await two.listenMemory()],
+        metadata: offering(['b']),
+      }),
+    ]);
+    resolver.defineSlots(new SlotSpace(gpu, { count: 4, mode: SlotMode.static }));
+    resolver.setSlot(gpu, 1, SlotEntry.owned(1, { epoch: 1 }));
+  });
+
+  /** The subframes of [channel], as text, until it ends. */
+  async function textsOf(channel: { readable: ReadableStream<Uint8Array> }): Promise<string[]> {
+    const texts: string[] = [];
+    for await (const frame of channel.readable) texts.push(utf8Decode(frame));
+    return texts;
+  }
+
+  test('a new owner the filter accepts is retried', async () => {
+    const client = node({ resolver });
+    const channel = await client.openChannelToSlot(gpu, 1, { where: () => true });
+    expect(await textsOf(channel)).toEqual(['w 2']);
+    expect(channel.retried).toBe(true);
+    expect(seen).toEqual(['1', '2']);
+  });
+
+  test('a new owner the filter refuses: the channel ends with NOT_FOUND, the owner is never reached', async () => {
+    const client = node({ resolver });
+    const channel = await client.openChannelToSlot(gpu, 1, { where: offers('a') });
+    expect(await textsOf(channel)).toEqual([]);
+    expect(codeOf(await channel.done)).toBe('notFound');
+    expect(channel.retried).toBe(true);
+    expect(seen).toEqual(['1']);
+  });
+
+  test('a new owner the resolver does not know: MOVED, as before', async () => {
+    resolver.remove(new ServiceAddress(gpu, 2));
+    const client = node({ resolver });
+    const channel = await client.openChannelToSlot(gpu, 1, { where: offers('a') });
+    expect(codeOf(await channel.done)).toBe('moved');
+    expect(seen).toEqual(['1']);
   });
 });
 
