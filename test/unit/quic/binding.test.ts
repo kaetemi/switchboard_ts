@@ -6,7 +6,7 @@
 // binding page, and identification at the connection level.
 import { beforeAll, describe, expect, onTestFinished, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
-import { hexBytes, readU48, writeU32, writeU48 } from '../../../src/core/bytes.ts';
+import { hexBytes, hexString, readU48, writeU32, writeU48 } from '../../../src/core/bytes.ts';
 import type { HolderKey } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
@@ -1110,6 +1110,29 @@ describe('identity', () => {
     });
     await expectCode(initiator.identify(bearer), StatusCode.failedPrecondition);
     expect(initiator.peerAuthenticated).toBe(false);
+  });
+
+  test('a holder key given with a bearer credential is ignored, its IDENT carries no proof; a holder-key credential without its key, or with another, is a TypeError', async () => {
+    const [connection, raw] = await bindingAndRaw({
+      bindingIsInitiator: true,
+      rawHello: new QuicHello({ exporter: true }),
+    });
+    await until(() => connection.peerHello !== undefined);
+    expect(() => connection.identify(credentialOf('npc-7'))).toThrow(TypeError);
+    const other = await generateHolderKey();
+    expect(() => connection.identify(credentialOf('npc-7'), { holderKey: other })).toThrow(
+      TypeError,
+    );
+    const bearer = fakeCredential('bearer');
+    const identifying = connection.identify(bearer, { holderKey: holder });
+    await raw.nextControlOf(MuxControlType.nonce);
+    await raw.sendControl(MuxControlMessage.nonce(new Uint8Array(32).fill(0x42)));
+    const ident = MuxIdent.decode((await raw.nextControlOf(MuxControlType.ident)).payload);
+    expect(ident.proof).toHaveLength(0);
+    expect(hexString(ident.credential)).toBe(hexString(bearer.encode()));
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
+    await within(identifying);
   });
 
   test('a bearer IDENT is not exporter-bound: it authenticates nobody', async () => {
