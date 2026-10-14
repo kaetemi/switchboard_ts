@@ -365,13 +365,15 @@ describe.skipIf(!availability.available)(
 
         test('a pinned dialler reaches the listener with the right certificate hash, and not with a wrong one', async () => {
           const server = await listen(mode);
-          const pinned = await dial(server, { certificateHashes: [cert.sha256] });
+          const pinned = await dial(server, { serverCertificateHashes: [cert.sha256] });
           expect(text(await echoed(pinned, bytes('pinned')))).toBe('pinned');
           expect(pinned.quicOptions.identity.tlsAuthenticatesPeer).toBe(true);
           expect(pinned.peerAuthenticated).toBe(true);
           expect(bytesEqual(pinned.session.peerCertificateHash ?? [], cert.sha256)).toBe(true);
           const error = await dial(server, {
-            certificateHashes: [new Uint8Array(32).fill(0xa5)],
+            serverCertificateHashes: [
+              { algorithm: 'sha-256', value: new Uint8Array(32).fill(0xa5) },
+            ],
           }).catch((e: unknown) => e);
           expect(error).toBeInstanceOf(SwitchboardError);
           expect((error as SwitchboardError).code).toBe(StatusCode.unavailable);

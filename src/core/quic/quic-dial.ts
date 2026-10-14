@@ -29,8 +29,12 @@ export interface QuicConnectOptions {
   readonly identityRules?: QuicIdentityRules | undefined;
   /** Whether the acceptor's certificate is verified against the platform roots. Default true. */
   readonly verifyCertificate?: boolean | undefined;
-  /** SHA-256 hashes of acceptable server certificates (DER): a pin, which authenticates the acceptor. */
-  readonly certificateHashes?: readonly Uint8Array[] | undefined;
+  /**
+   * SHA-256 hashes of acceptable server certificates (DER): a pin, which
+   * authenticates the acceptor. Each is the 32 bytes, or the form a
+   * browser's `WebTransportOptions` takes, `{ algorithm: 'sha-256', value }`.
+   */
+  readonly serverCertificateHashes?: readonly QuicCertificateHash[] | undefined;
   /**
    * Bound on the connect, and the handshake deadline asked of the provider.
    * 0: none of this side's. Default 10 000.
@@ -50,6 +54,15 @@ export interface QuicConnectOptions {
 }
 
 /**
+ * A pinned certificate's SHA-256 hash: the 32 bytes, or the
+ * `{ algorithm: 'sha-256', value }` form of the browser's WebTransport
+ * options.
+ */
+export type QuicCertificateHash =
+  | Uint8Array
+  | { readonly algorithm: string; readonly value: ArrayBuffer | ArrayBufferView };
+
+/**
  * Dials [endpoint] through [connector] and starts a
  * {@link QuicBindingConnection} over the session as its initiator: a
  * `quic://host:port` endpoint (raw QUIC, ALPN `switchboard`) or an
@@ -60,12 +73,12 @@ export interface QuicConnectOptions {
  *
  * ```ts
  * const connection = await connectQuic('https://node.example:4433/sb', webTransport(), {
- *   certificateHashes: [hash], // a self-signed certificate
+ *   serverCertificateHashes: [hash], // a self-signed certificate
  * });
  * ```
  *
  * The acceptor's certificate counts as verified when `verifyCertificate`
- * is true (the default: the platform roots) or `certificateHashes` pin it,
+ * is true (the default: the platform roots) or `serverCertificateHashes` pin it,
  * and the identification rules are then {@link QuicIdentityRules.initiator}
  * for a verified certificate (nothing more is required; a browser always
  * verifies, so its nonce-bound `IDENT`s are safe); with neither, they are
@@ -83,7 +96,8 @@ export interface QuicConnectOptions {
  * identification rules ended the connection while it started, and
  * `UNAVAILABLE` for any other failure.
  *
- * @throws {TypeError} if [endpoint] is not an absolute URI.
+ * @throws {TypeError} if [endpoint] is not an absolute URI, or for a
+ *   certificate hash whose algorithm is not `sha-256`.
  * @throws {RangeError} for a negative `timeout`, `idleTimeout` or `keepAlive`.
  */
 export function connectQuic(
@@ -104,6 +118,7 @@ export function connectQuic(
       throw new RangeError(`${name} must not be negative: ${value}`);
     }
   }
+  const hashes = (options.serverCertificateHashes ?? []).map(certificateHashBytes);
   const webTransport = parsed.scheme === 'https';
   const href = parsed.href;
   if (!webTransport && (parsed.host === '' || parsed.port === 0)) {
@@ -114,7 +129,7 @@ export function connectQuic(
       ),
     );
   }
-  return dial(parsed.key, href, webTransport, connector, options, {
+  return dial(parsed.key, href, webTransport, connector, options, hashes, {
     timeout,
     idleTimeout,
     keepAlive,
@@ -127,12 +142,12 @@ async function dial(
   webTransport: boolean,
   connector: QuicConnector,
   init: QuicConnectOptions,
+  hashes: readonly Uint8Array[],
   durations: { timeout: number; idleTimeout: number; keepAlive: number },
 ): Promise<QuicBindingConnection> {
   const signal = init.signal;
   signal?.throwIfAborted();
   const options = muxOptions(init.options);
-  const hashes = init.certificateHashes ?? [];
   const verifyCertificate = init.verifyCertificate ?? true;
   const config: QuicClientConfig = {
     alpn: [switchboardAlpn],
@@ -244,4 +259,17 @@ function abandon(connecting: Promise<QuicSession>): void {
     (session) => session.close(StatusCode.cancelled, 'dial abandoned').catch(() => {}),
     () => {},
   );
+}
+
+function certificateHashBytes(hash: QuicCertificateHash): Uint8Array {
+  if (hash instanceof Uint8Array) {
+    return hash;
+  }
+  if (hash.algorithm.toLowerCase() !== 'sha-256') {
+    throw new TypeError(`a certificate hash is SHA-256, got ${hash.algorithm}`);
+  }
+  const value = hash.value;
+  return ArrayBuffer.isView(value)
+    ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+    : new Uint8Array(value);
 }
