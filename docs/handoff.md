@@ -2,6 +2,32 @@
 
 _Written by the lead session on 2026-10-14 for the session that continues the port. Everything below is the state at hand-off; the per-thread hand-off notes under `docs/handoff-notes/` and the running notes under `docs/notes/` carry the detail. The design is `docs/design.md`; the original split of work is `docs/work-split.md`; the user-facing pages are `docs/wiki/`._
 
+## 0. State on 2026-10-14, second lead session (read this first)
+
+_Written by the lead session that continued the port after the hand-off below. The sections after this one describe the state at the first hand-off and are being rewritten on the `claude/docs` branch; until that lands, this section is current and they are historical._
+
+**Main** (`b37dbf4` at the time of writing, pushed) carries every wave of the continuation, merged with merge commits from topic branches `claude/<topic>` that were worked in git worktrees under `/home/user/wt/<topic>` by parallel agents. On it `npm run check` reports 3125 passed, 1 expected fail, 3 skipped, 7 todo (with the native addon built; `SWITCHBOARD_QUIC_ADDON` or `npm run build:native`), `npx tsc -p tsconfig.test.json --noEmit` is clean, `npm run build` succeeds, the browser test passes 34 (`SWITCHBOARD_BROWSER=required npm run test:browser`, Playwright 1.56.1 Chromium 141 at `/opt/pw-browsers`), and the interop project passes the 241 Dart cells. Round trips over TCP, WebSocket and native QUIC with the built package were checked by hand on Node 22, Bun and Deno 2.9 (Deno: `--allow-net --allow-read --allow-env --allow-ffi`, plus a `node_modules` holding `ws` for the WebSocket server).
+
+**Merged since the first hand-off** (branch, content):
+- `claude/identity`: `Credential`, `Scope`, `CredentialIssuer`, `CredentialVerifier`, `Ed25519HolderKey`, vectors, `identity_test.dart` ported, `NamingClient.renew()`.
+- `claude/webtransport`: `src/web/quic/webtransport-provider.ts` (`webTransport()`, `webTransportConnector`), browser tests under `test/browser/` with their own vitest config, the `browser` CI job, the QUIC man-in-the-middle tests.
+- `claude/node-talk`: `talk-layer.ts` wired to `TalkChannel`; every node suite runs over the toy mux and the frame mux (`test/unit/switchboard/over-frame-mux/`); the proxy, relay, PeerSet, client and QUIC node todos ported.
+- `claude/transports`: `websocket-transport.ts`, `src/node/transport/` (TCP, `ws` server and client, `connectTransport`), `src/node/switchboard.ts` (`listenTcp`, `listenWebSocket`, `acceptWebSocket`, `listenQuic`, `listenWebTransport`), `src/web/switchboard.ts`, integration tests over the loopback.
+- `claude/talk-integration`: Talk over the frame mux, TCP and the QUIC binding (211 integration tests), the bulk admission fix, vectors by id, `ManualClock.elapseAsync`.
+- `claude/mux-tests`: every Dart mux suite ported (`test/unit/mux/`), two performance fixes (lazy channel streams, bounded writes in flight), `MuxChannel[Symbol.asyncIterator]`, `identify()` pre-caught, transport writable settles.
+- `claude/mesh`: `MeshNode` (`src/core/switchboard/mesh-node.ts`, without the sharded half), the Dart `test/integration` node-level suites, the Talk cases of the node integration tests.
+- `claude/quic-identity`: `test/integration/quic-node-native.test.ts`, `identity.test.ts`, real credentials in the test fixtures, prebuilt addon manifests under `native/npm/`, `optionalDependencies`, `.github/workflows/release.yml` (manual dispatch draft), the QUIC vectors by id.
+- `claude/slot-routing`: `openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, `isSlotResolver` in `switchboard/resolver.ts`, the proxy slot groups, `SlotGate`/`SlotLifecycle`/`SlotGates` (`src/core/naming/slot-gate.ts`), the naming suites over real Talk, the proxy flake fixed.
+
+**In flight when this was written** (each agent pushes its branch on every commit; if the session dropped, check `git log main..origin/claude/<topic>` and continue from the branch):
+- `claude/ts-peer` (`/home/user/wt/ts-peer`): the TS interop peer `test/interop/ts_peer/main.ts`, clearing `tsTransportGaps` in `test/interop/matrix.ts`, the scenario matrix, more oracle kinds, identity/naming/relay scenarios, a Dart driver, the `interop` CI job. Acceptance: every scenario passes in all four pairings over tcp, ws, quic and webtransport.
+- `claude/sharding` (`/home/user/wt/sharding`): `MeshNode.publishSharded`/`claimSlot`/`releaseSlot`/`gates` and `leave`'s hand-over, the `test/integration/sharding/` port (11 Dart tests), the `publishSharded` todos in `mesh.test.ts` and `naming-mesh.test.ts`, `naming-identity-nodes.test.ts` on the real `MeshNode.join`.
+- `claude/docs` (`/home/user/wt/docs`): the rewrite of `docs/design.md`, `docs/work-split.md`, `docs/wiki/` (plus new pages Channels-and-Talk, Identity, Naming-and-Sharding, Proxy-and-Relay, Clients), `README.md`, `CHANGELOG.md`, this document and the thread notes.
+
+**Merge procedure the lead used:** `git merge --no-ff claude/<topic>` into `main`, resolve conflicts, `npm run check`, `npx tsc -p tsconfig.test.json --noEmit`, push. Commit trailers: `Co-Authored-By: Claude <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01B2KoRQTAdtpnxcxjhmD2ey`; no model names in commits or code.
+
+**Known open items** (also to be listed by the docs rewrite): musl prebuilds; publishing (`release.yml` is a draft; the lock must be regenerated after the first publish); the GitHub wiki push; Deno in CI; Firefox's exporter path; `protocols` needs Chromium 143+ (newer Playwright); a QUIC gap shared with Dart (a burst of more than 16 bulk messages fails when an early bulk stream lags, `test.fails` in `test/integration/talk-quic.test.ts`); `TcpTransport.bufferedOutputBytes` reports a turn late after abort; the memory pair's writable `closed` does not settle when the other side closes; `test/support/identity/mux-harness.ts` duplicates `test/unit/mux/support.ts`; `SteppingClock`/`TestClock` could merge into `ManualClock.elapseAsync`; the unit "forged IDENT" case uses the rogue credential where Dart flips a byte; Node 22's type stripping cannot parse `await using` (Node 24+ or tsc); design section 2's identity example uses a non-existent `issueNode` (use `issuer.issue({...})`).
+
 ## 1. Where things are
 
 - **Repository:** `kaetemi/switchboard_ts`, package `@kaetemi/switchboard` 3.0.0-dev.1, ESM only, TypeScript 7 strict, Vitest 5, Biome 2, Node 22 or later, Bun and Deno for the Node entry.
