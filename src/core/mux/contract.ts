@@ -143,7 +143,8 @@ export interface MuxConnection extends AsyncDisposable {
    * Installs the rule for OPENs that arrive after this side sent GOAWAY:
    * one accepted by a predicate continues (the Talk layer admits `_bulk`
    * continuations of its channels); otherwise it is refused with
-   * FAILED_PRECONDITION. Returns the uninstaller.
+   * GOING_AWAY, as in Dart. With no predicate installed nothing is
+   * admitted. Returns the uninstaller.
    */
   admitAfterGoAway(predicate: (openPayload: Uint8Array) => boolean): () => void;
 
