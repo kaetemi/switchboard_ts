@@ -139,7 +139,8 @@ const ignore = (): void => {};
  * - The peer closing ends {@link readable} after the frames already
  *   received.
  * - Closing (or aborting) {@link writable} ends {@link readable} after the
- *   frames already received and closes the WebSocket with code 1000; it
+ *   frames already received and closes the WebSocket with code 1000 (with
+ *   the failure's code after an input failure); it
  *   resolves once the closing handshake is over, at most
  *   {@link closeTimeout} later (then the connection is torn down).
  *   Aborting it makes its `closed` promise reject with the reason.
@@ -216,6 +217,7 @@ export class WebSocketTransport implements FrameTransport {
   #acceptedBytes = 0;
   #closeRequested = false;
   #closeCode: number | undefined;
+  #failureCode: number | undefined;
   #closeOnOpen: number | undefined;
   #closeTimer: TimerHandle | undefined;
   #aborted = false;
@@ -393,7 +395,7 @@ export class WebSocketTransport implements FrameTransport {
         // The reader has the error; let it react (send GOAWAY) before the
         // WebSocket closes.
         this.#clock.setTimeout(() => {
-          void this.#closeSocket(this.#codeFor(failure.error));
+          void this.#closeSocket(this.#failureCode ?? normalClosure);
         }, 0);
         return;
       }
@@ -488,9 +490,11 @@ export class WebSocketTransport implements FrameTransport {
       return;
     }
     this.#ended = true;
+    // A close the reader asks for after this tells the peer the same.
+    this.#failureCode = this.#codeFor(error);
     if (this.#cancelled || !this.readable.locked) {
       // Nobody to tell: close at once.
-      void this.#closeSocket(this.#codeFor(error));
+      void this.#closeSocket(this.#failureCode);
     } else {
       this.#failure = { error };
     }
@@ -617,7 +621,7 @@ export class WebSocketTransport implements FrameTransport {
   /** Local close: the readable ends after the frames already received; the WebSocket closes. */
   #closeLocal(): Promise<void> {
     this.#end();
-    return this.#closeSocket(normalClosure);
+    return this.#closeSocket(this.#failureCode ?? normalClosure);
   }
 
   /**
