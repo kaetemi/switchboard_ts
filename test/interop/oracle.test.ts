@@ -9,7 +9,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // First the wiki vectors against the reference: every vector of the tables
 // the oracle has a codec for decodes (or is refused) the way the wiki says,
 // which checks the extracted vector file as much as the reference. Then the
-// TS codecs against the reference, on the vectors and on random and mutated
+// TS codecs against the reference (names, statuses, addresses, mux frames
+// and control messages so far), on the vectors and on random and mutated
 // inputs: both must accept or refuse the same bytes and, when they accept,
 // decode the same fields and re-encode the same bytes. SWITCHBOARD_FUZZ_SEED
 // and SWITCHBOARD_FUZZ_COUNT vary the random inputs (the seed is in the test
@@ -17,7 +18,16 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../src/core/address/channel-address.ts';
-import { hexBytes, hexString } from '../../src/core/bytes.ts';
+import { concatBytes, hexBytes, hexString } from '../../src/core/bytes.ts';
+import {
+  MuxControlMessage,
+  MuxControlType,
+  MuxCredit,
+  MuxFrame,
+  MuxIdent,
+  MuxLimits,
+  muxControlTypeName,
+} from '../../src/core/mux/index.ts';
 import { Name } from '../../src/core/name.ts';
 import { Status } from '../../src/core/status.ts';
 import {
@@ -29,6 +39,7 @@ import {
 } from '../support/vectors.ts';
 import type { Peer } from './launcher.ts';
 import { startPeer, unavailable } from './peers.ts';
+import { le } from './probe/raw.ts';
 import type {
   ControlFields,
   DecodedFields,
@@ -106,6 +117,35 @@ function typedFields(r: DecodeResult<ControlFields>): TypedControlFields | null 
 
 const tables = (prefix: string): WikiVector[] => wikiVectorsIn(prefix).filter((v) => !v.prose);
 
+/** The control payloads the wiki says must be refused (its prose after the frame tables). */
+const refusedControlPayloads = wikiVectors(
+  'test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00',
+  'test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00-00-00-00-00',
+  'test-vectors/mux-frames/prose-02-00-00-00-00-00-00-80',
+  'test-vectors/mux-frames/prose-56',
+  'test-vectors/mux-frames/prose-56-00-01-01',
+  'test-vectors/mux-frames/prose-02-00-aa-bb',
+  'test-vectors/mux-frames/prose-00-00-05-01-02',
+  'test-vectors/mux-frames/prose-00-00-41',
+  'test-vectors/mux-frames/prose-00-00-01-aa',
+  'test-vectors/mux-frames/prose-00-00-00-04-61-62',
+);
+
+/** A refused control payload as a whole control message: its type byte first. */
+function controlMessageOf(v: WikiVector): string {
+  // The payloads are LIMITS, CREDIT or IDENT ones.
+  const type = /LIMITS/.test(v.case) ? '04' : /CREDIT/.test(v.case) ? '07' : '06';
+  // `00 00 41` is followed by 65 bytes of intent and a receiver length.
+  const tail = v.hex === '00 00 41' ? ` ${Array(66).fill('00').join(' ')}` : '';
+  return `${type} ${v.hex}${tail}`;
+}
+
+/** The control messages of the wiki's frame vectors: the payloads of DATA on channel 0. */
+const controlMessages = (): string[] =>
+  tables('test-vectors/mux-frames/')
+    .filter((v) => !v.negative && v.hex?.startsWith('02 00 00 '))
+    .map((v) => (v.hex ?? '').slice(9));
+
 describe.skipIf(dartMissing !== undefined)(
   `codec oracle${dartMissing === undefined ? '' : ` (skipped: dart peer: ${dartMissing})`}`,
   () => {
@@ -153,25 +193,8 @@ describe.skipIf(dartMissing !== undefined)(
         });
       });
 
-      test.each(
-        wikiVectors(
-          'test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00',
-          'test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00-00-00-00-00',
-          'test-vectors/mux-frames/prose-02-00-00-00-00-00-00-80',
-          'test-vectors/mux-frames/prose-56',
-          'test-vectors/mux-frames/prose-56-00-01-01',
-          'test-vectors/mux-frames/prose-02-00-aa-bb',
-          'test-vectors/mux-frames/prose-00-00-05-01-02',
-          'test-vectors/mux-frames/prose-00-00-41',
-          'test-vectors/mux-frames/prose-00-00-01-aa',
-          'test-vectors/mux-frames/prose-00-00-00-04-61-62',
-        ),
-      )('control payload refused: $case', async (v) => {
-        // The payloads come after the type byte: LIMITS, CREDIT or IDENT.
-        const type = /LIMITS/.test(v.case) ? '04' : /CREDIT/.test(v.case) ? '07' : '06';
-        // `00 00 41` is followed by 65 bytes of intent and a receiver length.
-        const tail = v.hex === '00 00 41' ? ` ${Array(66).fill('00').join(' ')}` : '';
-        const r = await decode<ControlFields>('control', `${type} ${v.hex}${tail}`);
+      test.each(refusedControlPayloads)('control payload refused: $case', async (v) => {
+        const r = await decode<ControlFields>('control', controlMessageOf(v));
         expect(r.ok, v.id).toBe(true);
         expect(typedFields(r)?.error, v.id).toBeDefined();
       });
@@ -230,6 +253,18 @@ describe.skipIf(dartMissing !== undefined)(
         },
       );
 
+      test.each(wikiVectorsIn('test-vectors/mux-frames/').filter((v) => v.hex !== null))(
+        'mux frame vector: $case',
+        async (v) => {
+          await expectAgreement('mux', [v.hex ?? ''], tsMux);
+        },
+      );
+
+      test('control vectors: the messages on channel 0 and the refused payloads', async () => {
+        const inputs = [...controlMessages(), ...refusedControlPayloads.map(controlMessageOf)];
+        await expectAgreement('control', inputs, tsControl, sameControlVerdicts);
+      });
+
       test('status vectors: the CLOSE and GOAWAY payloads and the sharding statuses', async () => {
         const payloads = [
           '', // CLOSE without a payload
@@ -275,6 +310,26 @@ describe.skipIf(dartMissing !== undefined)(
           rand() < 0.5 ? randomAddress(rand) : mutate(rand, hexBytes(pick(rand, seeds))),
         );
         await expectAgreement('address', inputs.map(hexString), tsAddress);
+      });
+
+      test(`mux frames, ${count} random and mutated inputs, seed ${seed}`, async () => {
+        const rand = random(seed + 4);
+        const seeds = tables('test-vectors/mux-frames/')
+          .map((v) => v.hex)
+          .filter((h) => h !== null);
+        const inputs = Array.from({ length: count }, () =>
+          rand() < 0.5 ? randomMuxFrame(rand) : mutate(rand, hexBytes(pick(rand, seeds))),
+        );
+        await expectAgreement('mux', inputs.map(hexString), tsMux);
+      });
+
+      test(`control messages, ${count} random and mutated inputs, seed ${seed}`, async () => {
+        const rand = random(seed + 5);
+        const seeds = controlMessages();
+        const inputs = Array.from({ length: count }, () =>
+          rand() < 0.5 ? randomControl(rand) : mutate(rand, hexBytes(pick(rand, seeds))),
+        );
+        await expectAgreement('control', inputs.map(hexString), tsControl, sameControlVerdicts);
       });
 
       test(`addresses the TS side encodes, the reference encodes alike, seed ${seed}`, async () => {
@@ -326,14 +381,89 @@ const tsAddress: TsDecoder = (bytes) => {
   };
 };
 
+const muxCommandNames = ['data', 'open', 'close'] as const;
+
+const tsMux: TsDecoder = (bytes) => {
+  const f = MuxFrame.decode(bytes);
+  return {
+    command: muxCommandNames[f.command],
+    channelId: f.channelId,
+    longForm: f.longForm,
+    payload: hexString(f.payload),
+    reencoded: hexString(f.encode()),
+  };
+};
+
+const tsControl: TsDecoder = (bytes) => {
+  const m = MuxControlMessage.decode(bytes);
+  return {
+    type: m.type,
+    typeName: muxControlTypeName(m.type) ?? null,
+    payload: hexString(m.payload),
+    fields: tsControlFields(m),
+    reencoded: hexString(m.encode()),
+  };
+};
+
+/** The typed payload of LIMITS, CREDIT, GOAWAY and IDENT, as the oracle's `fields`. */
+function tsControlFields(m: MuxControlMessage): Fields | null {
+  try {
+    switch (m.type) {
+      case MuxControlType.limits: {
+        const l = MuxLimits.decode(m.payload);
+        return {
+          maxFrameSize: l.maxFrameSize,
+          maxChannels: l.maxChannels,
+          initialWindow: l.initialWindow,
+        };
+      }
+      case MuxControlType.credit: {
+        const c = MuxCredit.decode(m.payload);
+        return { channelId: c.channelId, bytes: c.bytes };
+      }
+      case MuxControlType.goAway: {
+        const s = m.goAwayStatus;
+        return { code: s.code, reason: s.reason };
+      }
+      case MuxControlType.ident: {
+        const i = MuxIdent.decode(m.payload);
+        return {
+          credential: hexString(i.credential),
+          intent: hexString(i.intent),
+          receiver: hexString(i.receiver),
+          proof: hexString(i.proof),
+        };
+      }
+      default:
+        return null;
+    }
+  } catch (e) {
+    return { error: e instanceof Error ? e.name : String(e) };
+  }
+}
+
+/**
+ * Control fields with a typed payload that does not decode compare by that
+ * verdict alone: the error classes and messages differ between the
+ * implementations.
+ */
+function sameControlVerdicts(value: DecodedFields): DecodedFields {
+  const { fields } = value;
+  return typeof fields === 'object' && fields !== null && 'error' in fields
+    ? { ...value, fields: { error: true } }
+    : value;
+}
+
 /**
  * Decodes every input with both codecs and expects the same verdicts and,
- * where both accept, the same fields. Lists every disagreement.
+ * where both accept, the same fields (both passed through [normalize]).
+ * Lists every disagreement.
  */
 async function expectAgreement(
   kind: string,
   hexes: readonly string[],
   ts: TsDecoder,
+  normalize: (value: DecodedFields) => DecodedFields = (value) => value,
 ): Promise<void> {
   const reference = await decodeMany(kind, hexes);
   const disagreements: string[] = [];
@@ -351,8 +481,12 @@ async function expectAgreement(
       const dart = d.ok ? 'accepts' : `refuses (${d.error.message})`;
       const own = t.ok ? 'accepts' : `refuses (${t.error})`;
       disagreements.push(`[${hex}] Dart ${dart}, TS ${own}`);
-    } else if (d.ok && t.ok && JSON.stringify(d.value) !== JSON.stringify(t.value)) {
-      disagreements.push(`[${hex}] Dart ${JSON.stringify(d.value)}, TS ${JSON.stringify(t.value)}`);
+    } else if (d.ok && t.ok) {
+      const dart = JSON.stringify(normalize(d.value));
+      const own = JSON.stringify(normalize(t.value));
+      if (dart !== own) {
+        disagreements.push(`[${hex}] Dart ${dart}, TS ${own}`);
+      }
     }
   });
   expect(disagreements.slice(0, 20), `${disagreements.length} of ${hexes.length} disagree`).toEqual(
@@ -462,6 +596,57 @@ function randomAddress(rand: () => number): Uint8Array {
     host,
     payload: randomBytes(rand, int(rand, 6)),
   }).encode();
+}
+
+/** A mux frame from its parts: any command, flags, id and header form, valid or not. */
+function randomMuxFrame(rand: () => number): Uint8Array {
+  const command = pick(rand, [0, 0, 1, 2, 3]);
+  const short = rand() < 0.7;
+  let flags = (command << 4) | (short ? MuxFrame.flagShort : 0);
+  if (rand() < 0.1) {
+    flags |= pick(rand, [0x01, 0x04, 0x08, 0x40, 0x80]);
+  }
+  const id = pick(rand, [
+    0,
+    1,
+    2,
+    3,
+    0xfffe,
+    0xffff,
+    0x10000,
+    0xffff00000000,
+    0xffffffffffff,
+    int(rand, short ? 0x10000 : 2 ** 48),
+  ]);
+  return concatBytes([flags], le(id, short ? 2 : 6), randomBytes(rand, int(rand, 12)));
+}
+
+/** A control message of any type, its payload mostly shaped like that type's. */
+function randomControl(rand: () => number): Uint8Array {
+  const type = pick(rand, [1, 2, 3, 4, 5, 6, 7, 0, 8, 0xff]);
+  let payload: Uint8Array;
+  switch (type) {
+    case MuxControlType.goAway:
+      payload = hexBytes(randomStatus(rand));
+      break;
+    case MuxControlType.limits:
+      payload = randomBytes(rand, pick(rand, [8, 11, 12, 12, 13, int(rand, 16)]));
+      break;
+    case MuxControlType.credit:
+      payload = randomBytes(rand, pick(rand, [9, 10, 10, 11, int(rand, 16)]));
+      break;
+    case MuxControlType.ident:
+      payload = new MuxIdent({
+        credential: randomBytes(rand, int(rand, 48)),
+        intent: randomBytes(rand, pick(rand, [0, 4, 64])),
+        receiver: randomText(rand, 4),
+        proof: randomBytes(rand, pick(rand, [0, 64])),
+      }).encode();
+      break;
+    default:
+      payload = randomBytes(rand, rand() < 0.02 ? pick(rand, [1024, 1025]) : int(rand, 40));
+  }
+  return concatBytes([type], payload);
 }
 
 /** [bytes] truncated, extended, or with a byte or a flag changed. */
