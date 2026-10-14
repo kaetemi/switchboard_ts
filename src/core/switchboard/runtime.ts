@@ -7,6 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import type { MuxConnection, MuxOptions } from '../mux/contract.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import type { FrameTransport } from '../transport/contract.ts';
+import type { MemoryAcceptor } from '../transport/memory-endpoints.ts';
 
 /**
  * What a node needs from the platform it runs on. The core node
@@ -25,23 +26,21 @@ export type MuxFactory = (
   isInitiator: boolean,
 ) => MuxConnection;
 
-/** Takes one side of an in-process transport pair as an accepted connection; [remote] describes the initiator. */
-export type MemoryAcceptor = (transport: FrameTransport, remote: string) => void;
-
 /**
  * The registry of in-process listeners (`mem://<id>`) that every node using
  * it shares: a node listening with `listenMemory` registers there, and
  * `connect('mem://<id>')` on any node of the process reaches it. Ids are
- * compared in lower case.
+ * compared in lower case. The process-wide `MemoryEndpoints` is one; a
+ * test may give its nodes a registry of their own.
  */
 export interface MemoryEndpointRegistry {
   /**
-   * Registers [acceptor] under [name] (lower-cased), or under a new id when
-   * [name] is undefined, and returns its `mem://<id>` URI. Throws
+   * Registers [acceptor] under `options.name` (lower-cased), or under a new
+   * id when no name is given, and returns its `mem://<id>` URI. Throws
    * `RangeError` for an invalid name and `SwitchboardError` ALREADY_EXISTS
    * for one in use.
    */
-  register(acceptor: MemoryAcceptor, name?: string): string;
+  register(acceptor: MemoryAcceptor, options?: { readonly name?: string }): string;
   /** The acceptor at [id], or undefined. */
   lookup(id: string): MemoryAcceptor | undefined;
   /** Removes the listener at [id], if any. */

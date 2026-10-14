@@ -19,6 +19,7 @@ import {
   Switchboard,
   toServiceAddress,
 } from '../../../src/core/switchboard/switchboard.ts';
+import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import {
   bytes,
@@ -37,7 +38,6 @@ import {
   tagOf,
   until,
 } from '../../support/node/harness.ts';
-import { testTransportPair } from '../../support/node/memory-pair.ts';
 import type { ToyMuxConnection } from '../../support/node/toy-mux.ts';
 
 /** Makes the server side send GOAWAY and waits until [connection] has seen it. */
@@ -1011,7 +1011,7 @@ describe('close', () => {
           ws: async () => {
             arrived.resolve();
             await release.promise;
-            const [local, remote] = testTransportPair();
+            const [local, remote] = memoryTransportPair({ delay: 0 });
             peer.resolve(runtime.mux(remote, { ...fast } as never, false));
             return local;
           },
@@ -1153,7 +1153,7 @@ describe('accept', () => {
   test('adopt takes a connection of any binding, once', async () => {
     const server = node();
     server.registerService(svc, tagged('svc'));
-    const [local, remote] = testTransportPair();
+    const [local, remote] = memoryTransportPair({ delay: 0 });
     const peer = currentRuntime().mux(local, { ...fast } as never, true);
     onCleanup(() => peer.close());
     const connection = currentRuntime().mux(remote, server.muxOptions, false);

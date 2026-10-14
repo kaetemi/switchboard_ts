@@ -120,27 +120,6 @@ function hostPart(host: string): string {
 }
 
 /**
- * [endpoint] as the pool tells endpoints apart, for the frame-mux schemes
- * and the schemes without a binding of their own: scheme and host
- * lower-cased, the default port filled in, the path (`/` when empty) and
- * query kept for WebSocket URIs only, no fragment; a `mem` URI is its id
- * alone.
- */
-export function normaliseEndpoint(endpoint: NodeEndpoint): string {
-  const { scheme, host } = endpoint;
-  if (scheme === memoryScheme) {
-    return `${scheme}://${host}`;
-  }
-  const port = portOf(endpoint);
-  const authority = `${scheme}://${hostPart(host)}${port === 0 ? '' : `:${port}`}`;
-  if (scheme !== 'ws' && scheme !== 'wss') {
-    return authority;
-  }
-  const path = endpoint.path.length === 0 ? '/' : endpoint.path;
-  return `${authority}${path}${endpoint.query === undefined ? '' : `?${endpoint.query}`}`;
-}
-
-/**
  * The default normalisation of a binding's endpoints: scheme and host
  * lower-cased and the port if given, without path, query or fragment.
  */

@@ -16,10 +16,11 @@ import {
   statusCodeName,
 } from '../../../src/core/status.ts';
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
-import { MemoryEndpointTable } from '../../../src/core/switchboard/memory-endpoints.ts';
 import type { SwitchboardRuntime } from '../../../src/core/switchboard/runtime.ts';
 import { Switchboard, type SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
-import { testTransportPair } from './memory-pair.ts';
+import type { FrameTransport } from '../../../src/core/transport/contract.ts';
+import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
+import { MemoryEndpointTable } from './memory-table.ts';
 import { toyMux } from './toy-mux.ts';
 
 /**
@@ -42,7 +43,7 @@ export function testRuntime(
 ): SwitchboardRuntime {
   return {
     mux: toyMux,
-    transportPair: () => testTransportPair(),
+    transportPair: () => memoryTransportPair({ delay: 0 }),
     memoryEndpoints,
     dialers: {},
   };
@@ -93,9 +94,9 @@ export function currentRuntime(): SwitchboardRuntime {
 /** A raw toy-mux peer on one side of a transport pair; the other side is returned for the node. */
 export function rawPeer(options: Partial<MuxOptions> = fast): {
   peer: MuxConnection;
-  transport: ReturnType<typeof testTransportPair>[1];
+  transport: FrameTransport;
 } {
-  const [local, remote] = testTransportPair();
+  const [local, remote] = memoryTransportPair({ delay: 0 });
   const peer = toyMux(local, options, true);
   onCleanup(() => peer.close());
   return { peer, transport: remote };

@@ -23,6 +23,7 @@ import { serviceRecord } from '../naming/naming-protocol.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
 import { type TalkChannel, type TalkOptions, talkOptions } from '../talk/contract.ts';
 import { defaultMaxFrameSize, type FrameTransport } from '../transport/contract.ts';
+import { parseEndpoint } from '../transport/endpoint.ts';
 import { type Clock, systemClock } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import { type Logger, type LogLevel, noopLogger } from '../util/logger.ts';
@@ -44,7 +45,6 @@ import {
   memoryScheme,
   type NodeEndpoint,
   normaliseBindingEndpoint,
-  normaliseEndpoint,
   normalizePath,
   parseNodeEndpoint,
   portOf,
@@ -717,7 +717,7 @@ export class Switchboard implements AsyncDisposable {
     const policy = options.policy;
     const uri = this.#runtime.memoryEndpoints.register(
       (transport, remote) => this.adoptTransport(transport, { isInitiator: false, remote, policy }),
-      options.name,
+      options.name === undefined ? {} : { name: options.name },
     );
     const endpoint = parseNodeEndpoint(uri);
     this.#memoryIds.push(endpoint.host);
@@ -1301,7 +1301,7 @@ export class Switchboard implements AsyncDisposable {
     const parsed = parseNodeEndpoint(endpoint);
     return this.#bindings.has(parsed.scheme)
       ? this.#bindingNormalise(parsed)
-      : normaliseEndpoint(parsed);
+      : parseEndpoint(endpoint).key;
   }
 
   async #dialPooled(

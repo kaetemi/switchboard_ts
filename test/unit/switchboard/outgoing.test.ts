@@ -15,6 +15,7 @@ import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts
 import type { ChannelPolicy, ServiceRecord } from '../../../src/core/switchboard/contract.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
+import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import {
   bytes,
   currentRuntime,
@@ -26,7 +27,6 @@ import {
   tagOf,
   until,
 } from '../../support/node/harness.ts';
-import { testTransportPair } from '../../support/node/memory-pair.ts';
 
 const back = Name.of('back');
 const meshSecret = bytes('mesh-secret');
@@ -149,7 +149,7 @@ describe('outgoing policy', () => {
         dialers: {
           ws: async (endpoint) => {
             wsDialled.push(endpoint);
-            const [local, remote] = testTransportPair();
+            const [local, remote] = memoryTransportPair({ delay: 0 });
             await server.sb.accept(remote);
             return local;
           },

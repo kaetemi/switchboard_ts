@@ -22,6 +22,7 @@ import type {
 } from '../../../src/core/switchboard/contract.ts';
 import { type BrokeringResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
+import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
 import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
 import {
@@ -32,7 +33,6 @@ import {
   rejectsWith,
   until,
 } from '../../support/node/harness.ts';
-import { testTransportPair } from '../../support/node/memory-pair.ts';
 
 const npc = Name.of('npc');
 const chat = Name.of('chat');
@@ -524,7 +524,7 @@ describe('identifying', () => {
         ...runtime,
         dialers: {
           tcp: async () => {
-            const [local, remote] = testTransportPair();
+            const [local, remote] = memoryTransportPair({ delay: 0 });
             void remote.readable.pipeTo(new WritableStream()).catch(() => {});
             return local;
           },

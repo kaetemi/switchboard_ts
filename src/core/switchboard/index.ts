@@ -16,7 +16,6 @@ export {
 } from './resolver.ts';
 export type {
   BindingDialSettings,
-  MemoryAcceptor,
   MemoryEndpointRegistry,
   MuxFactory,
   SwitchboardBinding,
