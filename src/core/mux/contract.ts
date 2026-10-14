@@ -248,6 +248,16 @@ export interface MuxChannel extends AsyncDisposable {
    */
   readonly readable: ReadableStream<Uint8Array>;
 
+  /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`: each step takes delivery of one (its credit goes back unless
+   * {@link manualCredit}); the iteration ends with the readable. Stopping
+   * early (`break`, an exception) cancels the readable, which discards what
+   * arrives from then on and does not close the channel. Locks
+   * {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array>;
+
   /** Outgoing subframes: a `write` is a {@link send}; `close()` is `close(OK)`; `abort(status)` closes with that status. */
   readonly writable: WritableStream<Uint8Array>;
 
