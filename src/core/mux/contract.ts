@@ -311,3 +311,33 @@ export interface MuxChannel extends AsyncDisposable {
   /** Resolves once the peer's limits are known (at once for a binding). */
   readonly limitsKnown: Promise<void>;
 }
+
+/**
+ * A channel that carries its subframes on a {@link MuxChannel} it may
+ * replace before anything was sent or received on it (a slot channel
+ * retried after MOVED), and passes flow control on to it: what Talk needs
+ * of the mux channel under it. A {@link MuxChannel} is its own carrier and
+ * does not implement this.
+ */
+export interface MuxChannelCarrier {
+  /** The mux channel the subframes travel on now. */
+  readonly channel: MuxChannel;
+  /** Incoming subframes, as `MuxChannel.readable`, across a replacement. */
+  readonly readable: ReadableStream<Uint8Array>;
+  /** Outgoing subframes, as `MuxChannel.writable`. */
+  readonly writable: WritableStream<Uint8Array>;
+  /** As `MuxChannel.manualCredit`, for the current channel and a replacement. */
+  manualCredit: boolean;
+  /** As `MuxChannel.consumed`, on the current channel. */
+  consumed(bytes: number, subframes?: number): void;
+  /** As `MuxChannel.send`, on the current channel or the replacement it waits for. */
+  send(subframe: Uint8Array): Promise<void>;
+  /** As `MuxChannel.isWritable`, for the current channel; false while a replacement is awaited. */
+  readonly isWritable: boolean;
+  /** As `MuxChannel.whenWritable`, for the current channel or the replacement it waits for. */
+  readonly whenWritable: Promise<void>;
+  /** As `MuxChannel.close`. */
+  close(status?: Status): Promise<void>;
+  /** As `MuxChannel.done`. */
+  readonly done: Promise<Status>;
+}
