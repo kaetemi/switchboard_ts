@@ -6,7 +6,7 @@ Six threads port the package in parallel. Each owns directories and their tests,
 
 ## Ground rules for every thread
 
-- **Read first:** `docs/design.md` (sections 4, 5 and the subsection for your layer), the contract files you implement and depend on, the wiki pages for your layer in `kaetemi/sway` `wiki/switchboard/`, the matching section of `switchboard/doc/dart-design.md`, and the Dart sources named below. The notes under `/mnt/project-files/switchboard-ts/notes/` are inputs: `core.md` (sections 0 and 20 for everyone), `interop.md`, `interop-dart-suites.md` (the Dart test inventory, your checklist).
+- **Read first:** `docs/design.md` (sections 4, 5 and the subsection for your layer), the contract files you implement and depend on, the wiki pages for your layer in `kaetemi/sway` `wiki/switchboard/`, the matching section of `switchboard/doc/dart-design.md`, and the Dart sources named below. The notes under `docs/notes/` are inputs: `core.md` (sections 0 and 20 for everyone), `interop.md`, `interop-dart-suites.md` (the Dart test inventory, your checklist).
 - **Branch and PRs:** work on your thread's own branch, PRs into `claude/switchboard-ts-design-s5r9na` in `kaetemi/switchboard_ts`. Small PRs in the order listed under "deliverables" beat one large one; the first one can land within a day. Each PR: `npm run check` green (lint, typecheck, unit and integration tests), `tsc` clean, no new `biome-ignore` without a reason.
 - **Contracts:** `src/core/*/contract.ts` and the `index.ts` barrels outside your directories are the lead's. When your port needs a contract change, put it in its own small PR (or the first commit of your PR) with a one-paragraph rationale; the lead merges contract changes first so the other threads see them. Never widen a contract silently.
 - **Files:** you own what is listed under your thread and nothing else. Shared helpers you need from another thread's directory: ask the lead in your thread, or stub them under `test/support/<thread>/` until they land.
@@ -14,7 +14,7 @@ Six threads port the package in parallel. Each owns directories and their tests,
 - **Style:** `biome check`, 100 columns, single quotes, `type` imports, no `any`, no TS `enum`, `const` objects `as const`, `.ts` import extensions, file header comment as in the existing sources, JSDoc on every exported symbol (one line is fine).
 - **No model identifiers** in commits, PR text or code comments. Commit on every milestone; `Co-Authored-By: Claude <noreply@anthropic.com>` on commits.
 - **Dart repositories are read-only.** Build the Dart peer from them; change nothing in them.
-- **Notes:** keep your running notes under `/mnt/project-files/switchboard-ts/notes/<thread>.md` (status, decisions, questions for the lead), and write questions for the lead in your thread. Do not wait on an answer for anything reversible: pick the Dart behaviour, say so, keep going.
+- **Notes:** keep your running notes under `docs/notes/<thread>.md` (status, decisions, questions for the lead), and write questions for the lead in your thread. Do not wait on an answer for anything reversible: pick the Dart behaviour, say so, keep going.
 
 ## Thread 1: Port protocol core (existing thread)
 

@@ -11,7 +11,7 @@ QUIC is an integral part of the package, not an experimental add-on: the binding
 1. **The wiki** in `kaetemi/sway` under `wiki/switchboard/` is the normative protocol specification: `home`, `transport`, `mux`, `status-codes`, `talk`, `addressing`, `identity`, `naming`, `sharding`, `proxying`, `relay`, `quic-binding`, `embedded-profile`, `test-vectors`. When the wiki and a Dart implementation disagree, the wiki wins unless `test-vectors.md` is amended.
 2. **The Dart reference implementation**, `kaetemi/switchboard` and `kaetemi/switchboard_quic`, at the commits pinned in `test/interop/dart_peer/dart_commits.txt`. `doc/dart-design.md` in `switchboard` records every layer's API contract and the behaviours the Dart tests assert; the TS port keeps the same behaviours and the same names where the platform allows.
 3. **The wire is byte-identical.** Nothing in this port changes the protocol. Every change in observable behaviour relative to Dart is listed in section 12.
-4. The porting notes the threads wrote are inputs, not sources: `/mnt/project-files/switchboard-ts/notes/core.md`, `interop.md`, `interop-dart-suites.md`.
+4. The porting notes the threads wrote are inputs, not sources: `docs/notes/core.md`, `interop.md`, `interop-dart-suites.md`.
 
 The Dart repositories are read-only for this project.
 

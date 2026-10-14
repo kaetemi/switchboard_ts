@@ -1,13 +1,13 @@
 # Hand-off: the Switchboard TypeScript port
 
-_Written by the lead session on 2026-10-14 for the session that continues the port. Everything below is the state at hand-off; the per-thread hand-off notes under `/mnt/project-files/switchboard-ts/handoff-notes/` and the running notes under `/mnt/project-files/switchboard-ts/notes/` carry the detail. The design is `docs/design.md`; the original split of work is `docs/work-split.md`; the user-facing pages are `docs/wiki/`._
+_Written by the lead session on 2026-10-14 for the session that continues the port. Everything below is the state at hand-off; the per-thread hand-off notes under `docs/handoff-notes/` and the running notes under `docs/notes/` carry the detail. The design is `docs/design.md`; the original split of work is `docs/work-split.md`; the user-facing pages are `docs/wiki/`._
 
 ## 1. Where things are
 
 - **Repository:** `kaetemi/switchboard_ts`, package `@kaetemi/switchboard` 3.0.0-dev.1, ESM only, TypeScript 7 strict, Vitest 5, Biome 2, Node 22 or later, Bun and Deno for the Node entry.
 - **Branches:** `main` is initialised from the integration branch `claude/switchboard-ts-design-s5r9na` at hand-off; both point at the same commit (see section 7 for the hashes). The six thread branches hold nothing the integration branch lacks.
 - **Reference implementation:** `kaetemi/switchboard` (Dart core) and `kaetemi/switchboard_quic` (Dart QUIC binding and the Rust `sbq` shim), read only. The wiki is `kaetemi/sway` under `wiki/switchboard/`. The TS test peer pins the Dart repositories in `test/interop/dart_peer/dart_commits.txt` (core `3816e6f`, QUIC `c5b3265`); the vendored shim pin is `native/sbq-vendor.commit` (`c5b3265`).
-- **Shared folder:** `/mnt/project-files/switchboard-ts/` holds copies of `design.md`, `work-split.md`, the wiki pages, this document, `notes/` (one file per thread plus `lead.md`) and `handoff-notes/`.
+- **Shared folder:** `docs/` holds copies of `design.md`, `work-split.md`, the wiki pages, this document, `notes/` (one file per thread plus `lead.md`) and `handoff-notes/`.
 
 ## 2. What is merged
 
