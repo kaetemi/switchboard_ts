@@ -119,6 +119,11 @@ class MessageLane implements AsyncIterable<TalkMessage> {
   #cancelled = false;
   #ended = false;
   #error: unknown;
+  /**
+   * A message was handed to the consumer, which has not asked for the next
+   * one yet: it may not have seen it, so answers wait behind it.
+   */
+  #handedOut = false;
   readonly #onCancel: (messages: FakeMessage[]) => void;
 
   constructor(onCancel: (messages: FakeMessage[]) => void) {
@@ -141,15 +146,20 @@ class MessageLane implements AsyncIterable<TalkMessage> {
     const waiting = this.#waiting;
     if (waiting !== undefined && this.#entries.length === 0) {
       this.#waiting = undefined;
+      this.#handedOut = true;
       waiting.resolve({ value: message, done: false });
       return;
     }
     this.#entries.push({ message });
   }
 
-  /** Runs [outcome] once everything ahead of it has been handed out. */
+  /**
+   * Runs [outcome] once everything ahead of it has been handed out and the
+   * consumer has asked for what follows (it is done with those messages,
+   * as a Dart listener is once its `onData` returned).
+   */
   pushOutcome(outcome: () => void): void {
-    if (this.deaf || this.#entries.length === 0) {
+    if (this.deaf || (this.#entries.length === 0 && !this.#handedOut)) {
       outcome();
       return;
     }
@@ -191,11 +201,14 @@ class MessageLane implements AsyncIterable<TalkMessage> {
 
   next(): Promise<IteratorResult<TalkMessage>> {
     this.#listening = true;
+    // The consumer is done with what it was handed: the answers behind it go.
+    this.#handedOut = false;
     this.#runOutcomes();
     const head = this.#entries.shift();
     if (head !== undefined && 'message' in head) {
-      // The answers right behind it are delivered after it, before the next message.
-      this.#runOutcomes();
+      // The answers right behind it are delivered when the consumer asks for
+      // what follows it, before the next message.
+      this.#handedOut = true;
       return Promise.resolve({ value: head.message, done: false });
     }
     if (this.#ended) {
@@ -328,6 +341,8 @@ export class FakeMessage implements TalkMessage {
   readonly #abort = new AbortController();
   #finished = false;
   #timer: TimerHandle | undefined;
+  /** The responder timeout set with {@link setReplyTimeout}; undefined: the channel's. */
+  #replyTimeout: number | undefined;
 
   constructor(
     channel: FakeTalkChannel,
@@ -526,8 +541,12 @@ export class FakeMessage implements TalkMessage {
       deadline: deadline === undefined ? undefined : deadline + buffer,
       renew: renew === undefined ? undefined : renew + buffer,
     });
-    if (deadline === undefined && renew === undefined) {
-      this.#arm(this.channel.options.replyTimeout);
+    const gap = this.#replyTimeout ?? this.channel.options.replyTimeout;
+    if (gap <= 0) {
+      // No responder timeout (`setReplyTimeout(0)`): what is declared only
+      // tells the requester, as with the Dart `TalkChannel`.
+    } else if (deadline === undefined && renew === undefined) {
+      this.#arm(gap);
     } else {
       this.#arm(Math.max(1, Math.min(deadline ?? Infinity, renew ?? Infinity)));
     }
@@ -535,6 +554,7 @@ export class FakeMessage implements TalkMessage {
   }
 
   setReplyTimeout(timeout: number | undefined): void {
+    this.#replyTimeout = timeout;
     this.#arm(timeout ?? this.channel.options.replyTimeout);
   }
 
