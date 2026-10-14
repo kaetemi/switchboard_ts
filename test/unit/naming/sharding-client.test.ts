@@ -34,13 +34,23 @@ import {
   SlotState,
 } from '../../../src/core/naming/naming-protocol.ts';
 import { NamingResolver } from '../../../src/core/naming/naming-resolver.ts';
+import {
+  type SlotDrainOptions,
+  SlotGate,
+  SlotGateState,
+  SlotLifecycle,
+  type SlotLoadOptions,
+} from '../../../src/core/naming/slot-gate.ts';
 import type { SlotTable } from '../../../src/core/naming/slot-table.ts';
-import { StatusCode, SwitchboardError, statusCodeName } from '../../../src/core/status.ts';
+import { Status, StatusCode, SwitchboardError, statusCodeName } from '../../../src/core/status.ts';
+import type { IncomingChannel } from '../../../src/core/switchboard/contract.ts';
+import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import {
   defaultTalkOptions,
   type TalkOptions,
   talkOptions,
 } from '../../../src/core/talk/contract.ts';
+import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { FakeFrame, FakeTalkChannel } from '../../support/naming/fake-talk.ts';
 import {
@@ -69,6 +79,7 @@ import {
   zone,
 } from '../../support/naming/sharding-harness.ts';
 import { TestClock } from '../../support/naming/test-clock.ts';
+import { frameLink } from '../../support/talk/frame-link.ts';
 
 // SlotEntry, SlotSpace and LocateResponse compare by value, as in Dart.
 expect.addEqualityTesters([
@@ -939,9 +950,13 @@ describe('declared deadlines, no heartbeat', () => {
     clock: TestClock,
     h: Harness,
     id: number,
-    handler: SlotHandler,
+    handler: SlotHandler | undefined,
     extends_: FakeFrame[],
-    options: { slotHandlerMaxDuration?: number } = {},
+    options: {
+      slotHandlerMaxDuration?: number;
+      /** Makes the slot handler for the client, when [handler] is undefined (a slot gate). */
+      handlerFor?: (client: NamingClient) => SlotHandler;
+    } = {},
   ): Promise<NamingClient> {
     const connector = new LossyConnector(h);
     connector.dropToService = (frame) => {
@@ -955,7 +970,7 @@ describe('declared deadlines, no heartbeat', () => {
       slotHandlerMaxDuration: options.slotHandlerMaxDuration ?? 600_000,
       clock,
     });
-    c.slotHandler = handler;
+    c.slotHandler = handler ?? options.handlerFor?.(c);
     void c.start();
     void c.register(zone, [], { instance: id });
     await clock.elapse(ms10);
@@ -974,9 +989,56 @@ describe('declared deadlines, no heartbeat', () => {
     expect(clock.pendingCount).toBe(0);
   }
 
-  // Not ported: SlotGate and SlotLifecycle (switchboard/slot_gate.dart) have
-  // no TS port yet.
-  test.skip('a load that declares 5 min outlasts a 60 s handover timeout with one EXTEND', () => {});
+  test('a load that declares 5 min outlasts a 60 s handover timeout with one EXTEND', async () => {
+    const clock = new TestClock();
+    const h = new Harness({ clock, handoverTimeout: handover });
+    const loading = new Deferred<AssignResult>();
+    let seen: SlotRequestContext | undefined;
+    const lifecycle = new Loader((_slot, context) => {
+      seen = context;
+      context?.extend({ deadline: 300_000 });
+      return loading.promise;
+    });
+    const sb = new Switchboard();
+    const extends_: FakeFrame[] = [];
+    let gate: SlotGate | undefined;
+    const c = await start(clock, h, 1, undefined, extends_, {
+      handlerFor: (client) => {
+        gate = new SlotGate(sb, client, zone, { lifecycle, instance: 1, clock });
+        return gate;
+      },
+    });
+    let epoch: number | undefined;
+    let error: unknown;
+    c.claim(zone, 2).then(
+      (e) => {
+        epoch = e;
+      },
+      (e: unknown) => {
+        error = e;
+      },
+    );
+    await clock.elapse(ms10);
+    const context = seen as SlotRequestContext;
+    expect(context).toBeDefined();
+    expect([context.type.toString(), context.slot, context.epoch]).toEqual(['zone', 2, 1]);
+    await clock.elapse(4 * 60_000);
+    expect(error).toBeUndefined();
+    expect(epoch).toBeUndefined();
+    expect(context.isCancelled).toBe(false);
+    expect(gate?.stateOf(2)).toBe(SlotGateState.loading);
+    loading.resolve(AssignResult.holding);
+    await clock.elapse(ms10);
+    expect(epoch).toBe(1);
+    expect(gate?.serves(2)).toBe(true);
+    // Exactly one EXTEND, the estimate plus the client's buffer.
+    expect(extends_.map(extension)).toEqual([
+      { deadline: 300_000 + clientBuffer, renew: undefined },
+    ]);
+    void gate?.close();
+    void sb.close();
+    await finish(clock, h, [c]);
+  });
 
   test('a load that declares nothing and runs past the handover timeout is cancelled, and sends nothing', async () => {
     const clock = new TestClock();
@@ -1047,9 +1109,96 @@ describe('declared deadlines, no heartbeat', () => {
     await finish(clock, h, [c]);
   });
 
-  // Not ported: SlotGate and SlotLifecycle (switchboard/slot_gate.dart) have
-  // no TS port yet.
-  test.skip('a DRAIN whose wait for work in flight times out drains anyway, and the migration completes', () => {});
+  test('a DRAIN whose wait for work in flight times out drains anyway, and the migration completes', async () => {
+    const drainTimeout = 30_000;
+    const clock = new TestClock();
+    const h = new Harness({ clock, handoverTimeout: handover });
+    const sbA = new Switchboard();
+    const sbB = new Switchboard();
+    const lifeA = new Keeper();
+    let gateA: SlotGate | undefined;
+    let gateB: SlotGate | undefined;
+    const extendsA: FakeFrame[] = [];
+    const a = await start(clock, h, 1, undefined, extendsA, {
+      handlerFor: (client) => {
+        gateA = new SlotGate(sbA, client, zone, {
+          lifecycle: lifeA,
+          drainTimeout,
+          instance: 1,
+          clock,
+        });
+        return gateA;
+      },
+    });
+    const b = await start(clock, h, 2, undefined, [], {
+      handlerFor: (client) => {
+        gateB = new SlotGate(sbB, client, zone, { lifecycle: new Keeper(), instance: 2, clock });
+        return gateB;
+      },
+    });
+    const owner = gateA as SlotGate;
+    void a.claim(zone, 2).catch(() => {});
+    await clock.elapse(ms10);
+    expect(owner.serves(2)).toBe(true);
+    // A request for the slot that outlives drainTimeout.
+    const untimed: Partial<TalkOptions> = { requestTimeout: 0, replyTimeout: 0, clock };
+    const [near, far] = frameLink();
+    const caller = new TalkChannel(near, untimed);
+    const callee = new TalkChannel(far, untimed);
+    const held = new Deferred<void>();
+    void callee.serve((m) => owner.serveRequest(m, 2, () => held.promise));
+    caller.request('GET').catch(() => {});
+    await clock.elapse(ms10);
+    const [operator] = h.link();
+    const phases: string[] = [];
+    const migrate = operator.streamRequest(
+      'MIGRATE',
+      new MigrateRequest(zone, 2, { to: 2 }).encode(),
+    );
+    void (async () => {
+      try {
+        for await (const m of migrate.items) {
+          phases.push(migrationPhaseName(PhaseItem.decode(m.payload).phase));
+        }
+      } catch {
+        // Read through `done`.
+      }
+    })();
+    let outcome: unknown;
+    migrate.done.then(
+      () => {
+        outcome = 'done';
+      },
+      (e: unknown) => {
+        outcome = e;
+      },
+    );
+    await clock.elapse(drainTimeout - ms50);
+    expect(phases).toEqual(['draining']);
+    expect(lifeA.drained).toEqual([]);
+    await clock.elapse(ms50 * 2);
+    // Drained anyway, on a DRAIN that is still current.
+    expect(lifeA.drained).toEqual(['drain 2 e2 to2 cancelled false']);
+    await clock.elapse(ms10);
+    expect(outcome).toBe('done');
+    expect(phases).toEqual(['draining', 'assigning', 'forwarding', 'done']);
+    expect(h.service.slotTable(zone)?.get(2).owner).toBe(2);
+    // The wait, a second more and the client's buffer; then an empty EXTEND
+    // giving the drain the naming service's default timeout.
+    expect(extendsA.map(extension)).toEqual([
+      { deadline: drainTimeout + 1000 + clientBuffer, renew: undefined },
+      { deadline: undefined, renew: undefined },
+    ]);
+    held.resolve();
+    void caller.close();
+    void callee.close();
+    void operator.close();
+    void gateA?.close();
+    void gateB?.close();
+    void sbA.close();
+    void sbB.close();
+    await finish(clock, h, [a, b]);
+  });
 
   test('MIGRATE passes the deadline the old owner declares on DRAIN on to the requester', async () => {
     const clock = new TestClock();
@@ -1122,3 +1271,40 @@ describe('declared deadlines, no heartbeat', () => {
     await finish(clock, h, [a, b]);
   });
 });
+
+/** A lifecycle whose loads [onLoad] answers, and that refuses every channel. */
+class Loader extends SlotLifecycle {
+  readonly onLoad: (slot: number, context: SlotRequestContext | undefined) => Promise<AssignResult>;
+
+  constructor(
+    onLoad: (slot: number, context: SlotRequestContext | undefined) => Promise<AssignResult>,
+  ) {
+    super();
+    this.onLoad = onLoad;
+  }
+
+  override load(slot: number, options: SlotLoadOptions): Promise<AssignResult> {
+    return this.onLoad(slot, options.context);
+  }
+
+  override serve(channel: IncomingChannel): void {
+    void channel.reject(Status.of(StatusCode.unavailable));
+  }
+}
+
+/** A lifecycle that loads at once without holding, keeps the channels it serves open, and records its drains. */
+class Keeper extends SlotLifecycle {
+  readonly drained: string[] = [];
+
+  override async load(): Promise<AssignResult> {
+    return AssignResult.notHolding;
+  }
+
+  override async drain(slot: number, options: SlotDrainOptions): Promise<void> {
+    this.drained.push(
+      `drain ${slot} e${options.epoch} to${options.to} cancelled ${options.context?.isCancelled}`,
+    );
+  }
+
+  override serve(): void {}
+}
