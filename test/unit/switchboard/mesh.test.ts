@@ -51,6 +51,7 @@ import type { TalkOptions } from '../../../src/core/talk/contract.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { codeOf, node, onCleanup, overFrameMux, rejectsWith } from '../../support/node/harness.ts';
 import { SteppingClock } from '../../support/node/stepping-clock.ts';
 
@@ -269,6 +270,21 @@ class Idle extends SlotLifecycle {
   serve(): void {}
 }
 
+/** A sharded service that keeps its slots' storage and records what it unloads. */
+class Recorded extends SlotLifecycle {
+  readonly unloaded: number[] = [];
+
+  load(): Promise<AssignResult> {
+    return Promise.resolve(AssignResult.holding);
+  }
+
+  override unload(slot: number): void {
+    this.unloaded.push(slot);
+  }
+
+  serve(): void {}
+}
+
 /** A stepping clock whose time is also the (faked) system time: Dart's fake_async with `package:clock`. */
 class FakeWall extends SteppingClock {
   readonly origin: number;
@@ -394,6 +410,97 @@ describe('MeshNode', () => {
     const bare = mesh.service.table.get(new ServiceAddress(Services.relay, anonymousId).key);
     expect(bare?.metadata).toHaveLength(0);
     expect(messages.some((m) => m.includes('publishing a relay without a credential'))).toBe(true);
+  });
+
+  // Beside the Dart cases (the integration suites cover the hand-over):
+  // what leave reports when no other instance can take a slot over, and
+  // when the naming service is gone.
+  test('leave releases, keeping the storage, the slots no other instance can take over', async () => {
+    const mesh = await Mesh.start({ requireCredential: false });
+    const n = await newNode();
+    const joined = join(n, mesh.uri, { watch: false });
+    const lifecycle = new Recorded();
+    const gate = await within(joined.publishSharded(npc, lifecycle, { count: 4, endpoints: [] }));
+    await until(() => gate.servedSlots.size === 4, 'every slot assigned');
+    const id = gate.instance;
+    const report = await within(joined.leave());
+    expect([...report.released]).toEqual([[npc.key, [0, 1, 2, 3]]]);
+    expect(report.handedOver.size).toBe(0);
+    expect(report.dropped.size).toBe(0);
+    expect(report.isComplete).toBe(false);
+    expect(lifecycle.unloaded.sort()).toEqual([0, 1, 2, 3]);
+    const table = mesh.service.slotTable(npc);
+    for (let slot = 0; slot < 4; slot++) {
+      expect(table?.get(slot).holder, `slot ${slot}`).toBe(id);
+    }
+  });
+
+  test('leave stops handing over at leaveTimeout, on its clock; a slot still migrating then is dropped', async () => {
+    const mesh = await Mesh.start({ requireCredential: false });
+    const clock = new ManualClock();
+    const a = await newNode();
+    await a.listenMemory();
+    const { logger, messages } = logged('warn', 'Switchboard.Naming');
+    const leaving = join(a, mesh.uri, { watch: false, clock, logger, leaveTimeout: 1000 });
+    const draining = new Deferred<void>();
+    const hold = new Deferred<void>();
+    onCleanup(() => hold.resolve());
+    const lifecycle = new (class extends Recorded {
+      override drain(): Promise<void> {
+        draining.resolve();
+        return hold.promise;
+      }
+    })();
+    const gate = await within(leaving.publishSharded(npc, lifecycle, { count: 1 }));
+    await until(() => gate.serves(0), 'the slot assigned');
+    expect(gate.clock).toBe(clock);
+    // A second instance the slot can go to.
+    const b = await newNode();
+    await b.listenMemory();
+    const staying = join(b, mesh.uri, { watch: false });
+    await within(staying.publishSharded(npc, new Recorded(), { count: 1 }));
+    const report = leaving.leave();
+    await within(draining.promise);
+    clock.advance(999);
+    await ManualClock.settle();
+    expect(messages).toEqual([]);
+    clock.advance(1);
+    const done = await within(report);
+    expect([...done.dropped]).toEqual([[npc.key, [0]]]);
+    expect(done.handedOver.size + done.released.size).toBe(0);
+    expect(messages).toEqual([
+      'leaving: slots not handed over within 1000 ms',
+      'leaving: slots dropped: {npc: [0]}',
+    ]);
+  });
+
+  test('leave drops the slots when the naming service is gone', async () => {
+    const mesh = await Mesh.start({ requireCredential: false });
+    const n = await newNode();
+    const joined = join(n, mesh.uri, { watch: false, reconnectDelay: 20 });
+    const lifecycle = new Recorded();
+    await within(
+      joined.publishSharded(npc, lifecycle, { count: 4, mode: SlotMode.static, endpoints: [] }),
+    );
+    await within(joined.claimSlot(npc, 3));
+    await within(joined.claimSlot(npc, 1));
+    await rejectsWith(joined.claimSlot('chat', 0), StatusCode.failedPrecondition);
+    await rejectsWith(joined.releaseSlot('chat', 0), StatusCode.failedPrecondition);
+    await rejectsWith(
+      joined.publishSharded(npc, new Idle(), { count: 4 }),
+      StatusCode.failedPrecondition,
+    );
+    await mesh.close();
+    await until(() => !joined.client.isConnected, 'the naming channel lost');
+    const report = await within(joined.leave());
+    expect([...report.dropped]).toEqual([[npc.key, [1, 3]]]);
+    expect(report.released.size + report.handedOver.size).toBe(0);
+    expect(`${report}`).toBe('LeaveReport(handed over {}, released {}, dropped {npc: [1, 3]})');
+    expect(lifecycle.unloaded.sort()).toEqual([1, 3]);
+    await rejectsWith(
+      joined.publishSharded('chat', new Idle(), { count: 1 }),
+      StatusCode.failedPrecondition,
+    );
   });
 
   test('no renewal is scheduled without a credential, for one that never expires, or without renewCredential', async () => {

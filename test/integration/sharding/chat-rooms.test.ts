@@ -332,8 +332,11 @@ for (const scheme of ['tcp', 'mem'] as const) {
       }
 
       // Every post is in its room once, in order; members see the room as it
-      // is.
-      await delay(20);
+      // is (once the last pushes arrived: Dart waits 20 ms, this polls).
+      await until(
+        () => members.every((m) => m.view.join('\n') === (storage.get(m.slot) ?? []).join('\n')),
+        'every member sees its room',
+      );
       for (const member of members) {
         const history = storage.get(member.slot) ?? [];
         expect(history.filter((message) => message.startsWith(`${member.name}:`))).toEqual(
