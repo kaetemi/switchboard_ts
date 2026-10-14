@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+.vitest/
+# Rust (native/)
+native/**/target/
+# Dart peer (test/interop/dart_peer/)
+test/interop/dart_peer/.dart_tool/
+test/interop/dart_peer/pubspec.lock
+test/interop/dart_peer/build/
+# Local scratch
+.DS_Store
+*.log
