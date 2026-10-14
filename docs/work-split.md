@@ -31,7 +31,7 @@ Branch suggestion: `claude/sb-ts-core`. Dart: `lib/src/transport/*` (2 700 lines
 **Deliverables, in order (one PR each or grouped as marked)**
 
 1. `endpoint.ts`, `stream-framing.ts`, `memory-transport.ts`, `stream-transport.ts`, vectors for the stream binding. Lands first: the Talk and node threads test over the memory pair.
-2. `mux-frame.ts`, `mux-protocol.ts` with every wiki and Dart vector; `binding-connection.ts` as an abstract class the QUIC thread extends (constructor takes `MuxOptions`, provides the identity state machine, NONCE and IDENT handling via overridable `sendControl`, `peerIdentity`, drain holds, `adoptIncoming`, `admitAfterGoAway`, neutral diagnostics). Land this before step 3 so the QUIC thread is unblocked.
+2. `mux-frame.ts`, `mux-protocol.ts` with every wiki and Dart vector; `binding-connection.ts` as an abstract class the QUIC thread extends, with Dart's scope: drain holds and neutral diagnostics; the identity exchange, `adoptIncoming` and `admitAfterGoAway` are each binding's own (landed as PR #9). Land this before step 3 so the QUIC thread is unblocked.
 3. `frame-mux-connection.ts`, `frame-mux-channel.ts`, `output-scheduler.ts`: the full `MuxConnection` and `MuxChannel` over a `FrameTransport`, porting `mux_connection_test.dart`, `mux_channel_test.dart`, `frame_mux_*` tests and the limits, credit, scheduler, keep-alive, GOAWAY, close, held-frame and pending-rejection tests with `ManualClock`.
 4. Identity: codecs with vectors, verifiers, issuer, the IDENT exchange on the connection (transport paused while verifying, held frames), `identity_test.dart` ports.
 5. `websocket-transport.ts`, `src/node/transport/*`, integration tests over the loopback, the Dart `web_socket_*` and `stream_transport_*` test ports.
