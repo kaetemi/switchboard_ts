@@ -422,6 +422,9 @@ Behavioural differences a Dart user would notice; the wire is unchanged.
 5. Timers do not use `unref`; close what should not keep the process alive.
 6. Durations are milliseconds; `undefined` where Dart used `null`.
 7. Every waiting call takes an `AbortSignal`; Dart used `Future.timeout` at call sites.
+8. A write to a channel that can no longer send rejects and errors the `writable` (frame mux and QUIC binding alike); Dart's `sink.add` dropped the data silently.
+9. An OPEN after this side's GOAWAY is refused with GOING_AWAY unless an `admitAfterGoAway` predicate accepts it; with none installed nothing is admitted, not even `_bulk` continuations (Talk installs the predicate).
+10. A channel's `readable` has a high-water mark of 0: a subframe is delivered, and its credit returned, only on a read; cancelling the readable discards what arrives and does not close the channel.
 
 ## 13. Open questions
 

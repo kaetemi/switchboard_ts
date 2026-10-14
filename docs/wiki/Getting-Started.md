@@ -70,11 +70,11 @@ await channel.close();
 ## A browser client
 
 ```ts
-import { ReconnectingClient, connectWebSocket, webTransport } from '@kaetemi/switchboard/web';
+import { ReconnectingClient, connectWebSocket, quicConnector, webTransport } from '@kaetemi/switchboard/web';
 
 const client = new ReconnectingClient(() => connectWebSocket('wss://edge.example.com/sb'));
 // or over WebTransport:
-// const client = new ReconnectingClient(webTransport('https://edge.example.com:4433/sb', { serverCertificateHashes }));
+// const client = new ReconnectingClient(quicConnector('https://edge.example.com:4433/sb', webTransport(), { serverCertificateHashes }));
 
 client.openPersistentTalk('chat', async (talk) => {
   for await (const message of talk.messages) render(message.json());
