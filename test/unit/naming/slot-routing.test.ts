@@ -76,6 +76,8 @@ const Mode = {
   greetThenMoved: 'greetThenMoved',
   /** Talk: sends a `HELLO` message, answers requests with `<name>:<data>`. */
   talk: 'talk',
+  /** Talk without the `HELLO`: the first frame it sends is a reply. */
+  quietTalk: 'quietTalk',
   /** Sends nothing; records what arrives in `received`. */
   collect: 'collect',
 } as const;
@@ -158,6 +160,9 @@ class Backend {
         void talk.serve((m) => m.reply(`${this.name}:${m.text()}`));
         break;
       }
+      case Mode.quietTalk:
+        void incoming.talk().serve((m) => m.reply(`${this.name}:${m.text()}`));
+        break;
       case Mode.collect:
         void readAll(channel.readable, (d) => this.received.push(text(d)));
         break;
@@ -555,6 +560,28 @@ describe('slot routing', () => {
         const talk = await router.openTalkToSlot(svc, 1);
         await new Pull<TalkMessage>(talk.messages).next();
         const big = 'k'.repeat(100_000);
+        const answer = await talk.request('GET', big);
+        expect(answer.isBulk).toBe(true);
+        expect(utf8Decode(await answer.bytes())).toBe(`B:${big}`);
+        await talk.close();
+      });
+
+      // Not in the Dart file: the bulk channel of a reply that is the first
+      // frame the new owner sends reaches the Talk channel, because the slot
+      // channel moved Talk's bulk route to the replacement (Dart
+      // `BulkRoutes.follow`) before reading it.
+      test('Talk: a bulk reply as the first frame on the retried slot channel', async () => {
+        a.mode = Mode.moved;
+        a.moved = new MovedStatus({ owner: 2, epoch: 2 });
+        b.mode = Mode.quietTalk;
+        const talk = await router.openTalkToSlot(svc, 1);
+        // The retry happens before the first request (sent earlier, it would
+        // surface the MOVED: see SlotChannel).
+        const slot = talk.rawChannel as SlotChannel;
+        await slot.channel.done;
+        await slot.whenWritable;
+        expect(slot.retried).toBe(true);
+        const big = 'q'.repeat(100_000);
         const answer = await talk.request('GET', big);
         expect(answer.isBulk).toBe(true);
         expect(utf8Decode(await answer.bytes())).toBe(`B:${big}`);
