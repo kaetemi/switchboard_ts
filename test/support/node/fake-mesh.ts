@@ -22,14 +22,17 @@ import type { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { onCleanup } from './harness.ts';
 
 /**
- * A stand-in for a mesh run by a naming service, for the node thread's
- * tests until the naming client and `MeshNode` land: one table of records
- * that every {@link MeshResolver} of the mesh mirrors at once, instance ids
- * assigned in order, and the naming service's `CONNECT` (an instance
- * registered without endpoints dials the requester back, identifying with
- * the requester's intent and naming it, under {@link brokeredPolicy}).
- * Like the naming service with `requireCredential`, `CONNECT` needs a
- * requester whose credential grants `broker` for the type.
+ * A stand-in for a mesh run by a naming service, for the node thread's unit
+ * tests (the relay's), which check the node and keep the naming service out
+ * of the way; the meshes with the real naming service and `MeshNode` are in
+ * `test/integration/` and `test/unit/switchboard/mesh.test.ts`. One table
+ * of records that every {@link MeshResolver} of the mesh mirrors at once,
+ * instance ids assigned in order, and the naming service's `CONNECT` (an
+ * instance registered without endpoints dials the requester back,
+ * identifying with the requester's intent and naming it, under
+ * {@link brokeredPolicy}). Like the naming service with
+ * `requireCredential`, `CONNECT` needs a requester whose credential grants
+ * `broker` for the type.
  */
 export class FakeMesh {
   /** The policy of the connections an instance dials for `CONNECT`, as `MeshNode` has. */

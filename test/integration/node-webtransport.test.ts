@@ -7,8 +7,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Node to Node over WebTransport (HTTP/3) on the loopback, through the
 // native provider: listenWebTransport at a path, and a client node whose
 // quic option dials https:// endpoints, pinning the listener's
-// self-signed certificate. Raw channels; the Talk cases wait for the
-// node's Talk layer.
+// self-signed certificate. Raw channels, and Talk requests with a bulk
+// echo.
 //
 // Without the addon (`npm run build:native`, or SWITCHBOARD_QUIC_ADDON)
 // the file is skipped with the reason; with SWITCHBOARD_NATIVE=required a
@@ -26,7 +26,7 @@ import {
   selfSignedCertificate,
 } from '../../src/node/quic/index.ts';
 import { rejectsWith, tagged, tagOf } from '../support/node/harness.ts';
-import { echo, node, roundTrip, within } from './node-support.ts';
+import { echo, exerciseTalk, node, roundTrip, talkService, within } from './node-support.ts';
 
 const availability = nativeQuicAvailability();
 if (!availability.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {
@@ -62,7 +62,26 @@ describe.skipIf(!availability.available)(
       expect((await channel.done).isOk).toBe(true);
     });
 
-    test.todo('Talk requests over WebTransport: the node Talk layer is not wired yet');
+    test('Talk requests over WebTransport', async () => {
+      const certificate = selfSignedCertificate('127.0.0.1');
+      const server = node();
+      server.registerService('echo', talkService);
+      const endpoint = await server.listenWebTransport('127.0.0.1', 0, {
+        path: '/sb',
+        certificate,
+      });
+      const client = node({
+        quic: nativeQuic(),
+        quicBinding: { serverCertificateHashes: [certificate.sha256] },
+        resolver: new EndpointResolver(endpoint),
+      });
+      const talk = await within(
+        client.openTalk('echo', { talkOptions: { bulkThreshold: 64 * 1024 } }),
+      );
+      expect(talk.raw?.connection).toBeInstanceOf(QuicBindingConnection);
+      await within(exerciseTalk(talk, 1024 * 1024 + 3));
+      await talk.close();
+    });
 
     test('without verification, as between nodes with self-signed certificates', async () => {
       const server = node();
