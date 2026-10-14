@@ -4,6 +4,7 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
+import type { ConnectionConnector } from '../client/reconnecting-client.ts';
 import type { MuxOptions } from '../mux/contract.ts';
 import { muxOptions } from '../mux/contract.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
@@ -272,4 +273,30 @@ function certificateHashBytes(hash: QuicCertificateHash): Uint8Array {
   return ArrayBuffer.isView(value)
     ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
     : new Uint8Array(value);
+}
+
+/**
+ * A {@link ConnectionConnector} dialling [endpoint] through [connector]
+ * with {@link connectQuic}, for a `ReconnectingClient`: each attempt uses
+ * the client's mux options and signal, and [init] for the rest.
+ *
+ * ```ts
+ * const client = new ReconnectingClient(
+ *   quicConnector('https://edge.example.com:4433/sb', webTransport(), {
+ *     serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+ *   }),
+ * );
+ * ```
+ *
+ * @throws {TypeError} if [endpoint] is not an absolute URI.
+ */
+export function quicConnector(
+  endpoint: string | URL,
+  connector: QuicConnector,
+  init: Omit<QuicConnectOptions, 'options' | 'signal'> = {},
+): ConnectionConnector {
+  const href = parseEndpoint(endpoint).href;
+  return {
+    connect: (options, { signal }) => connectQuic(href, connector, { ...init, options, signal }),
+  };
 }
