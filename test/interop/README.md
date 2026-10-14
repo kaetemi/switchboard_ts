@@ -133,6 +133,7 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 | `naming.claim` | `naming`, `type`, `slot`, `holding` | `{epoch}` |
 | `naming.release` | `naming`, `type`, `slot`, `keepStorage` | `null` |
 | `naming.locate` | `naming`, `type`, `slot` | `{state, owner, epoch}`, the state by name |
+| `naming.migrate` | `naming`, `type`, `slot`, `to` (0: the allocator chooses) | `{phases}`: the hand-over's phases by name, once it is done |
 | `naming.channel` | `naming`, `address` (`type`, `instance`, `shard`, `payload`) | `{talk, channel, connection}`: a Talk channel opened through the resolver, as `talk.open` reports it |
 | `naming.close` | `naming` | `null` |
 

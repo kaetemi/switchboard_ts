@@ -45,9 +45,9 @@ skipped, with the native addon.
 
 ## Remaining
 
-1. Sharding beyond a static space: managed and lazy spaces, migration
-   (DRAIN, ASSIGN, FORWARD, RESUME) across implementations, and the MOVED
-   retry of slot-routed opens once the node routes by slot.
+1. Sharding beyond a static space and one hand-over: managed and lazy
+   spaces, refused hand-overs (RESUME, roll-back), and the MOVED retry of
+   slot-routed opens once the node routes by slot.
 2. The reconnecting client against a server's GOAWAY and close (scenario
    23 of the notes) and the QUIC record-level cases (24): they need a raw
    QUIC probe or more peer commands.

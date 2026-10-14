@@ -609,7 +609,8 @@ Landed, every cell green in required mode (`SWITCHBOARD_INTEROP=required`,
   `relay` and the `naming.*` commands; a QUIC binding on the listening
   node so that intermediaries dial QUIC.
 * **Scenarios**: basics, talk, talk-wire, bulk, close and GOAWAY, mux,
-  protocol-errors, forward, identity, naming in the 16 pairing cells;
+  protocol-errors, forward, identity, naming (with a slot hand-over:
+  DRAIN, ASSIGN, FORWARD in protocol order) in the 16 pairing cells;
   proxy, relay, forward and naming chains of three peers (`chain.ts`) in
   8 implementation cells per transport; the probe against both servers.
 * **Oracle**: the TS peer's oracle answers every kind of the Dart peer's;

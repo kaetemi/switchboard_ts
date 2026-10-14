@@ -194,6 +194,7 @@ class NamingCommands {
     'naming.claim',
     'naming.release',
     'naming.locate',
+    'naming.migrate',
     'naming.channel',
     'naming.close',
   ];
@@ -253,6 +254,16 @@ class NamingCommands {
       case 'naming.locate':
         final r = await client.locate(type(), intArg(cmd, 'slot') ?? 0);
         return {'state': r.state.name, 'owner': r.owner, 'epoch': r.epoch};
+      case 'naming.migrate':
+        final phases = <String>[];
+        await for (final item in client.migrate(
+          type(),
+          intArg(cmd, 'slot') ?? 0,
+          to: intArg(cmd, 'to') ?? 0,
+        )) {
+          phases.add(item.phase.name);
+        }
+        return {'phases': phases};
       case 'naming.channel':
         final a = objectArg(cmd, 'address') ?? const {};
         final channel = await n.node.openChannel(

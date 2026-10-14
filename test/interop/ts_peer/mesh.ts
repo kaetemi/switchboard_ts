@@ -12,6 +12,7 @@ import {
   AssignResult,
   ChannelAddress,
   type MuxChannel,
+  migrationPhaseName,
   Name,
   NamingClient,
   NamingResolver,
@@ -174,6 +175,7 @@ export const namingOps = [
   'naming.claim',
   'naming.release',
   'naming.locate',
+  'naming.migrate',
   'naming.channel',
   'naming.close',
 ] as const;
@@ -244,6 +246,15 @@ export class NamingCommands {
       case 'naming.locate': {
         const r = await client.locate(type(), intArg(cmd, 'slot') ?? 0);
         return { state: slotStateName(r.state), owner: r.owner, epoch: r.epoch };
+      }
+      case 'naming.migrate': {
+        const phases: string[] = [];
+        for await (const item of client.migrate(type(), intArg(cmd, 'slot') ?? 0, {
+          to: intArg(cmd, 'to') ?? 0,
+        })) {
+          phases.push(migrationPhaseName(item.phase));
+        }
+        return { phases };
       }
       case 'naming.channel': {
         const a = objectArg(cmd, 'address') ?? {};

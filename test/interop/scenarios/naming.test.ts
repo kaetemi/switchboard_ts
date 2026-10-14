@@ -207,5 +207,50 @@ describeCells(
       });
       expect(taken.epoch).toBeGreaterThan(epoch);
     });
+    test('a hand-over moves a claimed slot to another instance, in protocol order', async () => {
+      const c = peers.client;
+      const [a, b] = [await naming(peers), await naming(peers)];
+      const ids: number[] = [];
+      for (const n of [a, b]) {
+        const { instance } = await c.rpc<{ instance: number }>('naming.register', {
+          naming: n,
+          type: 'kv-m',
+          endpoints: ['tcp://10.0.0.5:9101'],
+        });
+        ids.push(instance);
+        await c.rpc('naming.defineSlots', { naming: n, type: 'kv-m', count: 8, mode: 'static' });
+      }
+      const [from, to] = ids as [number, number];
+      const { epoch } = await c.rpc<{ epoch: number }>('naming.claim', {
+        naming: a,
+        type: 'kv-m',
+        slot: 2,
+      });
+      const { phases } = await c.rpc<{ phases: string[] }>('naming.migrate', {
+        naming: a,
+        type: 'kv-m',
+        slot: 2,
+        to,
+      });
+      expect(phases).toEqual(['draining', 'assigning', 'forwarding', 'done']);
+      const located = await c.rpc<{ state: string; owner: number; epoch: number }>(
+        'naming.locate',
+        { naming: b, type: 'kv-m', slot: 2 },
+      );
+      expect(located).toMatchObject({ state: 'owned', owner: to });
+      expect(located.epoch).toBeGreaterThan(epoch);
+      // The old owner was asked to drain, then to forward; the new one was assigned.
+      const requests = (n: string) =>
+        c.events
+          .filter((e) => e.event === 'naming.slot' && e['naming'] === n && e['type'] === 'kv-m')
+          .map((e) => [e['request'], e['slot'], e['to']]);
+      expect(requests(a)).toEqual([
+        ['assign', 2, null],
+        ['drain', 2, to],
+        ['forward', 2, to],
+      ]);
+      expect(requests(b)).toEqual([['assign', 2, null]]);
+      expect(from).not.toBe(to);
+    });
   },
 );
