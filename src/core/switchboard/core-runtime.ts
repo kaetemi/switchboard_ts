@@ -4,9 +4,10 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
+import { FrameMuxConnection } from '../mux/frame-mux-connection.ts';
 import { MemoryEndpoints } from '../transport/memory-endpoints.ts';
 import { memoryTransportPair } from '../transport/memory-transport.ts';
-import { type SwitchboardRuntime, unavailable } from './runtime.ts';
+import type { SwitchboardRuntime } from './runtime.ts';
 
 /**
  * The runtime of the core node: the frame mux, in-process transport pairs
@@ -16,7 +17,8 @@ import { type SwitchboardRuntime, unavailable } from './runtime.ts';
  */
 export function coreRuntime(): SwitchboardRuntime {
   return {
-    mux: () => unavailable('the frame mux'),
+    mux: (transport, options, isInitiator) =>
+      new FrameMuxConnection(transport, { ...options, isInitiator }),
     transportPair: () => memoryTransportPair({ delay: 0 }),
     memoryEndpoints: MemoryEndpoints,
     dialers: {},
