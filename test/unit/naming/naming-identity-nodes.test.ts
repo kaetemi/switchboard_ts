@@ -14,13 +14,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // they run as Dart's do: over nodes on `mem` listeners with real
 // credentials (Ed25519 and HMAC issuers, holder keys, verifiers), over the
 // toy mux and, from `over-frame-mux/`, over the frame mux (the late
-// dial-back cases there only).
-//
-// `MeshNode` is not in this port yet: {@link join} stands in for
-// `MeshNode.join` (a naming client over the node's Talk channel to the
-// naming service, its resolver on the node, and the dial-back of CONNECT
-// with the scoped policy), and {@link Joined.publish} for
-// `MeshNode.publish`.
+// dial-back cases there only). The nodes join the naming service with
+// `MeshNode.join`, as in Dart.
 
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
@@ -36,9 +31,8 @@ import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import { Scope as Scopes } from '../../../src/core/identity/scope.ts';
 import type { MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
-import { type ConnectHandler, NamingClient } from '../../../src/core/naming/naming-client.ts';
-import { type DialBackRequest, Services } from '../../../src/core/naming/naming-protocol.ts';
-import { NamingResolver } from '../../../src/core/naming/naming-resolver.ts';
+import type { ConnectHandler } from '../../../src/core/naming/naming-client.ts';
+import { Services } from '../../../src/core/naming/naming-protocol.ts';
 import { NamingService } from '../../../src/core/naming/naming-service.ts';
 import {
   type Status,
@@ -47,7 +41,7 @@ import {
   statusCodeName,
 } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
-import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
+import { MeshNode, type MeshNodeOptions } from '../../../src/core/switchboard/mesh-node.ts';
 import { type PeerEvent, PeerSet } from '../../../src/core/switchboard/peer-set.ts';
 import type { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import type { TalkOptions } from '../../../src/core/talk/contract.ts';
@@ -162,59 +156,15 @@ class Mesh {
   }
 }
 
-/** A node joined to a naming service, as `MeshNode.join` makes it. */
-interface Joined {
-  readonly client: NamingClient;
-  readonly resolver: NamingResolver;
-  /** The connections the node dialled for `CONNECT` requests that are still open. */
-  readonly brokeredConnections: MuxConnection[];
-  /** Registers a local service of [type] without endpoints and serves it with [handler] (`MeshNode.publish`). */
-  publish(type: Name, handler: ChannelHandler): Promise<number>;
+/** [sb] joined to the naming service at [uri] with `MeshNode.join`, left after the test. */
+function join(sb: Switchboard, uri: string, options: MeshNodeOptions = {}): MeshNode {
+  const mesh = MeshNode.join(sb, uri, options);
+  onCleanup(() => mesh.leave());
+  return mesh;
 }
 
-/**
- * [sb] joined to the naming service at [uri]: a naming client over the
- * node's Talk channel to it, a naming resolver installed on the node, and
- * the dial-back of `CONNECT` (the node dials the consumer with its intent,
- * naming it as the receiver, under the scoped policy), as `MeshNode.join`.
- * Left after the test.
- */
-function join(sb: Switchboard, uri: string, options: { watch?: boolean } = {}): Joined {
-  const client = new NamingClient(
-    () => sb.openTalkAt(uri, new ChannelAddress({ type: naming }), { talkOptions: talk }),
-    { reconnectDelay: 1000, watch: options.watch ?? true },
-  );
-  const resolver = new NamingResolver(client, { resolveTimeout: 5000 });
-  sb.resolver = resolver;
-  const brokered: MuxConnection[] = [];
-  const dialBack: ConnectHandler = async (request: DialBackRequest) => {
-    if (sb.credential === undefined) {
-      throw SwitchboardError.of(StatusCode.failedPrecondition, 'no credential to identify with');
-    }
-    const connection = await sb.dial(request.endpoint, {
-      policy: ChannelPolicies.scoped(),
-      intent: request.intent,
-      receiver: request.requester,
-    });
-    brokered.push(connection);
-    void connection.done.then(() => {
-      const at = brokered.indexOf(connection);
-      if (at >= 0) brokered.splice(at, 1);
-    });
-  };
-  client.connectHandler = dialBack;
-  client.start().catch(() => {});
-  onCleanup(() => resolver.close());
-  return {
-    client,
-    resolver,
-    brokeredConnections: brokered,
-    publish: (type, handler) =>
-      client.register(type, [], {
-        onAssigned: (id) => sb.registerService(type, handler, { instance: id }),
-      }),
-  };
-}
+/** No endpoints: the instances of these tests are outbound only. */
+const outbound = { endpoints: [] };
 
 describe('scopes', () => {
   test('a node whose IDENT names the naming service is accepted by a host that requires it; MeshNode works under the scopes', async () => {
@@ -239,16 +189,16 @@ describe('scopes', () => {
       holderKey: key,
       expectedIdentityFor: (endpoint) => (endpoint === uri ? 'ns' : undefined),
     });
-    const mesh = join(worker, uri, { watch: false });
-    const id = await mesh.publish(workerType, () => {});
+    const mesh = join(worker, uri, { watch: false, renewCredential: false });
+    const id = await mesh.publish(workerType, () => {}, outbound);
     expect([...service.table.values()].map((r) => r.address.toString())).toEqual([
       new ServiceAddress(workerType, id).toString(),
     ]);
     expect(mesh.client.isSynced).toBe(false);
     // A client that watches anyway is refused once, and keeps its channel
     // and its registrations.
-    const watching = join(worker, uri);
-    await watching.publish(Name.of('worker-h'), () => {});
+    const watching = join(worker, uri, { renewCredential: false });
+    await watching.publish(Name.of('worker-h'), () => {}, outbound);
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(watching.client.isConnected).toBe(true);
     expect(service.table.size).toBe(2);
@@ -262,20 +212,24 @@ describe('CONNECT', () => {
   /** A mesh, an outbound-only worker registered without endpoints, and a consumer listening with a scoped policy. */
   async function setUp(): Promise<{
     worker: Switchboard;
-    workerMesh: Joined;
+    workerMesh: MeshNode;
     id: number;
     consumer: Switchboard;
   }> {
     const mesh = await Mesh.start();
     const worker = await node({ credential: await issue('worker-a1', workerScopes) });
     const workerMesh = join(worker, mesh.uri, { watch: false });
-    const id = await workerMesh.publish(workerType, (incoming) => {
-      void incoming.talk().serve((message) => {
-        if (message.expectsReply) {
-          void message.reply(`${message.text()} by ${incoming.peerIdentity?.identity}`);
-        }
-      });
-    });
+    const id = await workerMesh.publish(
+      workerType,
+      (incoming) => {
+        void incoming.talk().serve((message) => {
+          if (message.expectsReply) {
+            void message.reply(`${message.text()} by ${incoming.peerIdentity?.identity}`);
+          }
+        });
+      },
+      outbound,
+    );
     const consumer = await node({ credential: await issue('consumer-1', consumerScopes) });
     await consumer.listenMemory({ policy: ChannelPolicies.scoped() });
     const consumerMesh = join(consumer, mesh.uri);
@@ -327,7 +281,7 @@ describe('CONNECT', () => {
       const mesh = await Mesh.start({ brokerTimeout: consumerFirst ? limit : short });
       const worker = await node({ credential: await issue('worker-a1', workerScopes) });
       const workerMesh = join(worker, mesh.uri, { watch: false });
-      const id = await workerMesh.publish(workerType, () => {});
+      const id = await workerMesh.publish(workerType, () => {}, outbound);
       // The instance answers only once the consumer has given up.
       const dialBack = workerMesh.client.connectHandler as ConnectHandler;
       const asked = new Deferred<void>();
@@ -428,6 +382,6 @@ describe('CONNECT', () => {
   });
 });
 
-// Not ported here: "MeshNode renews at two thirds of the lifetime; a
-// credential that is not renewed ends the session at its expiry" is
-// MeshNode's renewal schedule (see `naming-identity.test.ts`).
+// Not here: "MeshNode renews at two thirds of the lifetime; a credential
+// that is not renewed ends the session at its expiry" is ported in
+// `test/unit/switchboard/mesh.test.ts`, with MeshNode's other cases.

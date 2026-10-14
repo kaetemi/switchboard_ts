@@ -12,6 +12,7 @@ export {
   MeshNode,
   type MeshNodeOptions,
   type MeshPublishOptions,
+  type MeshPublishShardedOptions,
   type NamingClientForOptions,
   namingClientFor,
 } from './mesh-node.ts';

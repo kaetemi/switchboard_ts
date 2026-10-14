@@ -12,9 +12,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // endpoint proxying `chat` for clients that only know the endpoint, and a
 // raw mux peer without a Switchboard; then the liveness of the naming
 // channel through the mux keep-alive, over a TCP relay that can freeze.
-//
-// Not ported yet: the two `publishSharded` cases need the slot gate, which
-// is not ported; they are listed as todo.
+// First, as in Dart, the two cases of `publishSharded` failing.
 
 import { createServer, type Server, type Socket, connect as tcpConnect } from 'node:net';
 import { afterAll, beforeEach, describe, expect, test } from 'vitest';
@@ -22,8 +20,10 @@ import { ChannelAddress, ServiceAddress } from '../../src/core/address/index.ts'
 import { hexString, utf8Decode, utf8Encode } from '../../src/core/bytes.ts';
 import { FrameMuxConnection } from '../../src/core/mux/frame-mux-connection.ts';
 import { Name } from '../../src/core/name.ts';
-import { Services, serviceRecordsEqual } from '../../src/core/naming/naming-protocol.ts';
+import { AssignResult } from '../../src/core/naming/naming-client-slots.ts';
+import { Services, SlotMode, serviceRecordsEqual } from '../../src/core/naming/naming-protocol.ts';
 import { NamingService } from '../../src/core/naming/naming-service.ts';
+import { SlotLifecycle } from '../../src/core/naming/slot-gate.ts';
 import { Status, StatusCode } from '../../src/core/status.ts';
 import type {
   IncomingChannel,
@@ -355,13 +355,58 @@ afterAll(() => {
   expectNoMemoryListeners();
 });
 
-test.todo(
-  'publishSharded handles both SLOTS and HOLDING failures: needs publishSharded (the slot gate is not ported yet)',
-);
+/** A sharded service the tests never get to serve. */
+class UnusedLifecycle extends SlotLifecycle {
+  load(): Promise<AssignResult> {
+    return Promise.resolve(AssignResult.notHolding);
+  }
 
-test.todo(
-  'publishSharded handles an immediate HOLDING failure: needs publishSharded (the slot gate is not ported yet)',
-);
+  serve(): void {}
+}
+
+test('publishSharded handles both SLOTS and HOLDING failures', async () => {
+  const host = newNode();
+  const service = new NamingService({ maxSlotCount: 1, assignmentHold: 0 });
+  onCleanup(() => service.close());
+  host.registerService(Services.naming, service.handler);
+  const endpoint = await host.listenMemory();
+  const n = newNode();
+  const mesh = MeshNode.join(n, endpoint, { watch: false });
+  onCleanup(() => mesh.leave());
+
+  // SLOTS is too large; HOLDING then has no space. Both errors must be
+  // handled even though publishSharded reports only the first one.
+  await rejectsWith(
+    mesh.publishSharded(npc, new UnusedLifecycle(), { count: 2, holding: [0] }),
+    StatusCode.outOfRange,
+  );
+  expect(mesh.published).toEqual([]);
+  expect(mesh.gates.get(npc)).toBeUndefined();
+  expect(service.table.size).toBe(0);
+});
+
+test('publishSharded handles an immediate HOLDING failure', async () => {
+  const host = newNode();
+  const service = new NamingService({ assignmentHold: 0 });
+  onCleanup(() => service.close());
+  host.registerService(Services.naming, service.handler);
+  const endpoint = await host.listenMemory();
+  const n = newNode();
+  const mesh = MeshNode.join(n, endpoint, { watch: false });
+  onCleanup(() => mesh.leave());
+
+  // Local validation fails before SLOTS completes its round trip.
+  await expect(
+    mesh.publishSharded(npc, new UnusedLifecycle(), {
+      count: 2,
+      mode: SlotMode.static,
+      holding: [-1],
+    }),
+  ).rejects.toThrow(RangeError);
+  expect(mesh.published).toEqual([]);
+  expect(mesh.gates.get(npc)).toBeUndefined();
+  expect(service.table.size).toBe(0);
+});
 
 for (const scheme of ['tcp', 'ws', 'mem'] as const) {
   describe(`over ${scheme}`, () => {
