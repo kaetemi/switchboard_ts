@@ -7,6 +7,18 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 export { ChannelPolicies } from './channel-policy.ts';
 export * from './contract.ts';
 export { IncomingChannel } from './incoming-channel.ts';
+export {
+  Peer,
+  PeerEvent,
+  PeerEventType,
+  type PeerOpenOptions,
+  PeerSet,
+  type PeerSetEvents,
+  type PeerSetOptions,
+  PeerState,
+} from './peer-set.ts';
+export { type ProxyHandlerOptions, pipeChannels, proxyHandler } from './proxy.ts';
+export { RelayService, type RelayServiceOptions } from './relay.ts';
 export { defaultRelayType, RelayConfig } from './relay-config.ts';
 export {
   EndpointResolver,
