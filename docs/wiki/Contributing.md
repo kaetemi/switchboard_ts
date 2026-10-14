@@ -2,22 +2,32 @@
 
 ## Tooling
 
-- TypeScript 7, `tsc` for the build, `module: NodeNext`, `.ts` import extensions, strict with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`.
-- Vitest for tests, Biome for lint and format (single quotes, 100 columns, no `any`, `type` imports).
-- `npm run check` before every push: lint, typecheck, unit and integration tests.
+- TypeScript 7, `tsc` for the build, `module: NodeNext`, `.ts` import extensions (rewritten on emit), strict with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`.
+- Vitest 5 for tests, Biome 2 for lint and format (single quotes, 100 columns, no `any`, `type` imports).
+- Rust (1.88 or later; CI uses 1.99.0) only for the native QUIC addon (`npm run build:native`); a Dart SDK and Rust for the interop peer; Playwright's Chromium for the browser tests.
+
+Before every push:
+
+```sh
+npm run check                             # lint, typecheck of src, unit and integration tests
+npx tsc -p tsconfig.test.json --noEmit    # the tests type-check too (CI does not run this one)
+```
+
+and, where the change touches them, `npm run test:browser`, `npm run test:interop` and the native QUIC files (`SWITCHBOARD_QUIC_ADDON=... npx vitest run --project integration test/integration/quic-*.test.ts`). See [Testing and Interop](Testing-and-Interop).
 
 ## Conventions
 
 - `src/core` is runtime neutral: no `node:` imports, no `ws`, no DOM-only APIs. Runtime specifics live in `src/node` and `src/web`.
-- Each layer's public interface is in its `contract.ts`; implementations export from the directory's `index.ts`.
-- The Dart reference implementation defines the behaviour; its tests are the checklist, ported one to one and named after the Dart file. The wiki defines the wire; its vectors are asserted by id.
-- Every exported symbol has a JSDoc line. The source header comment is the one in the existing files.
-- `const` objects instead of enums; options objects with frozen defaults and a merge helper; `RangeError` for misuse.
+- Each layer's public interface is in its `contract.ts`; implementations export from the directory's `index.ts`. A contract change is its own commit with a short rationale.
+- The Dart reference implementation defines the behaviour; its tests are the checklist, ported one to one and named after the Dart file (`mux_flow_test.dart` becomes `mux-flow.test.ts`). A Dart test that cannot be ported is left as `// Not ported: <reason>` or `test.todo` with the reason, never skipped silently. The wiki defines the wire; its vectors are asserted by id.
+- Every exported symbol has a JSDoc comment. The source header comment is the one in the existing files.
+- `const` objects instead of enums; options objects with frozen defaults and a merge helper; `RangeError` and `TypeError` for misuse, plain `Error` where Dart has `StateError`; `process.env['X']` (bracket access to index signatures).
 - No `console`; use the `logger` option. No global timers; use the `clock` option.
 - Internal promises a caller may drop are pre-caught so nothing is an unhandled rejection.
+- Every observable difference from Dart is listed in `docs/design.md`, section 12.
 
 ## Branches and reviews
 
-During the port, work lands on the integration branch `claude/switchboard-ts-design-s5r9na` through pull requests from per-layer branches, reviewed and merged by the lead in dependency order; `main` is initialised from it at the first green end-to-end state. Afterwards, pull requests target `main`.
+`main` is the integration branch. Work happens on topic branches and lands on `main` with real merge commits (no squash, no rebase), after `npm run check` and the test typecheck pass on the merged tree; keep a branch's history granular, one commit per milestone, and continue a merged branch from `main` with a merge. Commit messages explain what and why, and carry the co-author attribution the project uses; nothing about hosts or credentials goes in them. The Dart repositories are read-only from this project: findings about them are reported, not patched here.
 
-Commit on every milestone, with clear messages and the co-author attribution the project uses. The Dart repositories are not changed from this project.
+The documentation lives in the repository: `docs/design.md` (the design and its decisions), `docs/handoff.md` (the state of the port), and these pages under `docs/wiki/`, written as GitHub wiki Markdown so they can be pushed to the wiki as they are.

@@ -12,8 +12,8 @@ This is the original assignment. The first phase went through pull requests #1 t
 | --- | --- | --- |
 | 1. Protocol core | 1 to 5 | Done: transports (#5, `claude/transports`), codecs and binding base (#9), frame mux (#14) with every Dart mux suite (`claude/mux-tests`), identity (`claude/identity`). Acceptance: the raw probe against a TS server waits on the TS peer. |
 | 2. Talk | 1 to 4 | Done (#1, #4, #11), with the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`). Acceptance: the Talk scenarios wait on the TS peer. |
-| 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`), except `MeshNode`'s sharded half (in flight on `claude/sharding`). Acceptance: the interop cells wait on the TS peer. |
-| 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`); the `test/integration/sharding/` port is in flight on `claude/sharding`. Acceptance: interop with the Dart naming service waits on the TS peer. |
+| 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`, `claude/sharding`). Acceptance: the interop cells wait on the TS peer. |
+| 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`, and the `test/integration/sharding/` port on `claude/sharding`). Acceptance: interop with the Dart naming service waits on the TS peer. |
 | 5. QUIC | 1 to 5 | Done (#2, #8, #15, `claude/webtransport`, `claude/quic-identity`); publishing is the user's call. Acceptance: Chromium reaches a TS WebTransport listener (done); interop over raw QUIC and WebTransport waits on the TS peer. |
 | 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 in flight on `claude/ts-peer`. |
 
@@ -85,7 +85,7 @@ Branch suggestion: `claude/sb-ts-node`. Dart: `lib/src/switchboard/{switchboard,
 1. `ChannelPolicies`, `IncomingChannel`, dispatch and registration over the memory transport (thread 1 step 1) with a stub Talk until thread 2 step 2 lands: `registerService`, `openChannelOn`, `accept`, `connections`, `close`. **Done** (#6; the Talk seam wired on `claude/node-talk`).
 2. Resolvers, the connection pool, `connect`/`dial`, `openChannel`/`openTalk`/`openChannelAt`, identity on connections (`credential`, `identifyOn`, `expectedIdentityFor`, `credentialFor`), `localConnections` and `isOwnEndpoint`. **Done** (#6, #17); the node suites run over the toy mux and over the frame mux (`test/unit/switchboard/over-frame-mux/`).
 3. `ReconnectingClient`, `Backoff`, persistent channels with `ManualClock`. **Done** (#10).
-4. Proxy, relay, forwarding; `PeerSet`, `MeshNode`. **Done** (#16, `claude/node-talk`, `claude/mesh`; `MeshNode` lives in `src/core/switchboard/mesh-node.ts`), except `MeshNode`'s sharded half (`publishSharded`, `claimSlot`, `releaseSlot`, `gates`, the hand-over in `leave`): **in flight** on `claude/sharding`.
+4. Proxy, relay, forwarding; `PeerSet`, `MeshNode`. **Done** (#16, `claude/node-talk`, `claude/mesh`; `MeshNode` lives in `src/core/switchboard/mesh-node.ts`), and `MeshNode`'s sharded half (`publishSharded`, `claimSlot`, `releaseSlot`, `gates`, the hand-over in `leave`) on `claude/sharding`.
 5. The Node and web entry points with the listeners and schemes; slot-routed opens (`openChannelToSlot`, `selectAndConnect` with a `SlotResolver`) wired to thread 4's types. **Done**: the entry points on `claude/transports` (`src/node/switchboard.ts`, `src/web/switchboard.ts`); slot routing on `claude/slot-routing` (`openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups).
 
 **Acceptance:** the Dart `test/switchboard/*`, `test/client/*` and the node-level `test/integration/*` have TS counterparts or a documented reason; the interop thread's Dart peer completes requests against a TS node and a TS node completes requests against the Dart peer over TCP and WebSocket.
@@ -104,7 +104,7 @@ Branch suggestion: `claude/sb-ts-naming`. Dart: `lib/src/naming/*` (9 100 lines)
 1. `naming-protocol.ts` with vectors; `slot-key.ts`, `slot-table.ts`. **Done** (#3).
 2. `NamingClient` and `NamingResolver` over a `TalkChannel` (thread 2 step 2; until then the fake channel fixture). **Done** (#13; `renew()` on `claude/identity`; the suites over real Talk on `claude/slot-routing`).
 3. `NamingService` with leases, watches, CONNECT brokering. **Done** (#13).
-4. Slot spaces: client and service halves, `SlotGate`, `SlotChannel`, reopen on MOVED, migration (ASSIGN, DRAIN, FORWARD, RESUME). **Done** (#13, `claude/slot-routing`: `SlotGate`, `SlotLifecycle`, `SlotGates` in `src/core/naming/slot-gate.ts`, `slot_gate_test.dart`, `slot_gate_credential_test.dart`, `slot_routing_test.dart`). The integration port of `test/integration/sharding/*` is **in flight** on `claude/sharding`.
+4. Slot spaces: client and service halves, `SlotGate`, `SlotChannel`, reopen on MOVED, migration (ASSIGN, DRAIN, FORWARD, RESUME). **Done** (#13, `claude/slot-routing`: `SlotGate`, `SlotLifecycle`, `SlotGates` in `src/core/naming/slot-gate.ts`, `slot_gate_test.dart`, `slot_gate_credential_test.dart`, `slot_routing_test.dart`). The integration port of `test/integration/sharding/*` (the whole Dart sharding suite) is done on `claude/sharding`.
 
 **Acceptance:** the Dart `test/naming/*` and slot tests have TS counterparts or a documented reason; a TS naming service serves the Dart peer's registrations and watches and the reverse, in the interop matrix.
 
