@@ -4,17 +4,15 @@
 // its port. The late bulk case of Talk is played at the mux level: the test
 // does what Talk does to the connection (its admission rule after GOAWAY,
 // its drain hold on an ended parent, its bulk routing) and writes Talk's
-// frames by hand. Credentials are stand-ins (the core's codecs and verifier
-// are not ported yet); holder keys are real Ed25519 over WebCrypto.
+// frames by hand. Identity is the core's, as in Dart: a credential issuer, a
+// holder key from a seed, a verifier of the issuer.
 import { describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
-import { bytesEqual, concatBytes, hexString, utf8Encode } from '../../../src/core/bytes.ts';
-import type {
-  Credential,
-  CredentialVerifier,
-  HolderKey,
-} from '../../../src/core/identity/contract.ts';
-import { CredentialKind, SignatureKind } from '../../../src/core/identity/contract.ts';
+import { bytesEqual, concatBytes } from '../../../src/core/bytes.ts';
+import { CredentialKind } from '../../../src/core/identity/contract.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import { CredentialVerifier } from '../../../src/core/identity/credential-verifier.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import { MuxIdent } from '../../../src/core/mux/mux-protocol.ts';
@@ -89,58 +87,6 @@ async function readAll(channel: MuxChannel): Promise<Uint8Array> {
     }
     chunks.push(next.value);
   }
-}
-
-/** An Ed25519 holder key over WebCrypto (a stand-in for the core's `HolderKey`). */
-async function generateHolderKey(): Promise<HolderKey> {
-  const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
-    'sign',
-    'verify',
-  ])) as CryptoKeyPair;
-  const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
-  return {
-    publicKey,
-    async sign(message: Uint8Array): Promise<Uint8Array> {
-      return new Uint8Array(
-        await crypto.subtle.sign('Ed25519', pair.privateKey, message as Uint8Array<ArrayBuffer>),
-      );
-    },
-  };
-}
-
-/** A node credential of [identity] for [holderKey], issued by [issuer] (a stand-in for the core's). */
-function credentialOf(issuer: string, identity: string, holderKey: Uint8Array): Credential {
-  const encoded = utf8Encode(`credential:${issuer}:${identity}:${hexString(holderKey)}`);
-  return {
-    version: 1,
-    kind: CredentialKind.node,
-    keyId: Name.of(issuer),
-    identity,
-    issuedAt: 0,
-    expiresAt: 0,
-    holderKey,
-    scopes: [],
-    signatureKind: SignatureKind.ed25519,
-    signature: new Uint8Array(64),
-    isBearer: false,
-    isExpired: () => false,
-    allows: () => false,
-    signedBytes: encoded,
-    encode: () => encoded.slice(),
-  };
-}
-
-/** A verifier that knows the issuer of [credentials]: it accepts them and nothing else. */
-function verifierOf(...credentials: Credential[]): CredentialVerifier {
-  return {
-    async verify(encoded: Uint8Array): Promise<Credential> {
-      const known = credentials.find((credential) => bytesEqual(credential.encode(), encoded));
-      if (known === undefined) {
-        throw SwitchboardError.of(StatusCode.unauthenticated, 'invalid credential');
-      }
-      return known;
-    },
-  };
 }
 
 describe('review regressions', () => {
@@ -443,9 +389,15 @@ describe('review regressions', () => {
   });
 
   test('mismatched exporters cannot authenticate', async () => {
-    const key = await generateHolderKey();
-    const credential = credentialOf('issuer', 'sender', key.publicKey);
-    const verifier = verifierOf(credential);
+    const issuer = await CredentialIssuer.ed25519FromSeed('issuer', pattern(32));
+    const key = await Ed25519HolderKey.fromSeed(pattern(32, 1));
+    const credential = await issuer.issue({
+      kind: CredentialKind.node,
+      identity: 'sender',
+      holderKey: key.publicKey,
+    });
+    const verifier = new CredentialVerifier();
+    await verifier.addIssuer(issuer);
     const [a, b] = FakeQuicSession.pair();
     b.exporterXor = 1;
     const receiver = await QuicBindingConnection.start(b, {
