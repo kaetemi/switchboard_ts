@@ -9,7 +9,6 @@ export * from './contract.ts';
 export { IncomingChannel } from './incoming-channel.ts';
 export { defaultRelayType, RelayConfig } from './relay-config.ts';
 export {
-  type BrokeringResolver,
   EndpointResolver,
   isBrokeringResolver,
   StaticResolver,
@@ -31,8 +30,6 @@ export {
   type RegisterServiceOptions,
   type SelectedInstance,
   type SelectOptions,
-  type ServiceAddressLike,
   Switchboard,
   type SwitchboardOptions,
-  toServiceAddress,
 } from './switchboard.ts';

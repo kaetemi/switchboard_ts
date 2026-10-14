@@ -5,7 +5,12 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { describe, expect, test } from 'vitest';
-import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
+import {
+  ChannelAddress,
+  ServiceAddress,
+  type ServiceAddressLike,
+  toServiceAddress,
+} from '../../../src/core/address/index.ts';
 import { utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
@@ -14,11 +19,7 @@ import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.t
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { IncomingChannel } from '../../../src/core/switchboard/contract.ts';
 import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
-import {
-  type ServiceAddressLike,
-  Switchboard,
-  toServiceAddress,
-} from '../../../src/core/switchboard/switchboard.ts';
+import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import {

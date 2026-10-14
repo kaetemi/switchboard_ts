@@ -4,7 +4,13 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-import { ChannelAddress, maxInstance, ServiceAddress } from '../address/index.ts';
+import {
+  ChannelAddress,
+  maxInstance,
+  ServiceAddress,
+  type ServiceAddressLike,
+  toServiceAddress,
+} from '../address/index.ts';
 import { bytesEqual, hexString, type PayloadLike, toPayload, utf8Encode } from '../bytes.ts';
 import type {
   Credential,
@@ -30,6 +36,7 @@ import { type Logger, type LogLevel, noopLogger } from '../util/logger.ts';
 import { Broadcast } from './broadcast.ts';
 import { ChannelPolicies } from './channel-policy.ts';
 import type {
+  BrokeringResolver,
   ChannelHandler,
   ChannelPolicy,
   EndpointCredential,
@@ -53,7 +60,7 @@ import { genericStatus } from './generic-status.ts';
 import { waitForIdentityChange } from './identity-wait.ts';
 import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
-import { type BrokeringResolver, isBrokeringResolver } from './resolver.ts';
+import { isBrokeringResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
 import { installBulkRouting, isBulkAddress, refuseBulk, talkOver } from './talk-layer.ts';
 import {
@@ -92,22 +99,6 @@ const schemePattern = /^[a-z][a-z0-9+.-]*$/;
 const emptyBytes = new Uint8Array(0);
 
 const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
-
-/** A service address, or the text or name of one: `'echo'`, `'npc/1a2b'`, `Name.of('echo')`. */
-export type ServiceAddressLike = ServiceAddress | NameLike;
-
-/**
- * [address] as a {@link ServiceAddress}: itself, the text form parsed
- * (`type` or `type/<hex instance>`), or a name with instance 0 (any).
- *
- * @throws {RangeError} for text that is not a service address.
- */
-export function toServiceAddress(address: ServiceAddressLike): ServiceAddress {
-  if (address instanceof ServiceAddress) {
-    return address;
-  }
-  return typeof address === 'string' ? ServiceAddress.parse(address) : new ServiceAddress(address);
-}
 
 /** An instance {@link Switchboard.selectAndConnect} selected and the connection to it. */
 export interface SelectedInstance {

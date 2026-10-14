@@ -75,6 +75,27 @@ export interface Resolver {
   close(): Promise<void>;
 }
 
+/**
+ * A resolver that can have an instance which registered without endpoints
+ * dial the caller: the naming service's CONNECT (wiki page "Polyverse
+ * Switchboard Identity and Credentials", section "Reverse connections").
+ * The node brokers a connection through it to an instance whose record
+ * has no endpoints (`Switchboard.broker`).
+ */
+export interface BrokeringResolver extends Resolver {
+  /**
+   * Has the instance at [address] dial [endpoint] and identify there with
+   * [intent] (at most 64 bytes). Resolves once it has, with the identity it
+   * presents. [options.timeout] (milliseconds) bounds the whole request.
+   */
+  connectTo(
+    address: ServiceAddress,
+    endpoint: string,
+    intent: Uint8Array,
+    options?: { timeout?: number | undefined; signal?: AbortSignal | undefined },
+  ): Promise<string>;
+}
+
 /** A hook choosing the policy of a connection the node initiates; undefined: the node's outgoing policy. */
 export type EndpointPolicy = (endpoint: string) => ChannelPolicy | undefined;
 
