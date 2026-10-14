@@ -11,7 +11,7 @@ import { type Credential, Right } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name, type NameLike } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
-import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { type Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type {
   BrokeringResolver,
@@ -21,6 +21,7 @@ import type {
   Resolver,
   ServiceRecord,
 } from '../../../src/core/switchboard/contract.ts';
+import { type PeerEvent, PeerEventType, PeerSet } from '../../../src/core/switchboard/peer-set.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
@@ -464,6 +465,12 @@ describe('policies', () => {
     expect(await open(a, uri, chat)).toBe('closed permissionDenied');
   });
 
+  test('scoped and requireIdentity are stable functions', () => {
+    expect(ChannelPolicies.scoped()).toBe(ChannelPolicies.scoped());
+    expect(ChannelPolicies.scoped({ requireIdentity: false })).not.toBe(ChannelPolicies.scoped());
+    expect(ChannelPolicies.requireIdentity()).toBe(ChannelPolicies.requireIdentity());
+  });
+
   test('a worker is refused in the other direction too', async () => {
     // The consumer dials the worker and identifies; the worker identifies
     // when asked; its channels back are checked by the consumer's
@@ -753,6 +760,98 @@ describe('identifying', () => {
     await quiet.updateCredential(renewed);
     await identifying;
     expect(accepted[1]?.peerIdentity?.credential).toBe(renewed);
+  });
+
+  test('PeerSet connections identify', async () => {
+    const b = node();
+    const seen = new Deferred<string | undefined>();
+    const held: IncomingChannel[] = [];
+    // Keeps the per-peer channel open: one that closes before the peer is
+    // online counts as refused.
+    b.registerService(
+      npc,
+      (incoming) => {
+        held.push(incoming);
+        seen.resolve(incoming.peerIdentity?.identity);
+      },
+      { acceptAnyInstance: true },
+    );
+    const uri = await b.listenMemory();
+    const records: (ServiceRecord | undefined)[] = [];
+    const consumer = node({
+      credential: npcCredential(),
+      holderKey: npcKey,
+      outgoingPolicy: ChannelPolicies.denyAll,
+      resolver: new StaticResolver([
+        serviceRecord(new ServiceAddress(npc, 5), { endpoints: [uri] }),
+      ]),
+      expectedIdentityFor: (_endpoint, record) => {
+        records.push(record);
+        return undefined;
+      },
+    });
+    const set = PeerSet.watch(consumer, npc, { channel: new ChannelAddress({ type: npc }) });
+    try {
+      expect(await seen.promise).toBe('npc-7');
+      await until(() => set.peers.get(5)?.isOnline ?? false);
+      // The PeerSet tells the hook which record it dials.
+      expect(records.map((r) => r?.address.toString())).toEqual(['npc/5']);
+    } finally {
+      await set.close();
+    }
+  });
+
+  test('PeerSet: an expectedIdentityFor that throws fails the attempt, which is retried after the backoff', async () => {
+    const b = node();
+    const held: IncomingChannel[] = [];
+    b.registerService(npc, (incoming) => void held.push(incoming), { acceptAnyInstance: true });
+    const accepted = collect(b);
+    const uri = await b.listenMemory();
+    let calls = 0;
+    const consumer = node({
+      credential: npcCredential(),
+      holderKey: npcKey,
+      outgoingPolicy: ChannelPolicies.denyAll,
+      resolver: new StaticResolver([
+        serviceRecord(new ServiceAddress(npc, 5), { endpoints: [uri] }),
+      ]),
+      expectedIdentityFor: () => {
+        if (calls++ < 2) {
+          throw new Error('vault sealed');
+        }
+        return undefined;
+      },
+    });
+    const set = PeerSet.watch(consumer, npc, {
+      channel: new ChannelAddress({ type: npc }),
+      initialBackoff: 10,
+      maxBackoff: 80,
+      jitter: 0,
+    });
+    try {
+      const events: PeerEvent[] = [];
+      set.on('event', (e) => events.push(e));
+      await until(() => set.peers.get(5)?.isOnline ?? false);
+      expect(calls).toBe(3);
+      expect(events.map((e) => e.type)).toEqual([
+        PeerEventType.added,
+        PeerEventType.offline,
+        PeerEventType.online,
+      ]);
+      expect(codeOf(events[1]?.status as Status)).toBe('internal');
+      expect(events[1]?.status?.reason).toContain('expectedIdentityFor');
+      // The two failed attempts were connections of their own, left with
+      // GOAWAY before any IDENT.
+      await until(() => accepted.length === 3);
+      for (const connection of accepted.slice(0, 2)) {
+        expect(codeOf(await connection.done)).toBe('goingAway');
+        expect(connection.peerIdentity).toBeUndefined();
+      }
+      await until(() => accepted[2]?.peerIdentity !== undefined);
+      expect(accepted[2]?.peerIdentity?.identity).toBe('npc-7');
+    } finally {
+      await set.close();
+    }
   });
 
   test('an open through the resolver tells the hook its record', async () => {
