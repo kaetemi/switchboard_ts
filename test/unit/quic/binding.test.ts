@@ -50,6 +50,7 @@ import {
   collect,
   concat,
   connectionPair,
+  expectChunks,
   expectCode,
   expectStatus,
   expectThrowsCode,
@@ -188,7 +189,7 @@ describe('subframes', () => {
     // confirmation timeout.
     const receiving = readAll(await arriving);
     await within(channel.close());
-    expect(await receiving).toEqual(frames);
+    expectChunks(await receiving, frames);
   });
 
   test("the largest subframe is the peer's record limit, which its HELLO raises", async () => {
@@ -202,7 +203,7 @@ describe('subframes', () => {
     const big = pattern(400000);
     await within(channel.send(big));
     const remote = await arriving;
-    expect(await firstChunk(remote)).toEqual(big);
+    expectChunks([await firstChunk(remote)], [big]);
     expect(remote.maxSubframeLength).toBe(quicDefaultRecordLimit);
     expectThrowsCode(
       () => remote.send(new Uint8Array(quicDefaultRecordLimit + 1)),
@@ -233,7 +234,7 @@ describe('subframes', () => {
     await within(channel.close());
     const chunks = await receiving;
     expect(chunks.every((c) => c.length <= 10000)).toBe(true);
-    expect(concat(chunks)).toEqual(payload);
+    expectChunks([concat(chunks)], [payload]);
   });
 });
 

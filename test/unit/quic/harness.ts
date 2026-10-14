@@ -2,6 +2,7 @@
 // `test/harness.dart`: connection pairs over the fake provider, and a raw
 // peer that writes and reads records by hand.
 import { expect, onTestFinished } from 'vitest';
+import { bytesEqual } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
 import type { QuicSessionEnd, QuicStream } from '../../../src/core/quic/contract.ts';
 import { QuicStreamReset } from '../../../src/core/quic/contract.ts';
@@ -113,6 +114,17 @@ export function expectThrowsCode(fn: () => unknown, code: StatusCode): void {
   }
   expect(thrown).toBeInstanceOf(SwitchboardError);
   expect((thrown as SwitchboardError).code).toBe(code);
+}
+
+/**
+ * Expects [actual] to be the chunks [expected], compared byte by byte: a
+ * deep equality of large arrays is slow.
+ */
+export function expectChunks(actual: readonly Uint8Array[], expected: readonly Uint8Array[]): void {
+  expect(actual.map((c) => c.length)).toEqual(expected.map((c) => c.length));
+  for (let i = 0; i < expected.length; i++) {
+    expect(bytesEqual(actual[i] as Uint8Array, expected[i] as Uint8Array), `chunk ${i}`).toBe(true);
+  }
 }
 
 /** Expects [status] to be the well-known [code]. */
