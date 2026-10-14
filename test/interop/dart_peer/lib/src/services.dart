@@ -25,6 +25,8 @@ void registerService(Switchboard node, ServiceSpec spec, PeerContext ctx) {
   final ChannelHandler handler = switch (spec.behaviour) {
     'echo' => (incoming) => _serveEcho(incoming, spec, ctx),
     'raw' => (incoming) => _serveRaw(incoming, spec, ctx),
+    // Accepts the channel and never reads it: its window fills up.
+    'sink' => (incoming) {},
     _ => throw ArgumentError('unknown service behaviour ${spec.behaviour}'),
   };
   node.registerService(type, handler, instance: spec.instance);

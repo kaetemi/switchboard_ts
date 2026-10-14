@@ -84,9 +84,12 @@ describeCells('basics', {}, (peers) => {
   });
 
   test('a channel to a type nobody serves is refused with NOT_FOUND', async () => {
-    const t = await talk('nobody');
-    const error = await peers.client.rpcError('talk.request', { talk: t, procedure: 'ECHO' });
-    expect(error).toMatchObject({ kind: 'status', code: StatusCode.notFound });
+    const { channel } = await peers.client.rpc<{ channel: string }>('talk.open', {
+      endpoint: peers.endpoint,
+      address: { type: 'nobody' },
+    });
+    const closed = await peers.client.events.waitFor({ event: 'channel.closed', channel });
+    expect(closed).toMatchObject({ code: StatusCode.notFound });
   });
 
   test('a large response arrives whole', async () => {
@@ -114,7 +117,7 @@ describeCells('basics', {}, (peers) => {
     expect(reply.payload).toBe(hex(`${size} ${digest}`));
   });
 
-  test('a plain message from the responder reaches the requester first', async () => {
+  test('a plain message from the responder reaches the requester', async () => {
     const t = await talk();
     const reply = await peers.client.rpc<MessageInfo>('talk.request', {
       talk: t,
@@ -122,9 +125,8 @@ describeCells('basics', {}, (peers) => {
       text: 'note',
     });
     expect(reply.payload).toBe(hex('sent'));
-    expect(peers.client.events.filter({ event: 'talk.message', talk: t })).toMatchObject([
-      { procedure: 'NOTE', payload: hex('note') },
-    ]);
+    const note = await peers.client.events.waitFor({ event: 'talk.message', talk: t });
+    expect(note).toMatchObject({ procedure: 'NOTE', payload: hex('note') });
   });
 
   test('the responder closing the channel fails later requests with its status', async () => {

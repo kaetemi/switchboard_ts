@@ -52,7 +52,7 @@ export interface PeerConfig {
   mux?: MuxConfig;
   /** Talk options of the services and the client's Talk channels. */
   talk?: TalkConfig;
-  /** Services to register; default `echo` and `raw` at instance 1. */
+  /** Services to register; default `echo`, `raw` and `sink` at instance 1. */
   services?: readonly ServiceConfig[];
 }
 
@@ -84,10 +84,10 @@ export interface TalkConfig {
   creditTimeoutMs?: number;
 }
 
-/** A service: `echo` serves the interop procedures, `raw` hands out channels. */
+/** A service: `echo` serves the interop procedures, `raw` hands out channels, `sink` never reads. */
 export interface ServiceConfig {
   type: string;
-  behaviour?: 'echo' | 'raw';
+  behaviour?: 'echo' | 'raw' | 'sink';
   instance?: number;
 }
 

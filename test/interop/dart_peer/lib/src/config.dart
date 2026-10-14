@@ -15,7 +15,7 @@ import 'protocol.dart';
 const List<String> transports = ['tcp', 'ws', 'quic', 'webtransport'];
 
 /// One registered service: a type, an instance id, and the behaviour that
-/// serves it (`echo` or `raw`, README "Services").
+/// serves it (`echo`, `raw` or `sink`, README "Services").
 class ServiceSpec {
   /// A service of [type] at [instance] behaving as [behaviour].
   const ServiceSpec(this.type, this.behaviour, {this.instance = 0});
@@ -23,7 +23,8 @@ class ServiceSpec {
   /// The service type.
   final String type;
 
-  /// `echo` (the interop procedures) or `raw` (channels as handles).
+  /// `echo` (the interop procedures), `raw` (channels as handles) or
+  /// `sink` (channels never read).
   final String behaviour;
 
   /// The instance id; 0 registers the type's default handler.
@@ -42,10 +43,11 @@ class PeerConfig {
     this.services = defaultServices,
   });
 
-  /// `echo` and `raw` at instance 1.
+  /// `echo`, `raw` and `sink` at instance 1.
   static const List<ServiceSpec> defaultServices = [
     ServiceSpec('echo', 'echo', instance: 1),
     ServiceSpec('raw', 'raw', instance: 1),
+    ServiceSpec('sink', 'sink', instance: 1),
   ];
 
   /// Reads the JSON configuration; absent keys keep their defaults.
