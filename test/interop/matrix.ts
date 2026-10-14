@@ -28,9 +28,12 @@ export const pairings: readonly Pairing[] = [
 ];
 
 const quic = nativeQuicAvailability();
+if (!quic.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {
+  throw new Error(`SWITCHBOARD_NATIVE=required, but ${quic.reason}`);
+}
 const noQuic = quic.available
   ? undefined
-  : `the native QUIC addon (${quic.reason}; \`npm run build:native\` or SWITCHBOARD_QUIC_ADDON)`;
+  : 'the native QUIC addon, which does not load here (`npm run build:native`, or SWITCHBOARD_QUIC_ADDON)';
 
 /**
  * What the TS side cannot do here, by transport: the reason its cells skip
