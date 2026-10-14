@@ -9,23 +9,20 @@
 //   under its id. The page reads the records through a function the harness
 //   exposes (Dart answered them over a `?case=report` session);
 // * /limited: the same, on a listener that grants two streams at once;
-// * /sb: a node's listener (QuicIdentityRules.none, so that the nonce-bound
-//   IDENTs of a browser without exportKeyingMaterial are accepted) with Talk
-//   services: `echo`, `control` (TAG, WHOAMI, GOAWAY, CLOSE) and `issue` (a
-//   credential for a holder key, so that a browser can identify). Dart runs a
-//   Switchboard node behind QuicSwitchboardListener; here the connections of
-//   listenQuic are served directly, with Talk's bulk routing installed on
-//   each, until the node's Talk layer is wired (`talk-layer.ts`);
+// * /sb: a Switchboard node's WebTransport listener (`listenWebTransport`,
+//   which runs QuicSwitchboardListener; QuicIdentityRules.none, so that the
+//   nonce-bound IDENTs of a browser without exportKeyingMaterial are
+//   accepted) with Talk services over `incoming.talk()`: `echo`, `control`
+//   (TAG, WHOAMI, GOAWAY, CLOSE) and `issue` (a credential for a holder key,
+//   so that a browser can identify);
 // * a UDP port that never answers, for a handshake that times out.
 //
 // The node's credentials come from an Ed25519 authority of its own,
 // `webauth`, whose verifier is the listener's.
 import { createSocket } from 'node:dgram';
-import { ChannelAddress } from '../../src/core/address/index.ts';
 import { hexString } from '../../src/core/bytes.ts';
 import { CredentialKind } from '../../src/core/identity/contract.ts';
 import { CredentialIssuer, CredentialVerifier } from '../../src/core/identity/index.ts';
-import type { MuxChannel } from '../../src/core/mux/contract.ts';
 import { Name } from '../../src/core/name.ts';
 import {
   QuicError,
@@ -35,17 +32,16 @@ import {
   QuicStreamStopped,
   switchboardAlpn,
 } from '../../src/core/quic/contract.ts';
-import type { QuicBindingConnection } from '../../src/core/quic/quic-binding-connection.ts';
 import { QuicIdentityRules } from '../../src/core/quic/quic-identity-rules.ts';
-import { listenQuic } from '../../src/core/quic/quic-listen.ts';
 import { Status, StatusCode } from '../../src/core/status.ts';
+import type { IncomingChannel } from '../../src/core/switchboard/contract.ts';
 import type { TalkMessage } from '../../src/core/talk/contract.ts';
-import { installBulkRouting, TalkChannel } from '../../src/core/talk/index.ts';
 import {
   type NativeQuicSession,
   nativeQuic,
   selfSignedCertificate,
 } from '../../src/node/quic/index.ts';
+import { Switchboard } from '../../src/node/switchboard.ts';
 
 /** One thing the server saw, as JSON. */
 export type ServerRecord = Readonly<Record<string, unknown>>;
@@ -159,20 +155,15 @@ export async function startWebServer(): Promise<WebServer> {
   );
   const verifier = new CredentialVerifier();
   await verifier.addIssuer(authority);
-  const sb = await provider.listenWebTransport('127.0.0.1', 0, config(), { path: '/sb' });
-  const node = listenQuic(sb, {
+  const node = new Switchboard({ verifier });
+  registerServices(node, record, authority);
+  const sb = await node.listenWebTransport('127.0.0.1', 0, {
+    path: '/sb',
+    certificate: cert,
     identityRules: QuicIdentityRules.none,
-    options: { identityVerifier: verifier },
+    maxStreamsBidi: 129,
+    handshakeTimeout,
   });
-  const connections = new Set<QuicBindingConnection>();
-  const services = nodeServices(record, authority);
-  void (async () => {
-    for await (const connection of node.connections) {
-      connections.add(connection);
-      void connection.done.then(() => connections.delete(connection));
-      void dispatch(connection, services).catch(() => {});
-    }
-  })().catch(() => {});
 
   const silent = createSocket('udp4');
   await new Promise<void>((resolve, reject) => {
@@ -184,7 +175,7 @@ export async function startWebServer(): Promise<WebServer> {
   const description: ServerDescription = Object.freeze({
     provider: `https://127.0.0.1:${raw.port}/provider`,
     limited: `https://127.0.0.1:${limited.port}/limited`,
-    node: `https://127.0.0.1:${sb.port}/sb`,
+    node: sb,
     silent: `https://127.0.0.1:${silent.address().port}/sb`,
     certificateSha256: hex(cert.sha256),
     handshakeTimeoutMs: handshakeTimeout,
@@ -196,7 +187,6 @@ export async function startWebServer(): Promise<WebServer> {
     async close() {
       silent.close();
       await node.close();
-      await Promise.allSettled([...connections].map((c) => c.close()));
       await Promise.allSettled([raw.close(), limited.close()]);
     },
   };
@@ -339,12 +329,10 @@ async function serveStream(
 
 // --- /sb -----------------------------------------------------------------------------------------
 
-type Service = (talk: TalkChannel, connection: QuicBindingConnection) => void;
-
-/** Serves [talk]'s messages with [handler], until the channel ends. */
-function messages(talk: TalkChannel, handler: (message: TalkMessage) => unknown): void {
+/** Serves the messages of [incoming]'s Talk channel with [handler], until the channel ends. */
+function messages(incoming: IncomingChannel, handler: (message: TalkMessage) => unknown): void {
   void (async () => {
-    for await (const message of talk.messages) {
+    for await (const message of incoming.talk().messages) {
       try {
         await handler(message);
       } catch {
@@ -355,77 +343,46 @@ function messages(talk: TalkChannel, handler: (message: TalkMessage) => unknown)
 }
 
 /** The node's Talk services, recording through [record], issuing credentials of [authority]. */
-function nodeServices(record: Recorder, authority: CredentialIssuer): Map<string, Service> {
-  const control = (m: TalkMessage, connection: QuicBindingConnection): unknown => {
-    const text = decoder.decode(m.payload);
-    switch (m.procedureName) {
-      case 'TAG':
-        record(text, { event: 'tagged', remote: connection.remote });
-        void connection.done.then((status) => {
-          record(text, { event: 'connection done', code: status.code, reason: status.reason });
-        });
-        void connection.peerGoAwayStatus.then(
-          (status) => record(text, { event: 'peer goaway', code: status.code }),
-          () => {},
-        );
-        return m.expectsReply ? m.reply(new Uint8Array(0)) : undefined;
-      case 'WHOAMI':
-        return m.expectsReply ? m.reply(connection.peerIdentity?.identity ?? '') : undefined;
-      case 'GOAWAY':
-        setTimeout(() => void connection.goAway().catch(() => {}), 50);
-        return m.expectsReply ? m.reply(new Uint8Array(0)) : undefined;
-      case 'CLOSE':
-        setTimeout(() => void connection.close().catch(() => {}), 50);
-        return undefined;
-      default:
-        return m.expectsReply ? m.replyAbort(Status.of(StatusCode.unimplemented)) : undefined;
-    }
-  };
-  return new Map<string, Service>([
-    [
-      Name.of('echo').key,
-      (talk) => messages(talk, (m) => (m.expectsReply ? m.reply(m.payload) : undefined)),
-    ],
-    [
-      Name.of('issue').key,
-      (talk) =>
-        messages(talk, async (m) => {
-          const credential = await authority.issue({
-            kind: CredentialKind.node,
-            identity: 'browser-1',
-            holderKey: m.payload.slice(),
+function registerServices(node: Switchboard, record: Recorder, authority: CredentialIssuer): void {
+  node.registerService(Name.of('echo'), (incoming) =>
+    messages(incoming, (m) => (m.expectsReply ? m.reply(m.payload) : undefined)),
+  );
+  node.registerService(Name.of('issue'), (incoming) =>
+    messages(incoming, async (m) => {
+      const credential = await authority.issue({
+        kind: CredentialKind.node,
+        identity: 'browser-1',
+        holderKey: m.payload.slice(),
+      });
+      if (m.expectsReply) await m.reply(credential.encode());
+    }),
+  );
+  node.registerService(Name.of('control'), (incoming) => {
+    const connection = incoming.connection;
+    messages(incoming, (m) => {
+      const text = decoder.decode(m.payload);
+      switch (m.procedureName) {
+        case 'TAG':
+          record(text, { event: 'tagged', remote: incoming.remote ?? null });
+          void connection.done.then((status) => {
+            record(text, { event: 'connection done', code: status.code, reason: status.reason });
           });
-          if (m.expectsReply) await m.reply(credential.encode());
-        }),
-    ],
-    [Name.of('control').key, (talk, connection) => messages(talk, (m) => control(m, connection))],
-  ]);
-}
-
-/** The node's side of one connection: Talk's bulk routing, then each channel to its service. */
-async function dispatch(
-  connection: QuicBindingConnection,
-  services: ReadonlyMap<string, Service>,
-): Promise<void> {
-  installBulkRouting(connection);
-  for await (const channel of connection.incoming) {
-    const service = serviceOf(services, channel);
-    if (service === undefined) {
-      void channel.close(Status.of(StatusCode.unimplemented)).catch(() => {});
-      continue;
-    }
-    service(new TalkChannel(channel), connection);
-  }
-}
-
-function serviceOf(
-  services: ReadonlyMap<string, Service>,
-  channel: MuxChannel,
-): Service | undefined {
-  try {
-    const type = ChannelAddress.decode(channel.openPayload).type;
-    return type === undefined ? undefined : services.get(type.key);
-  } catch {
-    return undefined;
-  }
+          void connection.peerGoAwayStatus.then(
+            (status) => record(text, { event: 'peer goaway', code: status.code }),
+            () => {},
+          );
+          return m.expectsReply ? m.reply(new Uint8Array(0)) : undefined;
+        case 'WHOAMI':
+          return m.expectsReply ? m.reply(connection.peerIdentity?.identity ?? '') : undefined;
+        case 'GOAWAY':
+          setTimeout(() => void connection.goAway().catch(() => {}), 50);
+          return m.expectsReply ? m.reply(new Uint8Array(0)) : undefined;
+        case 'CLOSE':
+          setTimeout(() => void connection.close().catch(() => {}), 50);
+          return undefined;
+        default:
+          return m.expectsReply ? m.replyAbort(Status.of(StatusCode.unimplemented)) : undefined;
+      }
+    });
+  });
 }

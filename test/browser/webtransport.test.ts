@@ -10,7 +10,8 @@
 // `test/web_binding_test.dart` (QuicBindingConnection through connectQuic:
 // HELLO, a channel, Talk through the node's service, a nonce-bound IDENT,
 // the node's GOAWAY, a close from the browser; ReconnectingClient over
-// webTransportConnector), with `test/web_harness.dart` as the guide
+// webTransportConnector, with openTalk and openPersistentTalk), against a
+// Switchboard node's listener, with `test/web_harness.dart` as the guide
 // (`page/page.ts`). Each test's body runs in the page (see `harness.ts`).
 //
 // Chromium 141 has none of `protocol`, `draining`, `exportKeyingMaterial`,
@@ -616,7 +617,7 @@ describe.skipIf(!availability.available)(
         test('connects and serves a request', async () => {
           await run(async ({ sb, h, node }) => {
             const client = node.client();
-            const talk = node.talkOn(await h.within(client.openChannel(node.address('echo'))));
+            const talk = await h.within(client.openTalk(node.address('echo')));
             h.ok(client.connection instanceof sb.QuicBindingConnection, 'a QUIC connection');
             const reply = await h.within(talk.request('ECHO', h.bytes('one')));
             h.eq(h.text(reply.payload), 'one', 'the reply');
@@ -625,18 +626,18 @@ describe.skipIf(!availability.available)(
         });
 
         test('reconnects after the node closes the connection, and serves again', async () => {
-          await run(async ({ h, node }) => {
+          await run(async ({ sb, h, node }) => {
             const client = node.client();
-            const ready: ReturnType<typeof node.talkOn>[] = [];
-            client.openPersistent(node.address('echo'), (channel) => {
-              ready.push(node.talkOn(channel));
+            const ready: InstanceType<typeof sb.TalkChannel>[] = [];
+            client.openPersistentTalk(node.address('echo'), async (talk) => {
+              ready.push(talk);
             });
             await h.until(() => ready.length === 1);
             const first = client.connection;
             const latest = () => ready[ready.length - 1] as (typeof ready)[number];
             const a = await h.within(latest().request('ECHO', h.bytes('a')));
             h.eq(h.text(a.payload), 'a', 'the first reply');
-            const asking = node.talkOn(await h.within(client.openChannel(node.address('control'))));
+            const asking = await h.within(client.openTalk(node.address('control')));
             await asking.send('CLOSE', new Uint8Array(0));
             await h.until(() => ready.length === 2);
             h.ok(client.connection !== first, 'a new connection');
@@ -649,13 +650,13 @@ describe.skipIf(!availability.available)(
         test("moves to a new connection on the node's GOAWAY", async () => {
           await run(async ({ sb, h, node }) => {
             const client = node.client();
-            const talk = node.talkOn(await h.within(client.openChannel(node.address('control'))));
+            const talk = await h.within(client.openTalk(node.address('control')));
             const first = client.connection;
             if (first === undefined) throw new Error('no connection');
             await h.within(talk.request('GOAWAY', new Uint8Array(0)));
             await talk.close();
             await h.until(() => client.connection !== undefined && client.connection !== first);
-            const again = node.talkOn(await h.within(client.openChannel(node.address('echo'))));
+            const again = await h.within(client.openTalk(node.address('echo')));
             const reply = await h.within(again.request('ECHO', h.bytes('c')));
             h.eq(h.text(reply.payload), 'c', 'the reply');
             await again.close();
