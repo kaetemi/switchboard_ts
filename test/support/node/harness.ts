@@ -7,7 +7,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { afterEach, expect } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { type PayloadLike, utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
-import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
+import {
+  type MuxChannel,
+  type MuxConnection,
+  type MuxOptions,
+  muxOptions,
+} from '../../../src/core/mux/contract.ts';
+import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
 import { Name } from '../../../src/core/name.ts';
 import {
   type Status,
@@ -16,7 +22,7 @@ import {
   statusCodeName,
 } from '../../../src/core/status.ts';
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
-import type { SwitchboardRuntime } from '../../../src/core/switchboard/runtime.ts';
+import type { MuxFactory, SwitchboardRuntime } from '../../../src/core/switchboard/runtime.ts';
 import { Switchboard, type SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
@@ -24,9 +30,49 @@ import { MemoryEndpointTable } from './memory-table.ts';
 import { toyMux } from './toy-mux.ts';
 
 /**
- * The node thread's test harness: nodes over the toy mux and the test
- * transport pair, with their own `mem://` registry, closed after each test.
+ * The node thread's test harness: nodes over the test transport pair, with
+ * their own `mem://` registry, closed after each test, over the connection
+ * binding of the run: the toy mux (`toy-mux.ts`) by default, the frame mux
+ * (`FrameMuxConnection`, what the core runtime runs) where a suite runs
+ * again over it ({@link useMux}). A suite file runs over the toy mux; its
+ * copy under `over-frame-mux/` selects the frame mux and imports it, so
+ * every case runs over both. A case that needs what only the frame mux
+ * has (flow control, LIMITS, Talk's bulk threshold) registers only over
+ * it ({@link overFrameMux}).
  */
+
+/** The connection bindings the node suites run over. */
+export type MuxKind = 'toy' | 'frame';
+
+/** The frame mux, as the core runtime builds it. */
+export const frameMux: MuxFactory = (transport, options, isInitiator) =>
+  new FrameMuxConnection(transport, { ...options, isInitiator });
+
+let muxKind: MuxKind = 'toy';
+
+/**
+ * Runs the suites of this test file over [kind]: call it before importing
+ * them (the cases a suite registers only over one binding are chosen when
+ * it is imported).
+ */
+export function useMux(kind: MuxKind): void {
+  muxKind = kind;
+}
+
+/** The connection binding of this test file's run. */
+export function currentMux(): MuxKind {
+  return muxKind;
+}
+
+/** Whether this test file's run is over the frame mux. */
+export function overFrameMux(): boolean {
+  return muxKind === 'frame';
+}
+
+/** The mux factory of this test file's run. */
+export function testMux(): MuxFactory {
+  return muxKind === 'frame' ? frameMux : toyMux;
+}
 
 /** Short grace so that closing a node with open channels is quick, and no keep-alive. */
 export const fast: Partial<MuxOptions> = Object.freeze({
@@ -37,12 +83,12 @@ export const fast: Partial<MuxOptions> = Object.freeze({
 /** The service type most tests use. */
 export const svc = Name.of('svc');
 
-/** A runtime over the toy mux with [memoryEndpoints] (default: a new table). */
+/** A runtime over the mux of the run ({@link testMux}) with [memoryEndpoints] (default: a new table). */
 export function testRuntime(
   memoryEndpoints: MemoryEndpointTable = new MemoryEndpointTable(),
 ): SwitchboardRuntime {
   return {
-    mux: toyMux,
+    mux: testMux(),
     transportPair: () => memoryTransportPair({ delay: 0 }),
     memoryEndpoints,
     dialers: {},
@@ -91,13 +137,13 @@ export function currentRuntime(): SwitchboardRuntime {
   return testRuntime(registry);
 }
 
-/** A raw toy-mux peer on one side of a transport pair; the other side is returned for the node. */
+/** A raw peer (the mux of the run) on one side of a transport pair; the other side is returned for the node. */
 export function rawPeer(options: Partial<MuxOptions> = fast): {
   peer: MuxConnection;
   transport: FrameTransport;
 } {
   const [local, remote] = memoryTransportPair({ delay: 0 });
-  const peer = toyMux(local, options, true);
+  const peer = testMux()(local, muxOptions(options), true);
   onCleanup(() => peer.close());
   return { peer, transport: remote };
 }

@@ -4,7 +4,8 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
+import { createPrivateKey, createPublicKey, sign } from 'node:crypto';
+import { concatBytes, hexBytes, utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import {
   type Credential,
   CredentialKind,
@@ -124,11 +125,28 @@ export function revoke(credential: Credential): void {
   (credential as FakeCredential).revoked = true;
 }
 
-/** A holder key whose public key is [publicKey]; its signatures are zeros. */
-export function fakeHolderKey(publicKey: Uint8Array = new Uint8Array(32).fill(7)): HolderKey {
+/** The PKCS#8 encoding of an Ed25519 private key, before its 32-byte seed. */
+const pkcs8Ed25519 = hexBytes('302e020100300506032b657004220420');
+
+/**
+ * A real Ed25519 holder key whose private key is [seed] (32 bytes), so
+ * that the proofs of possession it signs verify where the binding checks
+ * them (the frame mux; the toy mux checks no proofs). Deterministic: one
+ * seed, one key.
+ */
+export function fakeHolderKey(seed: Uint8Array = new Uint8Array(32).fill(7)): HolderKey {
+  if (seed.length !== 32) {
+    throw new RangeError(`an Ed25519 seed is 32 bytes, got ${seed.length}`);
+  }
+  const privateKey = createPrivateKey({
+    key: Buffer.from(concatBytes(pkcs8Ed25519, seed)),
+    format: 'der',
+    type: 'pkcs8',
+  });
+  const spki = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
   return {
-    publicKey,
-    sign: async () => new Uint8Array(64),
+    publicKey: new Uint8Array(spki.subarray(spki.length - 32)),
+    sign: async (message) => new Uint8Array(sign(null, message, privateKey)),
   };
 }
 

@@ -363,12 +363,13 @@ describe('credentialFor', () => {
       expectNoMeshSecret();
     });
 
-    test(`openChannel: the hook sees the selected record (${async ? 'asynchronous' : 'synchronous'} hook)`, async () => {
+    test(`openChannel and openTalk: the hook sees the selected record (${async ? 'asynchronous' : 'synchronous'} hook)`, async () => {
       const { a, b, c, calls, consumer, expectNoMeshSecret } = await setUp();
       const client = consumer(async);
       expect(await tagOf(await client.openChannel(new ServiceAddress(svc, 1)))).toBe('A');
       expect(await tagOf(await client.openChannel(new ServiceAddress(svc, 2)))).toBe('B');
-      expect(await tagOf(await client.openChannel(new ServiceAddress(svc, 3)))).toBe('C');
+      const talk = await client.openTalk(new ServiceAddress(svc, 3));
+      await talk.done;
       expect(a.payloads).toEqual(['key-a']);
       expect(b.payloads).toEqual(['key-b']);
       expect(c.payloads).toEqual(['']);

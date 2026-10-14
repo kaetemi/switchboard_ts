@@ -6,15 +6,31 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Ports of the Dart proxy tests (`proxy_test.dart`): pipeChannels between
 // two connections, and proxyHandler on a frontend node in front of a
-// backend, over the memory transport and the toy mux. The backends answer
-// raw subframes (`WHO`, `KILL`) where the Dart backends answer Talk
-// requests; the tests that need the Talk layer, bulk routing, the frame
-// mux's flow control or slot routing are listed as todo until those land.
+// backend, over the memory transport, over the toy mux and, from
+// `over-frame-mux/`, over the frame mux. The cases that need the frame
+// mux's flow control, LIMITS, close confirmation or output scheduler (and
+// the bulk payloads that go bulk by the channel's window) run over the
+// frame mux only.
+//
+// Not ported yet: the groups "proxyHandler with slot tables" and
+// "proxyHandler: channels without a shard slot" (Dart `proxy_test.dart`
+// from line 1338), which need the node's slot routing (`slot-layer.ts`).
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { bytesEqual, utf8Decode } from '../../../src/core/bytes.ts';
-import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
+import {
+  type MuxChannel,
+  type MuxConnection,
+  type MuxOptions,
+  muxOptions,
+} from '../../../src/core/mux/contract.ts';
+import {
+  MuxCommand,
+  MuxControlMessage,
+  MuxFrame,
+  MuxLimits,
+} from '../../../src/core/mux/mux-frame.ts';
 import { Name } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, statusCodeName } from '../../../src/core/status.ts';
@@ -26,18 +42,24 @@ import type {
 import { pipeChannels, proxyHandler } from '../../../src/core/switchboard/proxy.ts';
 import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
+import { TalkBulkOpen, TalkChannel, type TalkMessage } from '../../../src/core/talk/index.ts';
+import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
+import { Deferred } from '../../../src/core/util/deferred.ts';
 import { Frames, framesOf, nextText, Pull, pattern } from '../../support/node/channels.ts';
+import { GatedTransport } from '../../support/node/gated-transport.ts';
 import {
   bytes,
   currentRuntime,
   fast,
   node,
   onCleanup,
+  overFrameMux,
   pump,
+  rejectsWith,
+  testMux,
   until,
 } from '../../support/node/harness.ts';
-import { toyMux } from '../../support/node/toy-mux.ts';
 
 const chat = Name.of('chat');
 
@@ -55,19 +77,39 @@ function expectStatus(status: Status, code: StatusCode, reason: string): void {
   expect(status.reason).toBe(reason);
 }
 
-/** Two toy connections over a memory pair, closed after the test. */
+/** A connection of the run's mux over [transport], closed after the test. */
+function connection(
+  transport: FrameTransport,
+  isInitiator: boolean,
+  options: Partial<MuxOptions> = fast,
+): MuxConnection {
+  const made = testMux()(transport, muxOptions({ ...fast, ...options }), isInitiator);
+  onCleanup(() => made.close());
+  return made;
+}
+
+/** Two connections of the run's mux over a memory pair, closed after the test. */
 function muxPair(
   initiator: Partial<MuxOptions> = fast,
   acceptor: Partial<MuxOptions> = fast,
 ): [MuxConnection, MuxConnection] {
   const [a, b] = memoryTransportPair({ delay: 0 });
-  const initiating = toyMux(a, { ...fast, ...initiator }, true);
-  const accepting = toyMux(b, { ...fast, ...acceptor }, false);
-  onCleanup(async () => {
-    await initiating.close();
-    await accepting.close();
+  return [connection(a, true, initiator), connection(b, false, acceptor)];
+}
+
+/** Whether [channel] is a Talk bulk channel. */
+function isBulk(channel: MuxChannel): boolean {
+  return TalkBulkOpen.isBulk(ChannelAddress.decode(channel.openPayload));
+}
+
+/** The bulk channel the peer of [on] opened, once it is there. */
+async function bulkOf(on: MuxConnection): Promise<MuxChannel> {
+  let found: MuxChannel | undefined;
+  await until(() => {
+    found = [...on.channels].find((channel) => !channel.isLocallyOpened && isBulk(channel));
+    return found !== undefined;
   });
-  return [initiating, accepting];
+  return found as MuxChannel;
 }
 
 /** client ⇄ (proxyIn | pipe | proxyOut) ⇄ backend. */
@@ -130,18 +172,176 @@ async function take(channel: MuxChannel, count: number): Promise<Uint8Array[]> {
 }
 
 describe('pipeChannels', () => {
-  it.todo(
-    'the loss of the backend while an item window is exhausted fails the requester with the ' +
-      'channel status (needs Talk)',
-  );
-  it.todo('a bulk drain timeout forwards failure and cancels the twins (needs Talk bulk routing)');
-  it.todo(
-    'a bulk payload whose source ended waits for a reader slower than the close confirmation ' +
-      'timeout (needs Talk)',
-  );
-  it.todo('failed parent cancels forwarded bulk twins (client: false) (needs Talk bulk routing)');
-  it.todo('failed parent cancels forwarded bulk twins (client: true) (needs Talk bulk routing)');
-  it.todo('a send rejected by delayed LIMITS closes both pipe ends (needs the frame mux)');
+  it('the loss of the backend while an item window is exhausted fails the requester with the channel status', async () => {
+    const p = await piped();
+    const clientTalk = new TalkChannel(p.client);
+    const backendTalk = new TalkChannel(p.backend);
+    const held = new Deferred<TalkMessage>();
+    void backendTalk.serve((m) => void held.resolve(m));
+    const s = clientTalk.streamRequest('LIST', undefined, { window: 1 });
+    const items: string[] = [];
+    void (async () => {
+      try {
+        for await (const item of s.items) items.push(item.text());
+      } catch {
+        // The stream fails with the channel.
+      }
+    })();
+    const m = await held.promise;
+    await m.replyItem('a');
+    const waiting = m.replyItem('b');
+    await until(() => items.length > 0);
+    expect(s.window).toBe(0);
+    await backendTalk.close(Status.of(StatusCode.aborted, 'backend lost'));
+    const status = await clientTalk.done;
+    expectCode(status, StatusCode.aborted);
+    const failure = await rejectsWith(s.done, StatusCode.aborted);
+    expect(failure.status.equals(status)).toBe(true);
+    await rejectsWith(waiting, StatusCode.aborted);
+    expect(items).toEqual(['a']);
+    await p.pipe;
+  });
+
+  if (overFrameMux()) {
+    it('a bulk drain timeout forwards failure and cancels the twins', async () => {
+      const options = { ...fast, closeConfirmTimeout: 30 };
+      const [client, proxyIn] = muxPair(options, options);
+      const [proxyOut, backend] = muxPair(options, options);
+      const atProxy = new Pull(proxyIn.incoming);
+      const atBackend = new Pull(backend.incoming);
+      const parent = client.open(new Uint8Array(0));
+      const inbound = await atProxy.next();
+      const outbound = proxyOut.open(new Uint8Array(0));
+      const farParent = await atBackend.next();
+      void pipeChannels(inbound, outbound);
+      const bulk = parent.openAfter(new TalkBulkOpen(parent.id, 1).encode());
+      TalkChannel.adoptBulk(await atProxy.next());
+      const twin = await atBackend.next();
+      await parent.close();
+      expectCode(await farParent.done, StatusCode.deadlineExceeded);
+      expectCode(await bulk.done, StatusCode.cancelled);
+      expectCode(await twin.done, StatusCode.cancelled);
+    });
+
+    it('a bulk payload whose source ended waits for a reader slower than the close confirmation timeout', async () => {
+      const options = { ...fast, closeConfirmTimeout: 100 };
+      const [client, proxyIn] = muxPair(options, options);
+      const [proxyOut, backend] = muxPair(options, options);
+      await client.ping();
+      await proxyOut.ping();
+      const atProxy = new Pull(proxyIn.incoming);
+      const atBackend = new Pull(backend.incoming);
+      const sender = new TalkChannel(client.open(new Uint8Array(0)));
+      const inbound = await atProxy.next();
+      const pipe = pipeChannels(inbound, proxyOut.open(inbound.openPayload));
+      // A Talk channel installs bulk routing on its connection: the twin
+      // goes to it and never to `incoming` (Dart adopts it by hand).
+      const reader = new TalkChannel(await atBackend.next(), { streamBulk: () => true });
+      const messages = new Pull(reader.messages);
+      void sender.send('BIG', undefined, { bulk: [pattern(300_000)], bulkLength: 300_000 });
+      const source = await atProxy.next();
+      TalkChannel.adoptBulk(source);
+      const twin = await bulkOf(backend);
+      const message = await messages.next();
+      const stream = message.bulk.getReader();
+      // A reader that takes one chunk and pauses (Dart listens and pauses;
+      // a pull stream attaches on its first read): the bulk window is
+      // raised for it.
+      const received: Uint8Array[] = [];
+      const firstRead = stream.read();
+      // The sender is done and its bulk channel closed, while the twin
+      // still waits for the reader's credit for the end of the payload.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(source.state).toBe('closed');
+      expect(twin.state).toBe('open');
+      const first = await firstRead;
+      if (first.value !== undefined) received.push(first.value);
+      for (;;) {
+        const { value, done } = await stream.read();
+        if (done) break;
+        received.push(value);
+      }
+      const whole = new Uint8Array(received.reduce((n, chunk) => n + chunk.length, 0));
+      let offset = 0;
+      for (const chunk of received) {
+        whole.set(chunk, offset);
+        offset += chunk.length;
+      }
+      expect(bytesEqual(whole, pattern(300_000))).toBe(true);
+      expectCode(await twin.done, StatusCode.ok);
+      await sender.close();
+      await pipe;
+      await messages.cancel();
+    });
+  }
+
+  for (const fromClient of [false, true]) {
+    it(`failed parent cancels forwarded bulk twins (client: ${fromClient})`, async () => {
+      const [client, proxyIn] = muxPair();
+      const [proxyOut, backend] = muxPair();
+      const atProxy = new Pull(proxyIn.incoming);
+      const atBackend = new Pull(backend.incoming);
+      const atClient = new Pull(client.incoming);
+      const parent = client.open(new Uint8Array(0));
+      const inbound = await atProxy.next();
+      const outbound = proxyOut.open(new Uint8Array(0));
+      const farParent = await atBackend.next();
+      void pipeChannels(inbound, outbound);
+      const opener = fromClient ? parent : farParent;
+      const opened = opener.openAfter(new TalkBulkOpen(opener.id, 1).encode());
+      const proxyBulk = fromClient
+        ? await atProxy.next()
+        : await new Pull(proxyOut.incoming).next();
+      TalkChannel.adoptBulk(proxyBulk);
+      const twin = fromClient ? await atBackend.next() : await atClient.next();
+      await parent.close(Status.of(StatusCode.cancelled));
+      await pump();
+      expect(opened.canSend).toBe(false);
+      expect(twin.canSend).toBe(false);
+      expectCode(await opened.done, StatusCode.cancelled);
+      expectCode(await twin.done, StatusCode.cancelled);
+    });
+  }
+
+  if (overFrameMux()) {
+    it('a send rejected by delayed LIMITS closes both pipe ends', async () => {
+      const [clientConnection, proxyIn] = muxPair();
+      const [outTransport, peerTransport] = memoryTransportPair({ delay: 0 });
+      const proxyOut = connection(outTransport, true);
+      const wire = peerTransport.readable.getReader();
+      const peer = peerTransport.writable.getWriter();
+      const incoming = new Pull(proxyIn.incoming);
+      const client = clientConnection.open(new Uint8Array(0));
+      const inbound = await incoming.next();
+      const outbound = proxyOut.open(new Uint8Array(0));
+      void pipeChannels(inbound, outbound);
+      await client.send(new Uint8Array(1000));
+      await pump();
+      expect(inbound.heldBytes).toBe(1016);
+      await peer.write(
+        MuxControlMessage.limits(
+          new MuxLimits({ maxFrameSize: 256, maxChannels: 4, initialWindow: 256 }),
+        )
+          .toFrame()
+          .encode(),
+      );
+      await pump();
+      expect(outbound.canSend).toBe(false);
+      expectCode(await client.done, StatusCode.frameTooLarge);
+      const sent: MuxFrame[] = [];
+      await proxyOut.close();
+      for (;;) {
+        const { value, done } = await wire.read();
+        if (done) break;
+        sent.push(MuxFrame.decode(value));
+      }
+      const closes = sent.filter(
+        (f) => f.channelId === outbound.id && f.command === MuxCommand.close,
+      );
+      expect(closes).toHaveLength(1);
+      expectCode(Status.decode((closes[0] as MuxFrame).payload), StatusCode.frameTooLarge);
+    });
+  }
 
   it('forwards subframes both ways, in order', async () => {
     const p = await piped();
@@ -159,17 +359,126 @@ describe('pipeChannels', () => {
     await p.pipe;
   });
 
-  it.todo('a graceful close follows the bulk payloads forwarded before it (needs Talk)');
-  it.todo(
-    'credit passes hop by hop: a slow far consumer slows the near sender, the proxy holds at ' +
-      'most a window (needs the frame mux)',
-  );
-  it.todo(
-    "a client that does not read holds the proxy's data within the window, and does not pause " +
-      'the backend connection (needs the frame mux)',
-  );
+  if (overFrameMux()) {
+    it('a graceful close follows the bulk payloads forwarded before it', async () => {
+      const [c1, p1] = memoryTransportPair({ delay: 0 });
+      const client = connection(c1, true);
+      const proxyIn = connection(p1, false);
+      const [p2, b2] = memoryTransportPair({ delay: 0 });
+      const gate = new GatedTransport(p2);
+      gate.allow(1000);
+      const proxyOut = connection(gate, true);
+      const backend = connection(b2, false);
+      const received: string[] = [];
+      const backendDone = new Deferred<Status>();
+      void (async () => {
+        for await (const channel of backend.incoming) {
+          if (isBulk(channel)) {
+            TalkChannel.adoptBulk(channel);
+            continue;
+          }
+          const talk = new TalkChannel(channel);
+          void talk.serve((m) => void received.push(`${m.procedureName} ${m.payload.length}`));
+          void talk.done.then((status) => backendDone.resolve(status));
+        }
+      })();
+      void (async () => {
+        for await (const channel of proxyIn.incoming) {
+          if (isBulk(channel)) {
+            TalkChannel.adoptBulk(channel);
+            continue;
+          }
+          void pipeChannels(channel, proxyOut.open(channel.openPayload));
+        }
+      })();
+      await client.ping();
+      await proxyOut.ping();
+      // The proxy's output toward the backend is congested: the bulk
+      // payload waits in its scheduler when the client's CLOSE arrives.
+      gate.allow(-1_000_000);
+      const talk = new TalkChannel(client.open(new Uint8Array(0)));
+      void talk.send('BIG', new Uint8Array(100_000));
+      await talk.close();
+      gate.allow(1_000_000);
+      expect((await backendDone.promise).equals(Status.ok)).toBe(true);
+      expect(received).toEqual(['BIG 100000']);
+    });
+
+    it('credit passes hop by hop: a slow far consumer slows the near sender, the proxy holds at most a window', async () => {
+      const p = await piped();
+      // The backend does not read yet.
+      const backend = p.backend.readable.getReader();
+      let sent = 0;
+      const sending = (async () => {
+        for (let i = 0; i < 100; i++) {
+          const subframe = new Uint8Array(8000);
+          subframe[0] = i;
+          await p.client.send(subframe);
+          sent++;
+        }
+      })();
+      for (let i = 0; i < 5; i++) {
+        await p.clientConnection.ping();
+        await p.proxyOut.ping();
+      }
+      // The backend holds its window (8 subframes of 8016 bytes of cost),
+      // the proxy at most the window it grants the client (the subframes
+      // waiting for the backend's credit), and the client waits for the
+      // proxy's.
+      expect(sent).toBeGreaterThan(8);
+      expect(sent * 8016).toBeLessThanOrEqual(2 * 65536);
+      expect(p.backend.bufferedBytes).toBe(8 * 8016);
+      expect(p.inbound.heldBytes).toBeLessThanOrEqual(65536);
+      expect(p.inbound.heldBytes).toBeGreaterThan(0);
+      // Held for the other side, not counted by the connection's mark:
+      // only the OPEN payload is.
+      expect(p.proxyIn.bufferedBytes).toBe(p.inbound.openPayload.length);
+      expect(p.client.sendWindow).toBeLessThan(8016);
+      const received: number[] = [];
+      const reading = (async () => {
+        for (;;) {
+          const { value, done } = await backend.read();
+          if (done) return;
+          received.push(value[0] as number);
+        }
+      })();
+      await sending;
+      await p.client.close();
+      await p.pipe;
+      await reading;
+      expect(received).toEqual(Array.from({ length: 100 }, (_, i) => i));
+      expect(p.inbound.heldBytes).toBe(0);
+    });
+
+    it("a client that does not read holds the proxy's data within the window, and does not pause the backend connection", async () => {
+      const p = await piped({ options: { ...fast, receiveHighWaterMarkBytes: 20_000 } });
+      // The client never reads.
+      for (let i = 0; i < 40; i++) {
+        void p.backend.send(new Uint8Array(8000));
+      }
+      for (let i = 0; i < 5; i++) {
+        await p.backendConnection.ping();
+        await p.proxyOut.ping();
+      }
+      // The proxy holds what the client has no window for, without
+      // counting it toward the backend connection's mark: other channels
+      // on it, and its keep-alive, are not stalled.
+      expect(p.inbound.heldBytes).toBe(0);
+      expect(p.proxyOut.isReceivePaused).toBe(false);
+      const outbound = [...p.proxyOut.channels];
+      expect(outbound).toHaveLength(1);
+      expect((outbound[0] as MuxChannel).heldBytes).toBeGreaterThanOrEqual(1);
+      expect((outbound[0] as MuxChannel).heldBytes).toBeLessThanOrEqual(65536);
+      expect(p.clientConnection.isReceivePaused).toBe(true);
+      await p.client.readable.cancel();
+      await p.backend.close();
+      await p.pipe;
+    });
+  }
 
   it('forwards large subframes', async () => {
+    // Windows of 2 MiB on every connection: a subframe costs at most half
+    // the window.
     const p = await piped({ options: { ...fast, initialWindow: 2 * 1024 * 1024 } });
     const big = pattern(900 * 1024, 7);
     const atBackend = take(p.backend, 1);
@@ -224,14 +533,38 @@ describe('pipeChannels', () => {
     await p.pipe;
   });
 
-  it('an application code from a broken peer is sent as UNKNOWN', async () => {
-    const p = await piped();
-    // Mux CLOSE must not carry application codes; the toy peer sends one anyway.
-    await p.backend.close(new Status(300));
-    const status = await p.client.done;
-    expectStatus(status, StatusCode.unknown, 'application status 300');
-    await p.pipe;
-  });
+  if (overFrameMux()) {
+    it('an application code from a broken peer is sent as UNKNOWN', async () => {
+      const [clientConnection, proxyIn] = muxPair();
+      const [proxyTransport, raw] = memoryTransportPair({ delay: 0 });
+      const proxyOut = connection(proxyTransport, true);
+      const frames = raw.readable.getReader();
+      const peer = raw.writable.getWriter();
+      const client = clientConnection.open(bytes('x'));
+      const inbound = await new Pull(proxyIn.incoming).next();
+      const pipe = pipeChannels(inbound, proxyOut.open(inbound.openPayload));
+      let frame: MuxFrame;
+      do {
+        const { value } = await frames.read();
+        frame = MuxFrame.decode(value as Uint8Array);
+      } while (frame.command !== MuxCommand.open);
+      // Mux CLOSE must not carry application codes; this peer does anyway.
+      await peer.write(MuxFrame.close(frame.channelId, new Status(300)).encode());
+      expectCode(await client.done, StatusCode.unknown);
+      await pipe;
+      await peer.close();
+      await frames.cancel();
+    });
+  } else {
+    it('an application code from a broken peer is sent as UNKNOWN', async () => {
+      const p = await piped();
+      // Mux CLOSE must not carry application codes; the toy peer sends one anyway.
+      await p.backend.close(new Status(300));
+      const status = await p.client.done;
+      expectStatus(status, StatusCode.unknown, 'application status 300');
+      await p.pipe;
+    });
+  }
 
   it('frames sent before the pipe is attached are not lost', async () => {
     const p = await piped({
@@ -247,7 +580,15 @@ describe('pipeChannels', () => {
     await p.pipe;
   });
 
-  it.todo('a subframe over the receiving peer limit closes both (needs the frame mux)');
+  if (overFrameMux()) {
+    it('a subframe over the receiving peer limit closes both', async () => {
+      const p = await piped({ backendOptions: { ...fast, maxFrameSize: 1000 } });
+      void p.client.send(pattern(2000));
+      expectCode(await p.client.done, StatusCode.frameTooLarge);
+      expectCode(await p.backend.done, StatusCode.frameTooLarge);
+      await p.pipe;
+    });
+  }
 
   it('a stream already listened to closes both channels', async () => {
     const [clientConnection, proxyIn] = muxPair();
@@ -262,45 +603,63 @@ describe('pipeChannels', () => {
     expectCode(await (await atBackend).done, StatusCode.internal);
   });
 
-  it.todo(
-    'a far end that cancels its subscription without closing keeps the pipe waiting for done ' +
-      '(a cancelled readable has no Dart counterpart until the frame mux defines it)',
-  );
-  it.todo('talk works through the pipe (needs Talk)');
+  if (overFrameMux()) {
+    it('a far end that cancels its subscription without closing keeps the pipe waiting for done', async () => {
+      const p = await piped();
+      // Cancelling drops further DATA but does not close the channel.
+      await p.backend.readable.cancel();
+      let finished = false;
+      void p.pipe.then(() => {
+        finished = true;
+      });
+      void p.client.send(bytes('dropped'));
+      await p.clientConnection.ping();
+      await p.backendConnection.ping();
+      await pump();
+      expect(finished).toBe(false);
+      expect(p.client.state).toBe('open');
+      expect(p.backend.state).toBe('open');
+      // The other direction still flows.
+      void p.backend.send(bytes('still'));
+      expect(await nextText(p.client)).toBe('still');
+      await p.backend.close();
+      await p.pipe;
+      expect(finished).toBe(true);
+      expectCode(await p.client.done, StatusCode.ok);
+    });
+  }
+
+  it('talk works through the pipe', async () => {
+    const p = await piped();
+    const backend = new TalkChannel(p.backend);
+    const items: string[] = [];
+    void backend.serve((m) => {
+      const s = m.replyStreamRequest(m.payload, { procedure: 'CHAIN' });
+      void (async () => {
+        try {
+          for await (const item of s.items) items.push(item.text());
+        } catch {
+          // The channel closed.
+        }
+      })();
+    });
+    const client = new TalkChannel(p.client);
+    const reply = await client.request('ASK', 'q');
+    expect(reply.procedureName).toBe('CHAIN');
+    expect(reply.expectsStream).toBe(true);
+    void reply.replyItem('item');
+    void reply.reply();
+    await until(() => items.length > 0);
+    expect(items).toEqual(['item']);
+    await client.close();
+    await p.pipe;
+    expectCode(await backend.done, StatusCode.ok);
+  });
 });
 
-/** Sends [command] on [channel] and reads the answer. */
-async function ask(channel: MuxChannel, command: string): Promise<string> {
-  await channel.send(bytes(command));
-  return nextText(channel);
-}
-
-/** A backend handler answering `WHO` with what it sees of the address and `KILL` with ABORTED. */
-function serveChat(record: IncomingChannel[]): (incoming: IncomingChannel) => void {
-  return (incoming) => {
-    record.push(incoming);
-    const frames = new Frames(incoming.channel);
-    void (async () => {
-      for (;;) {
-        const frame = await frames.next();
-        if (frame === undefined) return;
-        const a = incoming.address;
-        switch (utf8Decode(frame)) {
-          case 'WHO':
-            void incoming.channel.send(
-              bytes(
-                `${a.type} ${a.instance} ${a.shard ?? 'null'} ${a.host ?? 'null'} ` +
-                  utf8Decode(a.payload),
-              ),
-            );
-            break;
-          case 'KILL':
-            void incoming.reject(Status.of(StatusCode.aborted, 'killed'));
-            break;
-        }
-      }
-    })();
-  };
+/** The answer of the request [procedure] with [payload] on [talk], as text. */
+async function ask(talk: TalkChannel, procedure: string, payload?: Uint8Array): Promise<string> {
+  return (await talk.request(procedure, payload)).text();
 }
 
 /** A node that is a copy of [uri] in upper case: another spelling of the same `mem` listener. */
@@ -315,6 +674,9 @@ describe('proxyHandler', () => {
   let backendUri: string;
   let endpointUri: string;
   let atBackend: IncomingChannel[];
+  // The TICKS source of the backend: the items it produced, and its end.
+  let ticksProduced: number;
+  let ticksEnded: Deferred<void>;
 
   function record(type: Name, instance: number, endpoints: string[]): ServiceRecord {
     return serviceRecord(new ServiceAddress(type, instance), { endpoints });
@@ -326,11 +688,64 @@ describe('proxyHandler', () => {
     return resolver;
   }
 
+  /** The TICKS items: endless, paced by the requester's item window. */
+  async function* ticks(): AsyncGenerator<Uint8Array> {
+    try {
+      for (let i = 0; ; i++) {
+        ticksProduced++;
+        yield bytes(`${i}`);
+      }
+    } finally {
+      ticksEnded.resolve();
+    }
+  }
+
   beforeEach(async () => {
     atBackend = [];
+    ticksProduced = 0;
+    ticksEnded = new Deferred<void>();
     backend = node({ defaultPayload: bytes('backend credential') });
     backendUri = await backend.listenMemory();
-    backend.registerService(chat, serveChat(atBackend), { instance: 7 });
+    backend.registerService(
+      chat,
+      (incoming) => {
+        atBackend.push(incoming);
+        void incoming.talk().serve((m) => {
+          switch (m.procedureName) {
+            case 'WHO': {
+              const a = incoming.address;
+              void m.reply(
+                `${a.type} ${a.instance} ${a.shard ?? 'null'} ${a.host ?? 'null'} ` +
+                  utf8Decode(a.payload),
+              );
+              break;
+            }
+            case 'COUNT':
+              for (let i = 1; i <= 3; i++) {
+                void m.replyItem(`${i}`);
+              }
+              void m.reply('done');
+              break;
+            case 'KILL':
+              void incoming.reject(Status.of(StatusCode.aborted, 'killed'));
+              break;
+            case 'PUT': {
+              const number = m.frame.bulk ? m.frame.bulkReference.number : 0;
+              const intact = bytesEqual(m.payload, pattern(m.payload.length));
+              void m.reply(`${m.payload.length} ${m.isBulk} ${number}${intact ? '' : ' corrupt'}`);
+              break;
+            }
+            case 'GET':
+              void m.reply(undefined, { bulk: [pattern(300_000)], bulkLength: 300_000 });
+              break;
+            case 'TICKS':
+              void m.replyStream(ticks());
+              break;
+          }
+        });
+      },
+      { instance: 7 },
+    );
     const backends = staticResolver([
       record(chat, 7, [backendUri]),
       record(Name.of('down'), 1, ['mem://nobody-listens-here']),
@@ -342,12 +757,7 @@ describe('proxyHandler', () => {
       resolver: backends,
     });
     endpoint.registerService('api', (incoming) => {
-      void (async () => {
-        const frames = new Frames(incoming.channel);
-        while ((await frames.next()) !== undefined) {
-          void incoming.channel.send(bytes('local'));
-        }
-      })();
+      void incoming.talk().serve((m) => void m.reply('local'));
     });
     endpointUri = await endpoint.listenMemory();
     client = node({
@@ -357,27 +767,104 @@ describe('proxyHandler', () => {
   });
 
   it('request and reply through the endpoint', async () => {
-    const channel = await client.openChannel(chat);
+    const talk = await client.openTalk(chat);
     // The backend sees the client's own payload and the instance the proxy
     // selected; the shard slot passes through.
-    expect(await ask(channel, 'WHO')).toBe('chat 7 null null client token');
-    const sharded = await client.openChannel(chat, { shard: 9 });
+    expect(await ask(talk, 'WHO')).toBe('chat 7 null null client token');
+    const sharded = await client.openTalk(chat, { shard: 9 });
     expect(await ask(sharded, 'WHO')).toBe('chat 7 9 null client token');
     // Local services on the endpoint are not proxied.
-    const api = await client.openChannel('api');
+    const api = await client.openTalk('api');
     expect(await ask(api, 'X')).toBe('local');
-    await channel.close();
+    await talk.close();
     await sharded.close();
     await api.close();
   });
 
-  it.todo('bulk payloads through the endpoint, both ways (needs Talk)');
-  it.todo('bulk channels count toward the per-connection bound (needs Talk bulk routing)');
-  it.todo('stream through the endpoint (needs Talk)');
-  it.todo(
-    'a stream with a finite item window through the endpoint: grants, a request served ' +
-      'meanwhile, a cancel (needs Talk)',
-  );
+  if (overFrameMux()) {
+    it('bulk payloads through the endpoint, both ways', async () => {
+      const talk = await client.openTalk(chat);
+      // The bulk number is kept: the BULK message passes unchanged.
+      for (const number of [1, 2]) {
+        expect(await ask(talk, 'PUT', pattern(200_000))).toBe(`200000 true ${number}`);
+      }
+      const streamed = await talk.request('PUT', undefined, {
+        bulk: [pattern(50_000), pattern(50_000, 50_000 * 31)],
+      });
+      expect(streamed.text()).toBe('100000 true 3');
+      const got = await talk.request('GET');
+      expect(got.isBulk).toBe(true);
+      expect(bytesEqual(got.payload, pattern(300_000))).toBe(true);
+      // Inline still inline.
+      expect(await ask(talk, 'PUT', pattern(10))).toBe('10 false 0');
+      await talk.close();
+    });
+  }
+
+  it('bulk channels count toward the per-connection bound', async () => {
+    const tight = node();
+    tight.catchAll = proxyHandler(tight, {
+      allow: (address) => chat.equals(address.type),
+      resolver: staticResolver([record(chat, 7, [backendUri])]),
+      maxChannelsPerConnection: 2,
+    });
+    const tightUri = await tight.listenMemory();
+    const c = node({ resolver: new EndpointResolver(tightUri) });
+    const parent = await c.openChannel(chat);
+    // The parent is one, a first bulk channel the second.
+    const first = parent.openAfter(new TalkBulkOpen(parent.id, 1).encode());
+    const second = parent.openAfter(new TalkBulkOpen(parent.id, 2).encode());
+    expectCode(await second.done, StatusCode.resourceExhausted);
+    expect(first.state).toBe('open');
+    await first.close();
+    await parent.close();
+  });
+
+  it('stream through the endpoint', async () => {
+    const talk = await client.openTalk(new ServiceAddress(chat, 7));
+    const stream = talk.streamRequest('COUNT');
+    const items: string[] = [];
+    for await (const item of stream.items) items.push(item.text());
+    expect(items).toEqual(['1', '2', '3']);
+    expect((await stream.done).text()).toBe('done');
+    await talk.close();
+  });
+
+  it('a stream with a finite item window through the endpoint: grants, a request served meanwhile, a cancel', async () => {
+    const talk = await client.openTalk(new ServiceAddress(chat, 7));
+    const s = talk.streamRequest('TICKS', undefined, { window: 2 });
+    const items: string[] = [];
+    void (async () => {
+      try {
+        for await (const item of s.items) items.push(item.text());
+      } catch {
+        // Cancelled.
+      }
+    })();
+    const quiet = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 50));
+    while (items.length < 2) {
+      await quiet();
+    }
+    await quiet();
+    // Nothing beyond the window; one item read ahead at the backend.
+    expect(items).toEqual(['0', '1']);
+    expect(ticksProduced).toBe(3);
+    // The channel serves other calls while the stream waits.
+    expect(await ask(talk, 'WHO')).toMatch(/^chat 7/);
+    s.grant(3);
+    while (items.length < 5) {
+      await quiet();
+    }
+    await quiet();
+    expect(items).toEqual(['0', '1', '2', '3', '4']);
+    expect(ticksProduced).toBe(6);
+    s.cancel();
+    await rejectsWith(s.done, StatusCode.cancelled);
+    await ticksEnded.promise;
+    await quiet();
+    expect(items).toHaveLength(5);
+    await talk.close();
+  });
 
   it('rejections', async () => {
     const statusOf = async (type: string, instance = 0): Promise<Status> =>
@@ -403,15 +890,16 @@ describe('proxyHandler', () => {
   });
 
   it('backend close status reaches the client', async () => {
-    const channel = await client.openChannel(chat);
-    void channel.send(bytes('KILL'));
-    expectStatus(await channel.done, StatusCode.aborted, 'killed');
+    const talk = await client.openTalk(chat);
+    void talk.send('KILL');
+    expectStatus(await talk.done, StatusCode.aborted, 'killed');
   });
 
   it('client close status reaches the backend', async () => {
-    const channel = await client.openChannel(chat);
-    await ask(channel, 'WHO');
-    await channel.close(Status.of(StatusCode.cancelled, 'leaving'));
+    const talk = await client.openTalk(chat);
+    await talk.request('WHO');
+    await talk.close(Status.of(StatusCode.cancelled, 'leaving'));
+    expect(atBackend).toHaveLength(1);
     expectStatus(
       await (atBackend[0] as IncomingChannel).channel.done,
       StatusCode.cancelled,
@@ -421,18 +909,19 @@ describe('proxyHandler', () => {
 
   it('backend connection loss is UNAVAILABLE at the client', async () => {
     const accepted = new Pull(backend.connections).next();
-    const channel = await client.openChannel(chat);
-    await ask(channel, 'WHO');
+    const talk = await client.openTalk(chat);
+    await talk.request('WHO');
     await (await accepted).close();
-    expectCode(await channel.done, StatusCode.unavailable);
+    expectCode(await talk.done, StatusCode.unavailable);
   });
 
   it('backend shutdown is GOING_AWAY at the client', async () => {
-    // The Dart test also has a Talk request pending fail GOING_AWAY.
-    const channel = await client.openChannel(chat);
-    await ask(channel, 'WHO');
+    const talk = await client.openTalk(chat);
+    await talk.request('WHO');
+    const pending = rejectsWith(talk.request('NEVER'), StatusCode.goingAway);
     await backend.close();
-    expectCode(await channel.done, StatusCode.goingAway);
+    await pending;
+    expectCode(await talk.done, StatusCode.goingAway);
   });
 
   it('host hint relay', async () => {
@@ -440,13 +929,13 @@ describe('proxyHandler', () => {
     relay.catchAll = proxyHandler(relay);
     const relayUri = await relay.listenMemory();
     for (const hint of [backendUri, upper(backendUri)]) {
-      const channel = await client.openChannelAt(
+      const talk = await client.openTalkAt(
         relayUri,
         new ChannelAddress({ type: chat, instance: 7, host: hint }),
       );
       // The relay strips the hint and keeps everything else.
-      expect(await ask(channel, 'WHO')).toBe('chat 7 null null client token');
-      await channel.close();
+      expect(await ask(talk, 'WHO')).toBe('chat 7 null null client token');
+      await talk.close();
     }
     const bad = await client.openChannelAt(
       relayUri,
@@ -491,9 +980,9 @@ describe('proxyHandler', () => {
     const openUri = await open.listenMemory();
     const refused = await client.openChannelAt(openUri, new ChannelAddress({ type: ns }));
     expectCode(await refused.done, StatusCode.permissionDenied);
-    const channel = await client.openChannelAt(openUri, new ChannelAddress({ type: chat }));
-    expect(await ask(channel, 'WHO')).not.toBe('');
-    await channel.close();
+    const talk = await client.openTalkAt(openUri, new ChannelAddress({ type: chat }));
+    expect((await talk.request('WHO')).payload.length).toBeGreaterThan(0);
+    await talk.close();
     // Proxying a reserved type takes an explicit allow.
     const explicit = node();
     explicit.catchAll = proxyHandler(explicit, {
@@ -620,8 +1109,8 @@ describe('proxyHandler', () => {
     racing.catchAll = proxyHandler(racing, { resolver: table });
     const racingUri = await racing.listenMemory();
     // The proxy's pooled connection to the backend.
-    const warm = await client.openChannelAt(racingUri, new ChannelAddress({ type: chat }));
-    await ask(warm, 'WHO');
+    const warm = await client.openTalkAt(racingUri, new ChannelAddress({ type: chat }));
+    await warm.request('WHO');
     await warm.close();
     const pooled = await racing.connect(backendUri);
     racing.beforeReturn = async (connection) => {
@@ -629,20 +1118,20 @@ describe('proxyHandler', () => {
       void (accepted[0] as MuxConnection).goAway();
       await until(() => connection.peerGoingAway);
     };
-    const channel = await client.openChannelAt(racingUri, new ChannelAddress({ type: chat }));
-    expect(await ask(channel, 'WHO')).toBe('chat 7 null null client token');
+    const talk = await client.openTalkAt(racingUri, new ChannelAddress({ type: chat }));
+    expect(await ask(talk, 'WHO')).toBe('chat 7 null null client token');
     expect(accepted).toHaveLength(2);
     expect(racing.beforeReturn).toBeUndefined();
-    await channel.close();
+    await talk.close();
   });
 
   it('without allowHostHint the hint is ignored and stripped', async () => {
-    const channel = await client.openChannelAt(
+    const talk = await client.openTalkAt(
       endpointUri,
       new ChannelAddress({ type: chat, host: 'tcp://10.0.0.1:1' }),
     );
-    expect(await ask(channel, 'WHO')).toBe('chat 7 null null client token');
-    await channel.close();
+    expect(await ask(talk, 'WHO')).toBe('chat 7 null null client token');
+    await talk.close();
   });
 });
 
@@ -687,15 +1176,10 @@ describe('proxyHandler authorize', () => {
       chat,
       (incoming) => {
         atBackend.push(incoming);
-        void (async () => {
-          const frames = new Frames(incoming.channel);
-          while ((await frames.next()) !== undefined) {
-            const a = incoming.address;
-            void incoming.channel.send(
-              bytes(`${a.instance} ${a.shard ?? 'null'} ${utf8Decode(a.payload)}`),
-            );
-          }
-        })();
+        void incoming.talk().serve((m) => {
+          const a = incoming.address;
+          void m.reply(`${a.instance} ${a.shard ?? 'null'} ${utf8Decode(a.payload)}`);
+        });
       },
       { instance: 7 },
     );
@@ -733,13 +1217,14 @@ describe('proxyHandler authorize', () => {
       const account = Number(token.split('-').at(-1));
       return incoming.address.with({ shard: account, payload: bytes(`verified ${token}`) });
     });
-    const channel = await client.openChannel(chat);
+    const talk = await client.openTalk(chat);
     // Sent at once, while the proxy is still authorizing.
-    expect(await ask(channel, 'WHO')).toBe('7 5 verified token-5');
+    expect(await ask(talk, 'WHO')).toBe('7 5 verified token-5');
+    expect(seen).toHaveLength(1);
     expect(seen[0]?.payload).toEqual(bytes('token-5'));
     expect(seen[0]?.shard).toBeUndefined();
     expect(atBackend[0]?.address.shard).toBe(5);
-    await channel.close();
+    await talk.close();
   });
 
   it('null is UNAUTHENTICATED, a throw PERMISSION_DENIED', async () => {
@@ -759,9 +1244,9 @@ describe('proxyHandler authorize', () => {
     expectCode(await statusWith('bad'), StatusCode.permissionDenied);
     expect(atBackend).toHaveLength(0);
     // A synchronous answer works too.
-    const channel = await client.openChannel(chat);
-    expect(await ask(channel, 'WHO')).toBe('7 null token-5');
-    await channel.close();
+    const talk = await client.openTalk(chat);
+    expect(await ask(talk, 'WHO')).toBe('7 null token-5');
+    await talk.close();
   });
 
   it('no answer within authorizeTimeout is UNAUTHENTICATED; pending authorizations count toward the budget', async () => {

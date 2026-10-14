@@ -9,19 +9,24 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // accepts a connection (its policy, dispatch, `connections`, GOAWAY on
 // close) and otherwise established like any initiated connection (pool,
 // outgoing policy, identity, credentialFor). A port of the Dart
-// local_connections_test.dart over `mem://` listeners; the TCP and
-// WebSocket variants are in the Node integration tests, and the Talk,
-// PeerSet and proxy cases follow those layers.
+// local_connections_test.dart over `mem://` listeners (where Dart listens
+// on TCP, a `mem://` listener stands in), over the toy mux and, from
+// `over-frame-mux/`, over the frame mux; the TCP and WebSocket variants of
+// the "to its own listener" group belong to the Node integration tests.
 
 import { describe, expect, test } from 'vitest';
-import { ChannelAddress } from '../../../src/core/address/index.ts';
-import { utf8Decode } from '../../../src/core/bytes.ts';
+import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
+import { bytesEqual, utf8Decode } from '../../../src/core/bytes.ts';
 import { Right } from '../../../src/core/identity/contract.ts';
 import type { MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
+import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { ChannelHandler, IncomingChannel } from '../../../src/core/switchboard/contract.ts';
+import { PeerSet } from '../../../src/core/switchboard/peer-set.ts';
+import { proxyHandler } from '../../../src/core/switchboard/proxy.ts';
+import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { FakeVerifier, fakeCredential } from '../../support/node/fake-identity.ts';
@@ -279,4 +284,91 @@ describe('identity', () => {
     expect(await tagOf(channel)).toBe('closed unauthenticated');
     expect(channel.connection.peerIdentity).toBeUndefined();
   });
+});
+
+test('a large bulk payload to itself, both ways, under flow control', async () => {
+  const n = node();
+  const uri = await n.listenMemory();
+  const bulks: boolean[] = [];
+  n.registerService(svc, (incoming) => {
+    void incoming.talk().serve((message) => {
+      bulks.push(message.isBulk);
+      void message.reply(message.payload);
+    });
+  });
+  const talk = await n.openTalkAt(uri, at(svc));
+  const payload = new Uint8Array(3 * 1024 * 1024 + 17);
+  for (let i = 0; i < payload.length; i++) {
+    payload[i] = (i * 31 + (i >> 11)) & 0xff;
+  }
+  const reply = await talk.request('ECHO', payload, { timeout: 20_000 });
+  expect(bulks).toEqual([true]);
+  expect(reply.isBulk).toBe(true);
+  expect(reply.payload.length).toBe(payload.length);
+  expect(bytesEqual(reply.payload, payload), 'the echo differs').toBe(true);
+  await talk.close();
+}, 30_000);
+
+test('a PeerSet over its own instance comes online in-process', async () => {
+  const table = new StaticResolver();
+  const n = node({ resolver: table });
+  const uri = await n.listenMemory();
+  const seen: IncomingChannel[] = [];
+  n.registerService(
+    svc,
+    (incoming) => {
+      seen.push(incoming);
+      void incoming.talk().serve((message) => {
+        if (message.expectsReply) void message.reply('pong');
+      });
+    },
+    { instance: 1 },
+  );
+  table.add(serviceRecord(new ServiceAddress(svc, 1), { endpoints: [uri] }));
+  const set = PeerSet.watch(n, svc, {
+    channel: at(svc),
+    policy: ChannelPolicies.denyAll,
+  });
+  try {
+    await until(() => set.online.length > 0);
+    const peer = set.peers.get(1);
+    expect(peer?.endpoint).toBe(uri);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.remote).toBe('local');
+    expect(seen[0]?.address.address?.equals(new ServiceAddress(svc, 1))).toBe(true);
+    // The set's connection is its own, not the pooled one.
+    expect(peer?.connection).not.toBe(await n.connect(uri));
+    const talk = await set.openTalk(1);
+    expect((await talk.request('PING')).text()).toBe('pong');
+    await talk.close();
+  } finally {
+    await set.close();
+    await table.close();
+  }
+});
+
+test('the proxy still refuses to forward to its own listener', async () => {
+  const table = new StaticResolver();
+  const proxyNode = node({ resolver: table });
+  const hits: IncomingChannel[] = [];
+  proxyNode.registerService(svc, recording(hits, 'direct'), { instance: 1 });
+  proxyNode.catchAll = proxyHandler(proxyNode);
+  const uri = await proxyNode.listenMemory();
+  // A record of `other` pointing back at the proxy itself.
+  table.add(serviceRecord(new ServiceAddress(other, 1), { endpoints: [uri] }));
+  const client = node();
+  const channel = await client.openChannelAt(uri, at(other));
+  expect(await tagOf(channel)).toBe('closed unavailable');
+  expect(hits).toHaveLength(0);
+  await table.close();
+});
+
+test('an endpoint the node does not listen on is dialled as usual', async () => {
+  const n = node();
+  await n.listenMemory();
+  // Another id of the registry, nobody listening at it (Dart: a TCP port
+  // of the same host the node does not listen on).
+  const elsewhere = 'mem://nobody-listens-here';
+  expect(n.isOwnEndpoint(elsewhere)).toBe(false);
+  await rejectsWith(n.connect(elsewhere), StatusCode.unavailable);
 });

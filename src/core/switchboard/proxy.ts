@@ -10,6 +10,15 @@ import type { Name } from '../name.ts';
 import { MovedStatus, SlotMode } from '../naming/naming-protocol.ts';
 import { isSlotResolver } from '../naming/slot-reopen.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
+import {
+  type BulkTarget,
+  heldBulkTimeout,
+  isBulkChannel,
+  lingerBulkTarget,
+  markBulkChannel,
+  maxHeldBulk,
+  registerBulkTarget,
+} from '../talk/index.ts';
 import { TalkBulkOpen } from '../talk/talk-bulk.ts';
 import { TalkFrame } from '../talk/talk-frame.ts';
 import type { Clock, TimerHandle } from '../util/clock.ts';
@@ -19,7 +28,6 @@ import { ForwardingBound, type ForwardTarget, openForwarded, routerLogName } fro
 import { genericStatus } from './generic-status.ts';
 import { type SlotCarrier, slotCarrier } from './slot-layer.ts';
 import type { Switchboard } from './switchboard.ts';
-import { type BulkTarget, bulkRoutes } from './talk-layer.ts';
 
 /**
  * Channel proxying: forwards every subframe between [a] and [b], in order
@@ -259,7 +267,7 @@ function routeBulk(
   bound: ForwardingBound | undefined,
 ): BulkOrder | undefined {
   const mux = from.mux;
-  if (bulkRoutes.isBulk(mux)) {
+  if (isBulkChannel(mux)) {
     // A bulk channel is never a parent.
     return undefined;
   }
@@ -268,7 +276,7 @@ function routeBulk(
     (bulk, number) => forwardBulk(bulk, number, from, to, twins, bound),
     bound,
   );
-  bulkRoutes.register(mux, order.open);
+  registerBulkTarget(mux, order.open);
   for (const end of [from, to]) {
     void end.done.then((status) => {
       if (!status.isOk) order.clear();
@@ -291,9 +299,9 @@ function routeBulk(
  * reference forwarded before its bulk channel is waited for there, as
  * dispatch may lag). Subframes pass through unchanged and at once;
  * references are read from them, and anything that is not a Talk frame is
- * ignored. Bounded per parent: `maxHeld` bulk channels waiting for their
+ * ignored. Bounded per parent: `maxHeldBulk` bulk channels waiting for their
  * references and as many references waiting for their bulk channels, each
- * at most `heldTimeout`; waiting bulk channels count toward [bound].
+ * at most `heldBulkTimeout`; waiting bulk channels count toward [bound].
  */
 class BulkOrder {
   readonly from: PipeEnd;
@@ -346,7 +354,7 @@ class BulkOrder {
       );
       return;
     }
-    if (this.#opens.size >= bulkRoutes.maxHeld) {
+    if (this.#opens.size >= maxHeldBulk) {
       quietly(channel.close(genericStatus(StatusCode.resourceExhausted)));
       return;
     }
@@ -358,7 +366,7 @@ class BulkOrder {
       this.#opens.delete(number);
       this.bound?.exit(channel.connection);
       quietly(channel.close(genericStatus(StatusCode.cancelled)));
-    }, bulkRoutes.heldTimeout);
+    }, heldBulkTimeout);
     this.#opens.set(number, { channel, timer });
     this.#drain();
   };
@@ -381,14 +389,14 @@ class BulkOrder {
     }
     if (number <= this.#highestReference) return;
     this.#highestReference = number;
-    if (this.#references.size < bulkRoutes.maxHeld) {
+    if (this.#references.size < maxHeldBulk) {
       this.#references.set(
         number,
         this.#clock.setTimeout(() => {
           this.#references.delete(number);
           this.#discardUnreferenced();
           this.#drain();
-        }, bulkRoutes.heldTimeout),
+        }, heldBulkTimeout),
       );
     }
     this.#discardUnreferenced();
@@ -398,7 +406,7 @@ class BulkOrder {
   /**
    * [from] ended gracefully: the bulk channels its peer finished before its
    * close may still arrive, and go on being forwarded meanwhile
-   * (`linger`). Returns what resolves once no reference waits for its bulk
+   * (`lingerBulkTarget`). Returns what resolves once no reference waits for its bulk
    * channel any more, or undefined when none does (the frame mux: never)
    * or [from]'s connection has too many such parents already. Bulk
    * channels no reference names will not be named any more: they are
@@ -419,7 +427,7 @@ class BulkOrder {
       this.#settled = { promise, resolve, done: false };
     }
     const settled = this.#settled;
-    if (!bulkRoutes.linger(this.from.mux, this.open, settled.promise)) {
+    if (!lingerBulkTarget(this.from.mux, this.open, settled.promise)) {
       this.clear();
       return undefined;
     }
@@ -512,7 +520,7 @@ function forwardBulk(
   from.commit();
   to.commit();
   twin.priority = 'bulk';
-  bulkRoutes.markBulk(twin);
+  markBulkChannel(twin);
   const piped = pipe(new MuxEnd(bulk), new MuxEnd(twin), { bulk: true });
   const transfer: BulkTwin = { source: bulk, target: twin, done: piped };
   twins.add(transfer);

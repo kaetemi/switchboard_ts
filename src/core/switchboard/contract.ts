@@ -11,7 +11,8 @@ import type { Name } from '../name.ts';
 import type { SlotEntry } from '../naming/naming-protocol.ts';
 import type { SlotEvent, SlotTable } from '../naming/slot-table.ts';
 import type { Status } from '../status.ts';
-import type { TalkChannel, TalkOptions } from '../talk/contract.ts';
+import type { TalkOptions } from '../talk/contract.ts';
+import type { TalkChannel } from '../talk/talk-channel.ts';
 
 /**
  * What the Switchboard layer (wiki page "Polyverse Switchboard Addressing

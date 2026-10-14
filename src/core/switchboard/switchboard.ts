@@ -27,7 +27,8 @@ import {
 import { type Name, type NameLike, toName } from '../name.ts';
 import { serviceRecord } from '../naming/naming-protocol.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
-import { type TalkChannel, type TalkOptions, talkOptions } from '../talk/contract.ts';
+import { type TalkOptions, talkOptions } from '../talk/contract.ts';
+import type { TalkChannel } from '../talk/talk-channel.ts';
 import { defaultMaxFrameSize, type FrameTransport } from '../transport/contract.ts';
 import { parseEndpoint } from '../transport/endpoint.ts';
 import { type Clock, systemClock } from '../util/clock.ts';
@@ -62,7 +63,7 @@ import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
 import { isBrokeringResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
-import { installBulkRouting, isBulkAddress, refuseBulk, talkOver } from './talk-layer.ts';
+import { installBulkRouting, isBulkAddress, routeDispatchedBulk, talkOver } from './talk-layer.ts';
 import {
   abortable,
   bounded,
@@ -1935,7 +1936,7 @@ export class Switchboard implements AsyncDisposable {
     if (isBulkAddress(address)) {
       // A bulk channel belongs to a channel of this connection that was
       // admitted already; the Talk layer routes those before `incoming`.
-      refuseBulk(channel);
+      routeDispatchedBulk(channel, address);
       return;
     }
     const policy = this.#policies.get(connection);
@@ -2474,7 +2475,12 @@ export class Switchboard implements AsyncDisposable {
         options === undefined ? this.talkOptions : talkOptions({ ...this.talkOptions, ...options }),
       );
     } catch (e) {
-      void closeQuietly(channel, Status.of(StatusCode.unimplemented, 'no Talk layer'));
+      void closeQuietly(
+        channel,
+        e instanceof SwitchboardError
+          ? e.status
+          : Status.of(StatusCode.internal, 'cannot wrap the channel in Talk'),
+      );
       throw e;
     }
   }
