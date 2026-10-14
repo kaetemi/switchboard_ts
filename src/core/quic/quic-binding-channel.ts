@@ -12,7 +12,7 @@ import type {
   MuxOptions,
   MuxPriority,
 } from '../mux/contract.ts';
-import { checkMuxStatus } from '../mux/mux-protocol.ts';
+import { checkMuxStatus, readSubframes } from '../mux/mux-protocol.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
@@ -199,6 +199,11 @@ export class QuicBindingChannel implements MuxChannel {
 
   /** Outgoing subframes; see {@link MuxChannel.writable}. */
   readonly writable: WritableStream<Uint8Array>;
+
+  /** The subframes of {@link readable}, for `for await`; see `MuxChannel[Symbol.asyncIterator]`. */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
+  }
 
   readonly #host: QuicChannelHost;
   #stream: QuicStream | undefined;

@@ -16,24 +16,18 @@ https://github.com/kaetemi/switchboard_ts/pull/14 was merged by kaetemi into the
 - `src/core/mux/output-scheduler.ts`: the per-channel queues and the bulk zipper.
 - Both classes are exported from `src/core/mux/index.ts`.
 - `Fifo` (`src/core/transport/fifo.ts`) is now iterable.
-- `test/unit/mux/frame-mux-smoke.test.ts`: 4 end-to-end checks over the memory pair (subframes, credit wait, close status, ping, GOAWAY, writable). This is the only test coverage the frame mux has so far.
+- `test/unit/mux/frame-mux-smoke.test.ts`: 4 end-to-end checks over the memory pair (subframes, credit wait, close status, ping, GOAWAY, writable). The Dart suites are ported since (step 3 below).
 
 ## Remaining from the work split
 
-**Step 3: frame mux tests (PR #14 has the implementation only)**
+**Step 3: frame mux tests (branch `claude/mux-tests`)**
 
-- Port the Dart tests:
-  - `mux_test.dart` (1610 lines)
-  - `mux_flow_test.dart` (1019)
-  - the connection groups of `mux_limits_test.dart` (1068)
-  - `mux_schedule_test.dart` (872)
-  - the "connection" group of `vectors/mux_vectors_test.dart`
-  - the IDENT gating tests of `binding_protocol_test.dart`
-- Port `mux_harness.dart` to `test/unit/mux/support.ts` first: `quiet`, `rawOptions`, `muxPair`, `RawPeer`, `rawPair`, and `GatedTransport` (a `FrameTransport` with `isOutputReady`/`outputReady`).
-- Time: `ManualClock`, or `SteppingClock` plus `settle()` from `test/support/node/stepping-clock.ts`. That is the `fake_async` `elapse`/`flushMicrotasks` equivalent.
-- Expect bugs: keep-alive, the LIMITS wait, the scheduler, budgets, rejections and the IDENT exchange on the connection have only been read against Dart, not run.
-- Open a follow-up PR with the ports and fixes.
-- Ask the node thread, or the lead, to wire `coreRuntime().mux` in `src/core/switchboard/core-runtime.ts` (their file; it still says "unavailable") to `(t, o, i) => new FrameMuxConnection(t, { ...o, isInitiator: i })`. The node tests' `test/support/node/toy-mux.ts` can then give way to the real mux.
+- Ported, one TS file per Dart file under `test/unit/mux/`, over `support.ts` (the port of `mux_harness.dart`, every connection on a `SteppingClock`): `mux.test.ts` (`mux_test.dart`), `mux-flow.test.ts`, `mux-limits.test.ts` (connection groups added to the codec half), `mux-schedule.test.ts`; the "connection identity" group of `identity_test.dart` is the identity thread's `test/unit/identity/identity.test.ts`, and `mux_talk_test.dart` the Talk thread's (`test/unit/talk/mux-talk.test.ts`, `test/integration/talk-frame-mux.test.ts`). `test/vectors/mux.test.ts` has the "connection" group of `mux_vectors_test.dart`; `test/vectors/binding-protocol.test.ts` the IDENT gating tests. `frame-mux-api.test.ts` covers the TS-only API (streams, signals, `await using`, the hooks, the write backlog).
+- The TCP cases of the flow and limits suites run on the loopback in the unit files; those of `mux_test.dart` (TCP, WebSocket) are the transports thread's `test/integration/mux-tcp.test.ts` and `mux-websocket.test.ts`. Not ported: the Dart mirrors that count the scheduler's private turn lists (the observable half is checked).
+- Also fixed on this branch: `identify()` hands out a pre-caught promise; `MuxChannel` is async iterable over its subframes (contract, all channel classes, `readSubframes` in `mux-protocol.ts`); a `StreamTransport` errors its writable once its output ended on its own (peer FIN, failure, abort), so `writer.closed` settles, at the cost of Dart's silent drop of later writes; the `IdentifyOptions.holderKey` comment (ignored with a bearer credential, as in Dart; the QUIC binding still refuses it).
+- The suites found no wire or state bug in the frame mux. They found two performance problems, both fixed: every channel built a `ReadableStream` and a `WritableStream` at both ends (now made on first use), and Node's `WritableStream` drains its queue in quadratic time beyond some 16K queued writes (the mux now keeps at most 1024 writes in flight and queues the rest itself).
+- Adaptations, each commented where it applies: credit is returned per read (design §12 item 10), so batch sizes differ from Dart's; Dart's synchronous peers become `AnsweringTransport`, whose answer the mux reads after the write.
+- `coreRuntime().mux` already opens `FrameMuxConnection`s since PR #17; the node tests' `toy-mux.ts` can give way to the real mux.
 
 **Step 4: identity**
 

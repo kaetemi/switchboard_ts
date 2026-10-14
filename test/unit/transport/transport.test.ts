@@ -341,11 +341,44 @@ describe('StreamTransport over byte pipes', () => {
     expect(await next(queue)).toBe('done');
     expect(await peer.read(8)).toBe(preambleHex);
     expect(await peer.fromTransport.hasNext()).toBe(false);
-    // Silently dropped after the stream closed.
+    // Dart drops a later frame silently. A WritableStream cannot stay
+    // writable once its output is gone and still settle its closed
+    // promise: the writable is errored, so a write is refused with
+    // CONNECTION_LOST, the close as the stream refuses a close of an
+    // errored stream, and nothing more goes out.
     const writer = peer.transport.writable.getWriter();
-    await writer.write(hexBytes('01'));
-    await writer.close();
+    expectCode(await rejection(writer.closed), StatusCode.connectionLost);
+    expectCode(await rejection(writer.write(hexBytes('01'))), StatusCode.connectionLost);
+    expect(await rejection(writer.close())).toBeInstanceOf(TypeError);
     expect(peer.fromTransport.bytes).toHaveLength(8);
+  });
+
+  test('the writable settles once the transport closed its output on its own', async () => {
+    // A consumer waiting on `closed` learns that the output is gone: when
+    // the peer closed, when the output failed, when the transport aborted.
+    const closedBy = async (end: (peer: RawPeer) => void): Promise<unknown> => {
+      const peer = new RawPeer();
+      // The input is read only as the readable is.
+      void collect(peer.transport.readable).catch(() => {});
+      const writer = peer.transport.writable.getWriter();
+      await writer.write(hexBytes('AA'));
+      end(peer);
+      return rejection(writer.closed);
+    };
+    const finEnded = await closedBy((peer) => peer.toTransport.end());
+    expectCode(finEnded, StatusCode.connectionLost);
+    expect((finEnded as SwitchboardError).status.reason).toBe('the peer closed the connection');
+    expectCode(await closedBy((peer) => peer.transport.abort()), StatusCode.connectionLost);
+    const broken = new Error('connection reset');
+    expect(await closedBy((peer) => peer.toTransport.fail(broken))).toBe(broken);
+    // Closed by its own user, it closes as asked.
+    const peer = new RawPeer();
+    const writer = peer.transport.writable.getWriter();
+    await writer.close();
+    await writer.closed;
+    peer.toTransport.end();
+    await pump();
+    await writer.closed;
   });
 
   test('an input error ends the stream with it and closes the output', async () => {
@@ -376,7 +409,15 @@ describe('StreamTransport over byte pipes', () => {
     const writer = transport.writable.getWriter();
     await writer.write(hexBytes('AA'));
     await pump();
-    await writer.write(hexBytes('BB'));
+    // The write that meets the failure is taken, or refused with it as the
+    // failure errors the writable meanwhile: Dart drops it silently.
+    const second = await writer.write(hexBytes('BB')).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    if (second !== undefined) {
+      expect((second as Error).message).toBe('connection reset');
+    }
     expect(transport.bufferedOutputBytes).toBe(0);
     expect(transport.isOutputReady).toBe(true);
     expect(writes).toBe(2);
@@ -384,7 +425,9 @@ describe('StreamTransport over byte pipes', () => {
     expect(await next(queue)).toBe('CC');
     input.end();
     expect(await next(queue)).toBe('done');
-    await writer.close();
+    // The output is gone: the writable is errored with its failure.
+    expect(((await rejection(writer.closed)) as Error).message).toBe('connection reset');
+    expect(await rejection(writer.close())).toBeInstanceOf(TypeError);
   });
 
   test('closing the sink ends the stream', async () => {
@@ -484,7 +527,9 @@ describe('StreamTransport over byte pipes', () => {
 
     peer.toTransport.end();
     expect(await received).toEqual([]);
-    await writer.close();
+    // The peer closed: so did the output, and the writable with it.
+    expectCode(await rejection(writer.closed), StatusCode.connectionLost);
+    expect(await rejection(writer.close())).toBeInstanceOf(TypeError);
   });
 
   test('a close that cannot drain the output aborts', async () => {
@@ -556,7 +601,8 @@ describe('StreamTransport over byte pipes', () => {
     expect(peer.transport.bufferedOutputBytes).toBe(0);
     expect(peer.transport.isOutputReady).toBe(true);
     expect(await next(queue)).toBe('done');
-    await writer.close();
+    expectCode(await rejection(writer.closed), StatusCode.connectionLost);
+    expect(await rejection(writer.close())).toBeInstanceOf(TypeError);
     peer.fromTransport.resume();
     await pump();
     expect(peer.fromTransport.isAborted).toBe(true);

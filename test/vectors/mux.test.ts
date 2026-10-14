@@ -1,10 +1,11 @@
 // Mux frames and control messages: the wiki page "Polyverse Switchboard
 // Test Vectors", section "Mux frames", plus the decoding rules of the
-// "Switchboard Mux" page. Ports the codec groups of
-// `test/vectors/mux_vectors_test.dart`; its "connection" group needs the
-// frame mux and is ported with it.
+// "Switchboard Mux" page, and the negative vectors through a connection.
+// Ports `test/vectors/mux_vectors_test.dart`.
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
+import type { MuxOptions } from '../../src/core/mux/contract.ts';
+import { FrameMuxConnection } from '../../src/core/mux/frame-mux-connection.ts';
 import {
   MuxCommand,
   MuxControlMessage,
@@ -14,12 +15,22 @@ import {
   MuxLimits,
 } from '../../src/core/mux/mux-frame.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
+import { type WikiVector, wikiBytes, wikiVector, wikiVectors } from '../support/vectors.ts';
+import {
+  FrameReader,
+  Incoming,
+  memoryPair,
+  SteppingClock,
+  Subframes,
+} from '../unit/mux/support.ts';
 
 const empty = new Uint8Array(0);
 
 describe('mux frames', () => {
-  function vector(name: string, frame: MuxFrame, hex: string): void {
-    test(name, () => {
+  /** Encodes [frame] to vector [v] (named after its wiki case) and decodes it back. */
+  function vector(v: WikiVector, frame: MuxFrame): void {
+    test(v.case, () => {
+      const hex = v.hex as string;
       expect(hexString(frame.encode())).toBe(hex);
       expect(frame.encodedLength).toBe(hexBytes(hex).length);
       const decoded = MuxFrame.decode(hexBytes(hex));
@@ -30,90 +41,115 @@ describe('mux frames', () => {
   }
 
   vector(
-    'DATA, short id 2, payload 01 02 03',
+    wikiVector('test-vectors/mux-frames/data-short-id-2-payload-01-02-03'),
     MuxFrame.data(2, hexBytes('01 02 03')),
-    '02 02 00 01 02 03',
   );
-  vector('DATA, short id 2, empty payload', MuxFrame.data(2, empty), '02 02 00');
   vector(
-    'DATA, long id 0x010000, empty payload',
+    wikiVector('test-vectors/mux-frames/data-short-id-2-empty-payload'),
+    MuxFrame.data(2, empty),
+  );
+  vector(
+    wikiVector('test-vectors/mux-frames/data-long-id-0x010000-empty-payload'),
     MuxFrame.data(0x010000, empty),
-    '00 00 00 01 00 00 00',
   );
   vector(
-    'DATA, long id 0x1234567890AB, payload FF',
+    wikiVector('test-vectors/mux-frames/data-long-id-0x1234567890ab-payload-ff'),
     MuxFrame.data(0x1234567890ab, hexBytes('FF')),
-    '00 AB 90 78 56 34 12 FF',
   );
-  vector('OPEN, short id 3, payload AA', MuxFrame.open(3, hexBytes('AA')), '12 03 00 AA');
-  vector('OPEN, short id 2, empty payload', MuxFrame.open(2, empty), '12 02 00');
-  vector('CLOSE, short id 2, status OK, no reason', MuxFrame.close(2, Status.ok), '22 02 00 00 00');
-  vector('CLOSE, short id 2, no payload (means OK)', MuxFrame.close(2), '22 02 00');
   vector(
-    'CLOSE, short id 2, NOT_FOUND, reason "x"',
+    wikiVector('test-vectors/mux-frames/open-short-id-3-payload-aa'),
+    MuxFrame.open(3, hexBytes('AA')),
+  );
+  vector(
+    wikiVector('test-vectors/mux-frames/open-short-id-2-empty-payload'),
+    MuxFrame.open(2, empty),
+  );
+  vector(
+    wikiVector('test-vectors/mux-frames/close-short-id-2-status-ok-no-reason'),
+    MuxFrame.close(2, Status.ok),
+  );
+  vector(
+    wikiVector('test-vectors/mux-frames/close-short-id-2-no-payload-means-ok'),
+    MuxFrame.close(2),
+  );
+  vector(
+    wikiVector('test-vectors/mux-frames/close-short-id-2-not-found-reason-x'),
     MuxFrame.close(2, Status.of(StatusCode.notFound, 'x')),
-    '22 02 00 05 00 78',
   );
   vector(
-    'Control PING, payload DE AD',
+    wikiVector('test-vectors/mux-frames/control-ping-payload-de-ad'),
     MuxControlMessage.ping(hexBytes('DE AD')).toFrame(),
-    '02 00 00 01 DE AD',
   );
   vector(
-    'Control PONG, payload DE AD',
+    wikiVector('test-vectors/mux-frames/control-pong-payload-de-ad'),
     MuxControlMessage.pong(hexBytes('DE AD')).toFrame(),
-    '02 00 00 02 DE AD',
   );
   vector(
-    'Control GOAWAY, GOING_AWAY, no reason',
+    wikiVector('test-vectors/mux-frames/control-goaway-going-away-no-reason'),
     MuxControlMessage.goAway(Status.of(StatusCode.goingAway)).toFrame(),
-    '02 00 00 03 21 00',
   );
   vector(
-    'Control LIMITS, 1024 bytes, 4 channels, 64 KiB window',
+    wikiVector('test-vectors/mux-frames/control-limits-1024-bytes-4-channels-64-kib-window'),
     MuxControlMessage.limits(
       new MuxLimits({ maxFrameSize: 1024, maxChannels: 4, initialWindow: 65536 }),
     ).toFrame(),
-    '02 00 00 04 00 04 00 00 04 00 00 00 00 00 01 00',
   );
   vector(
-    'Control CREDIT, channel 2, 32768 bytes',
+    wikiVector('test-vectors/mux-frames/control-credit-channel-2-32768-bytes'),
     MuxControlMessage.credit(new MuxCredit(2, 32768)).toFrame(),
-    '02 00 00 07 02 00 00 00 00 00 00 80 00 00',
   );
+  // The NONCE and IDENT rows are asserted by identity.test.ts.
 
   test('CLOSE payloads decode to their status', () => {
-    const statusOf = (hex: string): Status => Status.decode(MuxFrame.decode(hexBytes(hex)).payload);
-    expect(statusOf('22 02 00 00 00').equals(Status.ok)).toBe(true);
-    expect(statusOf('22 02 00').equals(Status.ok)).toBe(true);
-    expect(statusOf('22 02 00 05 00 78').equals(Status.of(StatusCode.notFound, 'x'))).toBe(true);
+    const statusOf = (bytes: Uint8Array): Status => Status.decode(MuxFrame.decode(bytes).payload);
+    expect(
+      statusOf(wikiBytes('test-vectors/mux-frames/close-short-id-2-status-ok-no-reason')).equals(
+        Status.ok,
+      ),
+    ).toBe(true);
+    expect(
+      statusOf(wikiBytes('test-vectors/mux-frames/close-short-id-2-no-payload-means-ok')).equals(
+        Status.ok,
+      ),
+    ).toBe(true);
+    expect(
+      statusOf(wikiBytes('test-vectors/mux-frames/close-short-id-2-not-found-reason-x')).equals(
+        Status.of(StatusCode.notFound, 'x'),
+      ),
+    ).toBe(true);
   });
 
   test('control messages decode', () => {
-    const control = (hex: string): MuxControlMessage => {
-      const frame = MuxFrame.decode(hexBytes(hex));
+    const control = (bytes: Uint8Array): MuxControlMessage => {
+      const frame = MuxFrame.decode(bytes);
       expect(frame.channelId).toBe(0);
       expect(frame.command).toBe(MuxCommand.data);
       return MuxControlMessage.decode(frame.payload);
     };
 
-    const ping = control('02 00 00 01 DE AD');
+    const ping = control(wikiBytes('test-vectors/mux-frames/control-ping-payload-de-ad'));
     expect(ping.knownType).toBe(MuxControlType.ping);
     expect(hexString(ping.payload)).toBe('DE AD');
-    const pong = control('02 00 00 02 DE AD');
+    const pong = control(wikiBytes('test-vectors/mux-frames/control-pong-payload-de-ad'));
     expect(pong.knownType).toBe(MuxControlType.pong);
     expect(hexString(pong.payload)).toBe('DE AD');
-    const goAway = control('02 00 00 03 21 00');
+    const goAway = control(
+      wikiBytes('test-vectors/mux-frames/control-goaway-going-away-no-reason'),
+    );
     expect(goAway.knownType).toBe(MuxControlType.goAway);
     expect(goAway.goAwayStatus.equals(Status.of(StatusCode.goingAway))).toBe(true);
-    const limits = control('02 00 00 04 00 04 00 00 04 00 00 00 00 00 01 00');
+    const limits = control(
+      wikiBytes('test-vectors/mux-frames/control-limits-1024-bytes-4-channels-64-kib-window'),
+    );
     expect(limits.knownType).toBe(MuxControlType.limits);
     expect(
       MuxLimits.decode(limits.payload).equals(
         new MuxLimits({ maxFrameSize: 1024, maxChannels: 4, initialWindow: 65536 }),
       ),
     ).toBe(true);
-    const credit = control('02 00 00 07 02 00 00 00 00 00 00 80 00 00');
+    const credit = control(
+      wikiBytes('test-vectors/mux-frames/control-credit-channel-2-32768-bytes'),
+    );
     expect(credit.knownType).toBe(MuxControlType.credit);
     expect(MuxCredit.decode(credit.payload).equals(new MuxCredit(2, 32768))).toBe(true);
   });
@@ -236,7 +272,7 @@ describe('mux frames', () => {
   });
 
   test('compatible reserved bits are ignored', () => {
-    const frame = MuxFrame.decode(hexBytes('42 02 00 01'));
+    const frame = MuxFrame.decode(wikiBytes('test-vectors/mux-frames/prose-42-02-00-01'));
     expect(frame.command).toBe(MuxCommand.data);
     expect(frame.channelId).toBe(2);
     expect(hexString(frame.payload)).toBe('01');
@@ -261,14 +297,14 @@ describe('mux frames', () => {
 });
 
 // Negative vectors: each must be a protocol error.
-const negative: readonly (readonly [string, string])[] = [
-  ['Reserved incompatible flag 0x01', '03 02 00'],
-  ['Command 3', '32 02 00'],
-  ['Truncated short header', '02 02'],
-  ['Truncated long header', '00 01 02 03 04 05'],
-  ['OPEN on channel 0', '12 00 00'],
-  ['DATA on channel 1', '02 01 00'],
-];
+const negative: readonly (readonly [string, string])[] = wikiVectors(
+  'test-vectors/mux-frames/reserved-incompatible-flag-0x01',
+  'test-vectors/mux-frames/command-3',
+  'test-vectors/mux-frames/truncated-short-header',
+  'test-vectors/mux-frames/truncated-long-header',
+  'test-vectors/mux-frames/open-on-channel-0',
+  'test-vectors/mux-frames/data-on-channel-1',
+).map((v) => [v.case, v.hex as string] as const);
 
 // Further decoding rules from the mux page.
 const negativeRules: readonly (readonly [string, string])[] = [
@@ -308,14 +344,123 @@ describe('mux negative vectors, decoder', () => {
   });
 
   // Control payloads that are protocol errors (after the type byte).
-  for (const [name, hex, decode] of [
-    ['LIMITS shorter than 12 bytes', '00 04 00 00 04 00 00 00', MuxLimits.decode],
-    ['LIMITS with a zero window', '00 04 00 00 04 00 00 00 00 00 00 00', MuxLimits.decode],
-    ['CREDIT that is not 10 bytes', '02 00 00 00 00 00 00 80', MuxCredit.decode],
-    ['CREDIT of 11 bytes', '02 00 00 00 00 00 00 80 00 00 00', MuxCredit.decode],
+  for (const [name, bytes, decode] of [
+    [
+      'LIMITS shorter than 12 bytes',
+      wikiBytes('test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00'),
+      MuxLimits.decode,
+    ],
+    [
+      'LIMITS with a zero window',
+      wikiBytes('test-vectors/mux-frames/prose-00-04-00-00-04-00-00-00-00-00-00-00'),
+      MuxLimits.decode,
+    ],
+    [
+      'CREDIT that is not 10 bytes',
+      wikiBytes('test-vectors/mux-frames/prose-02-00-00-00-00-00-00-80'),
+      MuxCredit.decode,
+    ],
+    ['CREDIT of 11 bytes', hexBytes('02 00 00 00 00 00 00 80 00 00 00'), MuxCredit.decode],
   ] as const) {
     test(name, () => {
-      expect(() => decode(hexBytes(hex))).toThrow(ProtocolError);
+      expect(() => decode(bytes)).toThrow(ProtocolError);
     });
   }
+});
+
+describe('mux negative vectors, connection', () => {
+  const options: Partial<MuxOptions> = { keepAliveInterval: undefined, announceLimits: false };
+
+  /** A frame mux over one end of a memory pair, and a reader and a writer of the other end. */
+  function connection(): [FrameMuxConnection, FrameReader, (hex: string) => void] {
+    const clock = new SteppingClock();
+    const [local, remote] = memoryPair(clock);
+    const mux = new FrameMuxConnection(local, { ...options, clock, isInitiator: true });
+    const writer = remote.writable.getWriter();
+    const send = (hex: string): void => {
+      writer.write(hexBytes(hex)).catch(() => {});
+    };
+    return [mux, new FrameReader(remote.readable), send];
+  }
+
+  for (const [name, hex] of negative) {
+    test(`${name}: GOAWAY PROTOCOL_ERROR and close`, async () => {
+      const [mux, queue, send] = connection();
+      send(hex);
+      const frame = MuxFrame.decode(await queue.nextBytes());
+      expect(frame.channelId).toBe(0);
+      const control = MuxControlMessage.decode(frame.payload);
+      expect(control.knownType).toBe(MuxControlType.goAway);
+      expect(control.goAwayStatus.known).toBe(StatusCode.protocolError);
+      expect(await queue.hasNext()).toBe(false);
+      expect((await mux.done).known).toBe(StatusCode.protocolError);
+      expect(mux.isOpen).toBe(false);
+    });
+  }
+
+  for (const [name, hex] of [
+    ['LIMITS shorter than 12 bytes', '02 00 00 04 00 04 00 00 04 00 00 00'],
+    ['LIMITS with a zero window', '02 00 00 04 00 04 00 00 04 00 00 00 00 00 00 00'],
+    ['CREDIT that is not 10 bytes', '02 00 00 07 02 00 00 00 00 00 00 80'],
+  ] as const) {
+    test(`${name}: GOAWAY PROTOCOL_ERROR and close`, async () => {
+      const [mux, queue, send] = connection();
+      send(hex);
+      const frame = MuxFrame.decode(await queue.nextBytes());
+      const control = MuxControlMessage.decode(frame.payload);
+      expect(control.knownType).toBe(MuxControlType.goAway);
+      expect(control.goAwayStatus.known).toBe(StatusCode.protocolError);
+      expect(await queue.hasNext()).toBe(false);
+      expect((await mux.done).known).toBe(StatusCode.protocolError);
+    });
+  }
+
+  test('CREDIT for a channel that is not open is ignored', async () => {
+    const [mux, queue, send] = connection();
+    send('02 00 00 07 02 00 00 00 00 00 00 80 00 00');
+    send('02 00 00 07 FE FF FF FF FF FF FF FF FF FF');
+    send('02 00 00 01 AA');
+    expect(hexString(await queue.nextBytes())).toBe('02 00 00 02 AA');
+    expect(mux.isOpen).toBe(true);
+    await mux.close();
+    await queue.cancel();
+  });
+
+  test('a long id above 32 bits addresses its own channel', async () => {
+    const [mux, queue, send] = connection();
+    // OPEN 0x100000003 and OPEN 3, then DATA on each.
+    send('10 03 00 00 00 01 00');
+    send('12 03 00');
+    send('00 03 00 00 00 01 00 AA');
+    send('02 03 00 BB');
+    const channels = new Incoming(mux);
+    const long = await channels.next();
+    const short = await channels.next();
+    expect(long.id).toBe(0x100000003);
+    expect(short.id).toBe(3);
+    expect(await new Subframes(long).nextHex()).toBe('AA');
+    expect(await new Subframes(short).nextHex()).toBe('BB');
+    // Our CLOSE uses the long form for the long id.
+    void long.close();
+    expect(hexString(await queue.nextBytes())).toBe('20 03 00 00 00 01 00');
+    await mux.close();
+    await queue.cancel();
+    await channels.cancel();
+  });
+
+  test('compatible reserved bits are ignored by a connection', async () => {
+    const [mux, queue, send] = connection();
+    // OPEN 3 with bit 0x40, DATA with 0x80, PING with 0xC0.
+    send('52 03 00');
+    send('82 03 00 01');
+    send('C2 00 00 01 DE AD');
+    const channels = new Incoming(mux);
+    const channel = await channels.next();
+    expect(channel.id).toBe(3);
+    expect(await new Subframes(channel).nextHex()).toBe('01');
+    expect(hexString(await queue.nextBytes())).toBe('02 00 00 02 DE AD');
+    await mux.close();
+    await queue.cancel();
+    await channels.cancel();
+  });
 });

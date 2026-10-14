@@ -99,7 +99,11 @@ export function muxOptions(options?: Partial<MuxOptions>): MuxOptions {
 
 /** What `MuxConnection.identify` takes. */
 export interface IdentifyOptions {
-  /** The holder key of a holder-key credential; required for one, refused for a bearer credential. */
+  /**
+   * The holder key of a holder-key credential, which signs the proof:
+   * required for one (and must be the key it names); ignored for a bearer
+   * credential, which carries no proof, as in Dart.
+   */
   holderKey?: HolderKey | undefined;
   /** Opaque intent, at most 64 bytes; empty unless answering a CONNECT. */
   intent?: Uint8Array | undefined;
@@ -247,6 +251,16 @@ export interface MuxChannel extends AsyncDisposable {
    * chunk consumes it (credit goes back) unless {@link manualCredit}.
    */
   readonly readable: ReadableStream<Uint8Array>;
+
+  /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`: each step takes delivery of one (its credit goes back unless
+   * {@link manualCredit}); the iteration ends with the readable. Stopping
+   * early (`break`, an exception) cancels the readable, which discards what
+   * arrives from then on and does not close the channel. Locks
+   * {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array>;
 
   /** Outgoing subframes: a `write` is a {@link send}; `close()` is `close(OK)`; `abort(status)` closes with that status. */
   readonly writable: WritableStream<Uint8Array>;

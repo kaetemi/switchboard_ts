@@ -31,6 +31,7 @@ import {
   type MuxPriority,
   muxOptions,
 } from '../../../src/core/mux/contract.ts';
+import { readSubframes } from '../../../src/core/mux/mux-protocol.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TimerHandle } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
@@ -511,6 +512,10 @@ export class FakeMuxChannel implements MuxChannel {
   get readable(): ReadableStream<Uint8Array> {
     this.#locked = true;
     return this.#readable;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
   }
 
   get writable(): WritableStream<Uint8Array> {
