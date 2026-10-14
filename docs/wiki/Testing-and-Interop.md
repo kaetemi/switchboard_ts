@@ -25,4 +25,4 @@ Locally: a Dart SDK (3.13.5) and a Rust toolchain are needed for the peer; `tool
 
 ## Clocks
 
-Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@polyverse/switchboard/testing` and drive time with `advance(ms)` and `flush()`, the port of Dart's `fake_async`.
+Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@kaetemi/switchboard/testing` and drive time with `advance(ms)` and `flush()`, the port of Dart's `fake_async`.
