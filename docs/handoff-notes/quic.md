@@ -1,7 +1,8 @@
 # Hand-off: QUIC transport (thread 5)
 
-State on 2026-10-14, for the session that picks this up. Repository
-`kaetemi/switchboard_ts`, integration branch `claude/switchboard-ts-design-s5r9na`.
+State on 2026-10-14, for the session that picks this up, after the continuation's merges.
+Repository `kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs went into
+`claude/switchboard-ts-design-s5r9na`, from which `main` was initialised).
 The assignment is thread 5 of `docs/work-split.md`; the design is `docs/design.md` sections 3.1
 and 6.10. The Dart reference is `kaetemi/switchboard_quic` (read-only).
 
@@ -55,94 +56,25 @@ branch; #8 and #15 must not be reused.
   which probes the spec and the Chromium `WebTransportError` constructors. It is a port of
   `web_interop.dart` and is **not exported yet**. The provider that uses it isn't written.
 
-## What remains of the assignment
+## Done since: deliverables 4 and 5, and the test parity
 
-1. **The WebTransport provider (deliverable 4).**
-   * Port `switchboard_quic/lib/src/web/web_provider.dart` (1291 lines) to
-     `src/web/quic/webtransport-provider.ts`.
-     * Expose a `webTransport()` factory returning a `QuicConnector`. Inject the
-       `WebTransport` constructor for tests.
-     * Reads are chunked to `read(max)`. Writes use `writer.ready` for backpressure.
-     * `reset` is `writer.abort(WebTransportError)`. `stop` is `reader.cancel`.
-     * Keep the 2 s session-gone grace and the `openStream` credit wait with 5 to 200 ms
-       backoff. Feature-test `protocol`, `draining`, `exportKeyingMaterial`, `getStats`,
-       `createSendGroup` and `sendOrder`.
-     * Pre-catch every promise.
-   * Add `src/web/quic/index.ts`, and export it from `src/web/index.ts`. That file's doc comment
-     says the provider is not there yet; rewrite it to name what is exported.
-   * The browser test goes in `test/browser/webtransport.test.ts`, with its own
-     `test/browser/vitest.config.ts`; don't edit the root config.
-     * Node starts native WebTransport listeners with handlers ported from
-       `tool/web_server.dart`. Vite (in `node_modules`) serves a page module importing
-       `/src/web/index.ts`. Playwright drives Chromium through `page.evaluate`.
-     * Port `web_provider_test.dart` (568 lines) and `web_binding_test.dart` (220), using
-       `web_harness.dart` as the guide.
-     * Skip with a reason when the addon or Chromium is missing; `SWITCHBOARD_BROWSER=required`
-       fails instead.
-   * Add a `browser` CI job: the `native` job's Rust and sbq steps, then
-     `npx playwright install --with-deps chromium`, then the browser test. The work split
-     allows `playwright` as a dev dependency. Pin `1.56.1` to match Chromium 1194.
-   * In this container, Playwright 1.56.1 is installed globally at
-     `/opt/node22/lib/node_modules/playwright`, Chromium is in `/opt/pw-browsers`, and
-     `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1` is set.
-   * A hand check on Chromium 141 (build 1194) against the native listener from an
-     `http://127.0.0.1` page:
-     * Echo, reset 42 and close 7 'bye' worked, with `serverCertificateHashes` taking
-       `selfSignedCertificate('127.0.0.1')` as it is.
-     * Chromium has none of `protocol`, `draining`, `exportKeyingMaterial`, `getStats`,
-       `createSendGroup` or `sendOrder`, and sends no `WT-Available-Protocols`. So the
-       provider must refuse duplicate protocols itself, to keep Dart's "schemes and
-       arguments" case.
-     * The spec form of the `WebTransportError` constructor throws; the dictionary form
-       clamps the code to 255.
-     * A writer's `desiredSize` starts at 1.
-   * The rest of the provider was designed but not written:
-     * `WebTransportProvider` with `isSupported`, `maxStreamErrorCode`, `sendOrderOf` and a
-       `webTransport(init?)` factory;
-     * an injectable constructor and clock;
-     * exported `WebTransportSession` and `WebTransportStream`;
-     * incoming streams read only while someone waits;
-     * `connectWebTransport` and `webTransportConnector`.
-   * The docs disagree on `webTransport`. `docs/design.md` returns a provider for
-     `connectQuic`; the wiki page and `docs/work-split.md` return a connector from
-     `webTransport(url, options)`. Settle it with the lead.
-2. **Prebuilt packaging (deliverable 5).**
-   * Per-target manifests go under `native/npm/<target>/`. The targets and package names are
-     in the table in `native/README.md`.
-   * Draft a `release` workflow that builds the five targets. Publishing is the user's call.
-   * The loader already looks for `@kaetemi/switchboard-quic-<target>`. The
-     `optionalDependencies` in `package.json` belong to the lead, so ask.
-   * Only Linux x64 is built in CI today. macOS and Windows have never been built.
-3. **Interop with the Dart peer.**
-   * Acceptance: a TS node over the native provider interoperates with the Dart peer over raw
-     QUIC and WebTransport, in both directions.
-   * The Dart peer in `test/interop/dart_peer` already listens and dials on `quic` and
-     `webtransport`. Its listeners share one ECDSA certificate whose hash it reports as
-     `certificateSha256`.
-   * `tsTransportGaps` in `test/interop/matrix.ts` lists `quic` and `webtransport` as waiting
-     on thread 5. That file is thread 6's.
-   * Once a TS peer exists, wire it up:
-     * dial with `QuicSwitchboardBinding(nativeQuic())`, with
-       `webTransportCertificateVerified: false` or the hash as a pin;
-     * listen with `QuicSwitchboardListener.start(node, await nativeQuic().listen(host, 0, { alpn: [switchboardAlpn], certificateDer, privateKeyDer }))`,
-       or with `listenWebTransport(..., { path: '/sb' })`.
-4. **Test parity.** Every `switchboard_quic` test should have a TS counterpart or a written
-   reason. Status by Dart file:
+All on `main` (the integration branch since the first hand-off), from topic branches:
 
-   | Dart test file | TS status |
-   |---|---|
-   | `binding_test`, `review_cases`, `vectors_test`, `native_provider_test` | done |
-   | `native_integration_test` | ported at connection level, not through nodes; its Talk, proxy, throughput and paused-reader cases can now move onto `QuicSwitchboardBinding` |
-   | `switchboard_test`, `review_switchboard_test` | partly done, as above |
-   | `web_provider_test`, `web_binding_test` | not started |
-   | `build_hook_test` | needs a reason in a test file: it tests Dart's native-assets hook, which has no TS counterpart (`native/build.mjs` stands in) |
+1. **The WebTransport provider** (`claude/webtransport`): `src/web/quic/webtransport-provider.ts`, a port of `web_provider.dart`, exported from `src/web/quic/index.ts` and `src/web/index.ts`: `webTransport(init?)` returns a `WebTransportProvider` (a `QuicConnector`; `init` injects the `WebTransport` and `WebTransportError` constructors and a clock), `webTransportConnector(url, init)` gives a `ReconnectingClient` its connector (`quicConnector` over `webTransport()`), with `WebTransportSession`, `WebTransportStream`, `WebTransportReceiveStream`, `isSupported`, `maxStreamErrorCode`, `sendOrderOf`, the 2 s session-gone grace, the `openStream` credit wait, feature tests of every optional member, and the duplicate-protocol check Chromium does not make. The docs' disagreement on `webTransport` is settled: it returns the provider (design section 11). Tests: `test/unit/quic/webtransport-provider.test.ts` over an injected API, and `test/browser/webtransport.test.ts` (34 tests: `web_provider_test.dart` and `web_binding_test.dart` in Playwright's Chromium 141 against native listeners started in the test process, the page served by Vite; its own `test/browser/vitest.config.ts`; `npm run test:browser`), the `browser` CI job (`SWITCHBOARD_BROWSER=required`). The man-in-the-middle group of `switchboard_test.dart` is `test/unit/quic/mitm.test.ts`.
+2. **Prebuilt packaging** (`claude/quic-identity`): the five manifests under `native/npm/<target>/` (`linux-x64-gnu`, `linux-arm64-gnu`, `darwin-arm64`, `darwin-x64`, `win32-x64-msvc`), the `optionalDependencies` of `package.json`, `test/unit/quic/packages.test.ts`, and `.github/workflows/release.yml` (manual dispatch: builds and tests each target on a runner of its platform, packs the six tarballs, publishes only when asked). CI builds Linux x64 only; the other targets are built by the release workflow.
+3. **Node-level tests** (`claude/quic-identity`, `claude/node-talk`, `claude/talk-integration`): `test/integration/quic-node-native.test.ts` (the node half of `native_integration_test.dart`: Talk, proxy, throughput, a paused reader), `node-quic.test.ts` and `node-webtransport.test.ts` (the Node entry's `listenQuic` and `listenWebTransport`, which fill in the ALPN and protocol), `identity.test.ts` (exporter-bound identity between nodes over raw QUIC and WebTransport), `test/integration/talk-quic.test.ts` (Talk over the binding: unordered channels, bulk streams overtaking or lagging, drain holds, `_bulk` continuations after GOAWAY); the Talk, proxy and `SlotChannel` todos of `test/unit/quic/switchboard.test.ts` are ported. The tests use real credentials (`identity-fixtures.ts`, also in `review.test.ts`).
 
-5. **Talk (#11) has merged:** port the todo Talk cases in `switchboard.test.ts`. Also check
-   that Talk's `installBulkRouting` installs `admitAfterGoAway` on a QUIC connection, which is
-   how `_bulk` continuations are admitted after GOAWAY. Dart decodes `TalkBulkOpen` inside the
-   binding; TS leaves that to the hook.
-6. Optionally, `test/unit/quic/review.test.ts` could use `identity-fixtures.ts` instead of its
-   local identity stand-ins.
+Test parity, by Dart file:
+
+| Dart test file | TS |
+|---|---|
+| `binding_test`, `review_cases`, `vectors_test`, `native_provider_test` | `binding.test.ts`, `review.test.ts`, `test/vectors/quic-*.test.ts`, `test/integration/quic-native.test.ts` |
+| `native_integration_test` | `test/integration/quic-binding-native.test.ts` (connection level), `quic-node-native.test.ts` (through nodes) |
+| `switchboard_test`, `review_switchboard_test` | `switchboard.test.ts`, `mitm.test.ts`, `review.test.ts` |
+| `web_provider_test`, `web_binding_test` | `test/browser/webtransport.test.ts` (and `webtransport-provider.test.ts`) |
+| `build_hook_test` | the reason in `not-ported.test.ts`: Dart's native-assets hook, which `native/build.mjs` stands in for |
+
+**Left:** interop with the Dart peer over raw QUIC and WebTransport in both directions comes with the TS peer (`claude/ts-peer`; the Dart peer already listens and dials on `quic` and `webtransport`, its certificate hash in READY); musl prebuilds; the first publish (the user's call); Firefox's exporter path and Chromium 143+'s `protocols`, which need browsers newer than CI's; the bulk-burst gap shared with Dart (`test.fails` in `talk-quic.test.ts`; design section 13, item 6).
 
 ## Known gaps and decisions
 
@@ -154,14 +86,12 @@ branch; #8 and #15 must not be reused.
   synchronous `TypeError`.
 * The sbq pin is in `native/sbq-vendor.commit`, outside the vendored copy. The design doc was
   updated to say so in `783e31f`.
-* A raw QUIC listener needs `alpn: [switchboardAlpn]` in its `QuicServerConfig`. Nothing on the
-  node side fills it in for the caller.
-* `src/core/switchboard/switchboard.ts` and `runtime.ts` still say `@polyverse/switchboard` in
-  their docs. These are the node thread's files.
-* The test identity: `test/unit/quic/identity-fixtures.ts` has real Ed25519 holder keys over
-  WebCrypto (`generateHolderKey`), because the binding verifies proofs for real. The node-level
-  tests pair them with `test/support/node/fake-identity.ts` credentials and verifier. The core
-  has no credential codec or issuer yet.
+* A raw QUIC listener needs `alpn: [switchboardAlpn]` in its `QuicServerConfig`; the Node
+  entry's `listenQuic` and `listenWebTransport` fill it in (and the WebTransport protocol).
+* The test identity: `test/unit/quic/identity-fixtures.ts` has real credentials of an Ed25519
+  test authority and an HMAC issuer, real verifiers and `Ed25519HolderKey`s, as
+  `binding_test.dart` has them; the node-level tests use `test/support/node/fake-identity.ts`,
+  which is real credentials too.
 
 ## The native addon and the vendored shim
 

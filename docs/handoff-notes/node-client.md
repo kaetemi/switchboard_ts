@@ -1,11 +1,12 @@
 # Hand-off: node and client (work-split thread 3)
 
-Repo `kaetemi/switchboard_ts`, integration branch
-`claude/switchboard-ts-design-s5r9na`. Thread branch
-`claude/switchboard-ts-node-client-wum9sv`. History is granular, the
-integration branch is merged in with merge commits, and nothing is squashed.
-Running notes from the thread are in `../notes/node.md` (layout, fixtures,
-decisions). This file is the state at hand-off.
+Repo `kaetemi/switchboard_ts`, integration branch `main` (the first
+phase's PRs went into `claude/switchboard-ts-design-s5r9na`, from which
+`main` was initialised; the first thread branch was
+`claude/switchboard-ts-node-client-wum9sv`). History is granular, merges
+are merge commits, and nothing is squashed. Running notes from the thread
+are in `../notes/node.md` (layout, fixtures, decisions). This file is the
+state on 2026-10-14 after the continuation's merges.
 
 ## Merged
 
@@ -24,107 +25,33 @@ decisions). This file is the state at hand-off.
   one channel end to end. #18 held the same commit and was merged with no
   content change, so the thread branch head is an ancestor of main.
 
-Nothing of this thread is unmerged: main and the integration branch are at
-59ee1e3, and the thread branch adds nothing to them.
+The first thread branch adds nothing to `main`.
+
+## Merged since: the rest of deliverables 4 and 5
+
+All on `main` (the integration branch since the first hand-off), from topic branches:
+
+- `claude/node-talk`: `src/core/switchboard/talk-layer.ts` wired to `TalkChannel` and Talk's bulk routes (`installBulkRouting`, `markBulkChannel`/`isBulkChannel`, `registerBulkTarget`, `lingerBulkTarget`, `followBulkTarget`, `routeBulk`); the interim `bulkRoutes` is gone and `proxy.ts` uses Talk's functions. The Talk todos of the proxy, relay, PeerSet, client and QUIC node suites are ported, and every node suite runs over the toy mux and over the frame mux (`test/unit/switchboard/over-frame-mux/`, `test/unit/client/over-frame-mux/`), including the todos that needed real LIMITS and flow control.
+- `claude/transports`: the entry points, `src/node/switchboard.ts` (`listenTcp`, `listenWebSocket`, `acceptWebSocket`, `listenQuic`, `listenWebTransport`; the `tcp`, `ws`, `wss` dialers; `quic` and `https` through the `quic` option or a QUIC listener's provider; `listenQuic` fills in the `switchboard` ALPN) and `src/web/switchboard.ts` (connect-only: `ws`, `wss`, `https` with a `quic` provider; `tcp` is UNSUPPORTED), with `test/integration/node-{tcp,websocket,quic,webtransport,local-connections}.test.ts`.
+- `claude/mesh`: `MeshNode` (`src/core/switchboard/mesh-node.ts`, Dart `mesh.dart`: `join`, `publish`, `publishRelay`, `unpublish`, `migrateSlot`, `slotOwners`, the `CONNECT` dial-back, the credential renewal, `leave`) and the Dart node-level integration suites: `mesh_test`, `embedded_test`, `brokered_workers_test`, `cohosted_mesh_test`, `fleet_consumer_test`, `relayed_workers_test` (`test/integration/*.test.ts`), plus `test/unit/switchboard/mesh.test.ts`.
+- `claude/slot-routing`: `openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, slot-routed `selectAndConnect` (`slot-layer.ts` over `SlotChannel` and `reopenAtSlotOwner`), `StaticResolver` as a `SlotResolver` (`defineSlots`, `setSlot`, `removeSlots`, `locateSlot`), `isSlotResolver` beside `isBrokeringResolver` in `resolver.ts`, the proxy groups "proxyHandler with slot tables" and "proxyHandler: channels without a shard slot", the slot cases of `selection.test.ts` and `resolver.test.ts`, the `openTalkToSlot` relay case.
+- `claude/sharding`: `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave` (`LeaveReport`), with the Dart sharding integration suite (`test/integration/sharding/`).
 
 ## Test status
 
-`npm run check` and `npx tsc -p tsconfig.test.json` are clean: 1517 tests
-pass, with 50 todo across the repo. Per file of this thread, against Dart (counts are Dart `test(` calls; each TS file's header says what is left out):
+Every file of this thread ports its Dart file, over the toy mux and over the frame mux; each TS file's header says what lives elsewhere and why:
 
-| TS file | Dart file | Ported |
-|---|---|---|
-| `switchboard.test.ts`, `identity-node`, `outgoing` | the matching `*_test.dart` | ported in #6; Talk requests go over plain channels, and `talk() fails until the Talk layer lands` flips when the seam is swapped |
-| `selection.test.ts` | `selection_test.dart` (16) | 12; the slot routing cases wait for slot routing |
-| `resolver.test.ts` | `resolver_test.dart` | the `StaticResolver` slot-table half waits for slot routing |
-| `local-connections.test.ts` | `local_connections_test.dart` (16) | 12; the Talk, PeerSet and proxy cases are not ported yet (PeerSet and proxy now exist), and the TCP/WS variants belong in the Node integration tests |
-| `memory-endpoints.test.ts` | `memory_endpoint_test.dart` (13) | 11; requests go over plain channels until Talk is wired, and the proxy case moved to `proxy.test.ts` |
-| `client/reconnecting-client.test.ts` | `reconnecting_client_test.dart` | all |
-| `peer-set.test.ts` | `peer_set_test.dart` | 35 of 35 |
-| `proxy.test.ts` | `proxy_test.dart` (66) | 29 pass, 16 todo, slot groups missing (below) |
-| `relay.test.ts` | `relay_test.dart` (32) | 29 pass, 4 todo |
-| `mesh.test.ts` | `mesh_test.dart`, `test/integration/*` | not started |
+| TS file (`test/unit/switchboard/` unless noted) | Dart file |
+|---|---|
+| `switchboard.test.ts`, `identity-node.test.ts`, `outgoing.test.ts` | `switchboard_test.dart`, `identity_node_test.dart` (the TCP and QUIC halves in `test/integration/identity.test.ts`), the outgoing-policy cases |
+| `selection.test.ts`, `resolver.test.ts` | `selection_test.dart`, `resolver_test.dart`, with their slot cases |
+| `local-connections.test.ts`, `test/integration/node-local-connections.test.ts` | `local_connections_test.dart` (over `mem://`, and over TCP and WebSocket) |
+| `memory-endpoints.test.ts` | `memory_endpoint_test.dart` (two cases live in `switchboard.test.ts` and `proxy.test.ts`) |
+| `proxy.test.ts`, `relay.test.ts`, `peer-set.test.ts` | `proxy_test.dart`, `relay_test.dart`, `peer_set_test.dart` |
+| `mesh.test.ts`, `test/integration/mesh.test.ts` and the other node-level integration files | `mesh_test.dart` and Dart's `test/integration/*` |
+| `test/unit/client/reconnecting-client.test.ts` | `reconnecting_client_test.dart` |
 
-## Remaining from the work split
-
-Talk (#11), naming (#13), the frame mux (#14) and QUIC (#15) have landed
-since this work was written. Items 1 to 4 are unblocked now.
-
-1. **Swap the Talk seam.** `src/core/switchboard/talk-layer.ts` is interim:
-   - `talkOver` throws UNIMPLEMENTED
-   - `installBulkRouting` is a no-op
-   - `refuseBulk` and `bulkRoutes` stand in for Talk's
-
-   Wire it to `TalkChannel` and to `installBulkRouting`,
-   `markBulkChannel`/`isBulkChannel`, `registerBulkTarget`,
-   `lingerBulkTarget`, `followBulkTarget` and `routeBulk` from
-   `src/core/talk/index.ts`. Delete the interim `bulkRoutes` and point
-   `proxy.ts` at Talk's functions; the interim names map one to one. Then:
-   - enable the Talk todos in `proxy.test.ts` (16) and `relay.test.ts`
-     (bulk payloads)
-   - add the client's Talk variants (`openTalk`, `openPersistentTalk`)
-   - turn PeerSet's three `openTalk` UNIMPLEMENTED assertions into Talk
-     round trips
-   - restore the Talk echo in `peer-set.test.ts`'s worker
-   - flip `talk() fails until the Talk layer lands` in `switchboard.test.ts`
-     and port the Talk, PeerSet and proxy cases of `local-connections` and
-     the request cases of `memory-endpoints`
-2. **Slot routing** (deliverable 5, second half). The naming hand-off leaves
-   it to this thread or theirs; it is still open. Pieces:
-   - `src/core/switchboard/slot-layer.ts`: `slotCarrier` returns undefined.
-     Wire it to `SlotChannel` and `reopenAtSlotOwner` (naming
-     `slot-channel.ts`, `slot-reopen.ts`).
-   - Add `openChannelToSlot` and a slot-routed `selectAndConnect` /
-     `resolveSlotOwner` to `Switchboard`.
-   - Port the slot cases of `selection.test.ts` and `resolver.test.ts`.
-   - Make `StaticResolver` a `SlotResolver` (Dart: `defineSlots`, `setSlot`,
-     `removeSlots`, `locateSlot`).
-   - Port the proxy groups "proxyHandler with slot tables" and "proxyHandler:
-     channels without a shard slot" (about 20 tests; Dart `proxy_test.dart`
-     from line 1338). They use subclasses of the Dart `_Locating` and
-     `_Gated` resolvers.
-   - Port the `openTalkToSlot` relay todo and the naming thread's
-     `slot-routing.test.ts` routing todos (9 + 3). Replace that file's
-     test-local `openChannelToSlot` with the node's.
-   - `proxy.ts` already checks slot tables through `isSlotResolver`, which
-     now comes from `naming/slot-reopen.ts`.
-3. **`MeshNode`** (`mesh-node.ts`, Dart `mesh.dart`, `mesh_test.dart`) is not
-   started. It needs `NamingClient` and `NamingResolver` (#13 landed). Once
-   it exists:
-   - The relay tests can move from `test/support/node/fake-mesh.ts` to a
-     real naming service, or keep the fake.
-   - Port the 2 PeerSet todos in `relay.test.ts`: a relayed peer, and "a
-     node that can neither broker nor relay".
-   - MeshNode owns the credential renewal schedule; `NamingClient.renew()`
-     waits on a core `Credential.decode`, per the naming hand-off.
-4. **Run the node suites over the frame mux.** Since #17, `core-runtime.ts`
-   builds a `FrameMuxConnection` (#14 landed), and
-   `test/unit/switchboard/core-runtime.test.ts` checks one channel end to
-   end over it. The node suites still run over `test/support/node/toy-mux.ts`
-   through the harness's `testRuntime`. Next:
-   - Run them over the frame mux as well, which may surface frame-mux
-     bugs, since the core hand-off says much of it is read-only verified.
-   - Enable the todos that need real LIMITS or flow control: the proxy's
-     pipe tests, "a send rejected by delayed LIMITS" and "a subframe over
-     the receiving peer limit".
-5. **The Node and web entry points** (deliverable 5, first half) are not
-   started. `src/node/switchboard.ts` and `src/web/switchboard.ts` don't
-   exist yet:
-   - Node: `listenTcp`, `listenWebSocket`, `acceptWebSocket`, and `tcp`,
-     `ws`, `wss` dialers, plus `quic`/`https` through the QUIC thread's
-     `connectQuic`/`listenQuic` via a `quic` option.
-   - Web: a connect-only node.
-   - Both build on `SwitchboardRuntime`/`SwitchboardBinding` in `runtime.ts`
-     (Dart `SwitchboardBinding`). They are blocked on `src/node/transport/`
-     (TCP, `ws`), which the core thread owns (step 5) and has not landed. The
-     QUIC hand-off notes that a raw QUIC listener needs
-     `alpn: [switchboardAlpn]` and that the node side doesn't fill it in.
-6. **Integration tests** `test/integration/node-*.test.ts` over memory, TCP
-   and WebSocket, and the Dart `test/integration/*` node-level ports:
-   `mesh_test`, `embedded_test`, `brokered_workers_test`,
-   `cohosted_mesh_test`, `fleet_consumer_test`, `relayed_workers_test`.
-   The acceptance interop (Dart peer against a TS node and back, over TCP and
-   WebSocket) needs item 5 and the interop thread's TS peer.
+**Left:** the acceptance interop (the Dart peer against a TS node and back, over TCP, WebSocket, QUIC and WebTransport) comes with the TS peer (`claude/ts-peer`); `SteppingClock` (`test/support/node/stepping-clock.ts`) could merge into `ManualClock.elapseAsync`; the relay tests keep `test/support/node/fake-mesh.ts` beside the real naming service of the integration suites.
 
 ## Deviations from Dart and known gaps
 
@@ -162,6 +89,12 @@ since this work was written. Items 1 to 4 are unblocked now.
   - With `allowEndpoints`, records pointing at the relay's own listeners are
     skipped with a warning (`... is this node itself`) and fail as
     UNAVAILABLE.
+- **MeshNode.** Options objects (`MeshNodeOptions`, `MeshPublishOptions`,
+  `MeshPublishShardedOptions`) instead of named parameters; `published` and
+  `brokeredConnections` are arrays; `nextRenewalAt` is ms since the epoch
+  (by `wallTime`); `wallTime`, `clock` and `logger` options; it is
+  `AsyncDisposable` (`leave()`); `LeaveReport`'s maps are keyed by
+  `Name.key` with sorted, frozen slot arrays.
 - **Proxy.** A host hint parses to `tcp://host:port`; a bad hint is
   INVALID_ARGUMENT. The TCP dialer is not in the core runtime, so in unit
   tests a hint either relays to `mem` endpoints or fails as configured.
@@ -186,15 +119,17 @@ since this work was written. Items 1 to 4 are unblocked now.
     `CONNECT` brokering that needs `broker` rights
 
   The naming thread has its own `TestClock` and fake Talk in
-  `test/support/naming/`, which overlap with these.
+  `test/support/naming/`, which overlap with these. `gated-transport.ts`
+  is the port of Dart's `GatedTransport` (a transport whose output
+  readiness the test gates).
 - **Test pitfalls.**
   - `toEqual` on large `Uint8Array`s is very slow under vitest; use a byte
     comparison.
   - A JS default parameter swallows an explicit `undefined`. Use `null` for
     "any" in helpers.
 - **Lint.** `npm run check` runs `biome check .`, which fails on a nested
-  `biome.json` if an agent worktree is left under `.claude/worktrees/`.
-  Remove merged worktrees before checking.
+  `biome.json` if a git worktree sits inside the checkout; worktrees live
+  under `/home/user/wt/<topic>` for that reason.
 - **Conventions.**
   - Biome, 100 columns, single quotes, `type` imports, no `any` or TS enums,
     `.ts` import extensions, the file header, and JSDoc on every export.

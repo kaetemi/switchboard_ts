@@ -1,7 +1,11 @@
 # Hand-off: Dart interop test harness (thread 6)
 
 State on 2026-10-14, for the session that picks this up. Repository
-`kaetemi/switchboard_ts`, integration branch `claude/switchboard-ts-design-s5r9na`.
+`kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs
+went into `claude/switchboard-ts-design-s5r9na`, from which `main` was
+initialised). Updated by the docs pass for what changed around this thread;
+the TS peer itself is in flight on `claude/ts-peer`, whose own notes are
+the current word on it.
 The longer background is `../notes/interop.md` (sections 1 to 9 are the
 phase 1 design, section 10 the phase 2 status); the peer protocol is
 specified in `test/interop/README.md` in the repository.
@@ -30,15 +34,17 @@ tests are every TS cell, and each skipped suite names what it waits on.
 
 ## Unmerged
 
-Nothing. The branch `claude/switchboard-ts-interop-x2iz7c` holds no commit
-the integration branch lacks, and no work in progress exists. The TS peer has
-not been started.
+The first thread branch `claude/switchboard-ts-interop-x2iz7c` holds no
+commit `main` lacks. The TS peer, the scenario matrix, more oracle kinds and
+the identity, naming and relay scenarios are being written on
+`claude/ts-peer` (worktree `/home/user/wt/ts-peer`).
 
 ## Remaining from the work split
 
 1. **Deliverable 2: the TS peer and the mux and Talk matrix.**
-   * It needs the frame mux connection (thread 1) and the Talk channel layer
-     (thread 2). Neither had landed at hand-off; only their codecs had.
+   * It needed the frame mux connection (thread 1) and the Talk channel
+     layer (thread 2); both have landed since, with the node's entry points
+     and every transport (TCP, WebSocket, native QUIC and WebTransport).
    * The TS peer goes in `test/interop/ts_peer/main.ts`, using the public
      API only. It implements the commands, events and `echo`, `raw` and
      `sink` services in `test/interop/README.md`, and prints the same READY
@@ -60,17 +66,14 @@ not been started.
    and mixed-language meshes.
 4. **Deliverable 4:** a Dart driver under `test/interop/dart_driver/` that
    spawns the TS peer.
-5. **Vector coverage.**
-   * The vector tests under `test/vectors/` belong to other threads. They
-     read hex inline, so their wiki tables still show as `todo` in the
-     coverage test (13 todo).
-   * They count once they name vectors through `test/support/vectors.ts`.
-   * `SWITCHBOARD_VECTORS_STRICT=1` makes every table required.
+5. **Vector coverage:** done. Every vector test names its ids through
+   `test/support/vectors.ts`, and `SWITCHBOARD_VECTORS_STRICT=1` passes.
 
 Conventions:
 * The lead merges with real merge commits. Keep branch history granular,
   with no squash, amend or rebase.
-* After a PR merges, restart the branch from the integration branch.
+* Work on a topic branch `claude/<topic>` in a worktree under
+  `/home/user/wt/<topic>`; the lead merges it into `main`.
 * `npx tsc -p tsconfig.test.json --noEmit` is the lead's check over `test/**`.
   CI does not run it, so run it before every push.
 
@@ -104,9 +107,11 @@ node tool/dart-peer.mjs status   # what the build uses and whether the peer is f
   * `SWITCHBOARD_DART_PEER=<exe>` uses a prebuilt peer.
   * `SWITCHBOARD_FUZZ_SEED` and `SWITCHBOARD_FUZZ_COUNT` replay or widen
     the oracle's fuzzing.
-* **In the cloud container used here:** Dart is at `/opt/dart-sdk/bin`
-  (`export PATH=/opt/dart-sdk/bin:$PATH`), and the Dart repositories are
-  sibling checkouts in `/home/user`.
+* **In the cloud container used here:** Dart 3.13.5 is at
+  `/root/.cache/switchboard_ts/dart-sdk-3.13.5-linux-x64/dart-sdk/bin`,
+  the Dart repositories are sibling checkouts in `/home/user`, and the
+  main checkout's built peer can be reused from a worktree with
+  `SWITCHBOARD_DART_PEER`.
 
 **In CI:** the `interop` job in `.github/workflows/ci.yml`:
 * checks out both Dart repositories at the pins

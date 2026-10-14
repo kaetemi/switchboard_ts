@@ -1,7 +1,7 @@
 # Hand-off: Talk port (thread 2)
 
-State on 2026-10-14, for the session that picks this up (updated after the integration tests over the frame mux and the QUIC binding). Repository
-`kaetemi/switchboard_ts`, integration branch `claude/switchboard-ts-design-s5r9na`.
+State on 2026-10-14, for the session that picks this up (updated after the integration tests over the frame mux, TCP and the QUIC binding merged from `claude/talk-integration`). Repository
+`kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs went into `claude/switchboard-ts-design-s5r9na`, from which `main` was initialised).
 Running notes with the earlier design decisions are in `../notes/talk.md`.
 
 ## Merged
@@ -84,8 +84,8 @@ Over the QUIC binding, which reads a channel's stream only as far as what it del
 
 ## Remaining
 
-1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) need the TS peer. Talk itself is ready for them.
-2. **The QUIC bulk burst gap** above.
+1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) come with the TS peer (`claude/ts-peer`, in flight). Talk itself is ready for them; the node's Talk seam (`src/core/switchboard/talk-layer.ts`) is wired to `TalkChannel` since `claude/node-talk`.
+2. **The QUIC bulk burst gap** above (design section 13, item 6, has the two options).
 3. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
 
 ## Conventions this thread followed
