@@ -27,6 +27,13 @@ export interface IncomingChannel {
   readonly address: ChannelAddress;
   readonly connection: MuxConnection;
   readonly peerIdentity: PeerIdentity | undefined;
+  /**
+   * A description of the remote side, for logs: the remote address of an
+   * accepted connection, the endpoint of an initiated one, `local` on the
+   * accepted side of a connection a node made to its own listener;
+   * undefined when unknown.
+   */
+  readonly remote: string | undefined;
   /** The channel's Talk layer; wraps once, cached. */
   talk(options?: Partial<TalkOptions>): TalkChannel;
   reject(status: Status): Promise<void>;
