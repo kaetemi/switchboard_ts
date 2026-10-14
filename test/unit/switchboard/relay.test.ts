@@ -769,7 +769,10 @@ describe('refusals', () => {
     const worker = await Worker.start(mesh);
     const { logger, messages } = logged('debug');
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 1, logger });
-    const c = newNode({ credential: await issue('consumer-1', consumerScopes), identifyOutgoing: false });
+    const c = newNode({
+      credential: await issue('consumer-1', consumerScopes),
+      identifyOutgoing: false,
+    });
     const connection = await c.dial(relay.uri);
     const dropped = openRelayed(connection, innerOf(workerType, worker.id, 'dropped'));
     await until(() => messages.some((m) => m.includes('held until')));

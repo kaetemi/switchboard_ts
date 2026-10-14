@@ -32,7 +32,7 @@ import {
   QuicRecordCommand,
   quicDefaultRecordLimit,
 } from '../../../src/core/quic/records.ts';
-import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { Status, StatusCode } from '../../../src/core/status.ts';
 import { TalkBulkOpen, TalkBulkReference } from '../../../src/core/talk/talk-bulk.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
