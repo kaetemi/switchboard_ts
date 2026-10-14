@@ -3,3 +3,11 @@
 // `talk-stream.ts`, `talk-bulk-transfer.ts`, `talk-forward.ts` and their
 // tests. Keep the contract in `contract.ts`.
 export * from './contract.ts';
+export { TalkBulkOpen, TalkBulkReference } from './talk-bulk.ts';
+export {
+  type TalkExtension,
+  TalkFrame,
+  type TalkFrameInit,
+  TalkKind,
+  talkKindName,
+} from './talk-frame.ts';
