@@ -14,11 +14,11 @@ import { Name } from '../../../src/core/name.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import { flush } from '../../support/talk/fake-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   expectStatus,
+  flush,
   rejectsStatus,
   serve,
   throwsStatus,

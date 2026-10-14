@@ -17,45 +17,22 @@ import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkChannel, TalkMessage, TalkRequest } from '../../../src/core/talk/contract.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import { TalkAbortError } from '../../../src/core/talk/talk-util.ts';
-import { flush } from '../../support/talk/fake-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
+import { credit, itemFrame, streamRequestFrame } from '../../support/talk/frames.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
+  rejectsRemote,
   rejectsStatus,
   throwsStatus,
+  toList,
 } from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
-
-/** A credit for request [id] of [items] items. */
-function credit(id: number, items: number): TalkFrame {
-  return new TalkFrame({
-    kind: TalkKind.extend,
-    requestId: id,
-    payload: TalkFrame.creditPayload(items),
-  });
-}
-
-/** A stream request [id] "LIST" with [window]. */
-function streamRequestFrame(id: number, window: number): TalkFrame {
-  return new TalkFrame({
-    kind: TalkKind.message,
-    procedure: Name.of('LIST'),
-    requestId: id,
-    stream: true,
-    window,
-  });
-}
-
-/** A stream item for request [id]. */
-function itemFrame(id: number, value: number): TalkFrame {
-  return new TalkFrame({ kind: TalkKind.streamItem, responseId: id, payload: bytes([value]) });
-}
 
 /** The Dart `Pair` of this file: the support `Pair`, with the credits a sent and the items b sent. */
 class WindowPair extends Pair {
@@ -83,15 +60,6 @@ async function nextRequest(channel: TalkChannel): Promise<TalkMessage> {
   throw new Error('no request');
 }
 
-/** Every value of [iterable] (Dart `stream.toList()`). */
-async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const values: T[] = [];
-  for await (const value of iterable) {
-    values.push(value);
-  }
-  return values;
-}
-
 /** The first payload byte of [message]. */
 function first(message: TalkMessage): number {
   return message.payload[0] as number;
@@ -105,12 +73,6 @@ function thrownBy(action: () => unknown): unknown {
     return e;
   }
   expect.fail('expected a throw');
-}
-
-/** Expects [promise] to reject with a {@link TalkAbortError} with [code] (Dart `isRemote`). */
-async function rejectsRemote(promise: Promise<unknown>, code: StatusCode): Promise<void> {
-  const error = await rejectsStatus(promise, code);
-  expect(error).toBeInstanceOf(TalkAbortError);
 }
 
 describe('the window', () => {
@@ -278,7 +240,7 @@ describe('the window', () => {
     const n = await served.next();
     void m.replyStream([]);
     void n.reply(bytes([7]));
-    expect(await collect(emptyResult.items)).toEqual([]);
+    expect(await toList(emptyResult.items)).toEqual([]);
     expect((await emptyResult.done).payload).toHaveLength(0);
     expect([...(await trailer.done).payload]).toEqual([7]);
     expect(p.credits).toHaveLength(0);
@@ -298,7 +260,7 @@ describe('the window', () => {
     expect(s.window).toBe(0);
     // Granting now is a no-op: the request ended.
     s.grant(10);
-    expect((await collect(s.items)).map(first)).toEqual([1, 2, 3]);
+    expect((await toList(s.items)).map(first)).toEqual([1, 2, 3]);
     await flush();
     expect(p.credits).toHaveLength(0);
     expect(p.b.incomingRequestCount).toBe(0);
@@ -470,7 +432,7 @@ describe('the window', () => {
       void m.replyItem(bytes([i]));
     }
     void m.reply(empty);
-    expect(await collect(s.items)).toHaveLength(50);
+    expect(await toList(s.items)).toHaveLength(50);
     expect(s.window).toBeUndefined();
     // Dart StateError: a plain Error here.
     const error = thrownBy(() => s.grant(1));

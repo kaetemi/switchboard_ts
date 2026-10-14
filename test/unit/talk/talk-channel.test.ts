@@ -14,9 +14,8 @@ import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import { flush } from '../../support/talk/fake-clock.ts';
 import { Pair } from '../../support/talk/frame-link.ts';
-import { bytes, Queue, serve, throwsStatus } from '../../support/talk/helpers.ts';
+import { bytes, flush, Queue, serve, throwsStatus } from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
 

@@ -5,10 +5,24 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { expect } from 'vitest';
-import { toPayload } from '../../../src/core/bytes.ts';
-import { type StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { bytesEqual, toPayload } from '../../../src/core/bytes.ts';
+import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { type Status, type StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import type { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
+import { TalkAbortError } from '../../../src/core/talk/talk-util.ts';
+import type { Clock } from '../../../src/core/util/clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
+
+/**
+ * Lets everything that is not waiting for a timer run: promise jobs, Web
+ * Streams deliveries, and the microtasks they queue, over [turns] event
+ * loop turns (default 3), so that chains hopping through a macrotask
+ * settle too ({@link ManualClock.settle}).
+ */
+export function flush(turns = 3): Promise<void> {
+  return ManualClock.settle(turns);
+}
 
 /** Bytes from numbers. */
 export function bytes(values: number[]): Uint8Array {
@@ -238,4 +252,106 @@ export class Collector<T> {
     resume?.();
     await this.#iterator.return?.();
   }
+}
+
+/** Every value of [iterable], as Dart's `Stream.toList`; marked handled until awaited. */
+export function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+  const list = (async () => {
+    const values: T[] = [];
+    for await (const value of iterable) {
+      values.push(value);
+    }
+    return values;
+  })();
+  list.catch(() => {});
+  return list;
+}
+
+/** The first value of [iterable], which then stops, as Dart's `Stream.first`. */
+export async function first<T>(iterable: AsyncIterable<T>): Promise<T> {
+  for await (const value of iterable) {
+    return value;
+  }
+  throw new Error('no element');
+}
+
+/** The error [promise] rejects with; fails the test if it resolves. */
+export async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise;
+  } catch (e) {
+    return e;
+  }
+  throw new Error('expected a rejection');
+}
+
+/** [promise], failing after [ms] of real time (Dart's `Future.timeout`). */
+export function within<T>(promise: Promise<T>, ms = 1000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no outcome within ${ms} ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Resolves after [ms] of [clock]'s time. */
+export function sleep(clock: Clock, ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    clock.setTimeout(resolve, ms);
+  });
+}
+
+/** Expects [actual] to hold the bytes of [expected], compared byte by byte (a deep equality of large arrays is slow). */
+export function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
+  expect(actual.length).toBe(expected.length);
+  expect(bytesEqual(actual, expected), 'bytes differ').toBe(true);
+}
+
+/** Expects [actual] to be the same status as [expected]: code and bytes. */
+export function expectSame(actual: Status | undefined, expected: Status): void {
+  expect(actual?.equals(expected), `${actual} is ${expected}`).toBe(true);
+}
+
+/** Expects [error] to be an abort that came from the peer (a {@link TalkAbortError}) with [code], and returns it. */
+export function expectRemote(error: unknown, code: StatusCode): TalkAbortError {
+  expect(error).toBeInstanceOf(TalkAbortError);
+  expect((error as TalkAbortError).status.code).toBe(code);
+  return error as TalkAbortError;
+}
+
+/** Expects [promise] to reject with an abort that came from the peer, with [code], and returns it. */
+export async function rejectsRemote(
+  promise: Promise<unknown>,
+  code: StatusCode,
+): Promise<TalkAbortError> {
+  return expectRemote(await rejection(promise), code);
+}
+
+/** The mux channel under [talk]. */
+export function rawOf(talk: TalkChannel): MuxChannel {
+  const raw = talk.raw;
+  if (raw === undefined) {
+    throw new Error('not over a mux channel');
+  }
+  return raw;
+}
+
+/** The only element of [list]. */
+export function only<T>(list: readonly T[]): T {
+  expect(list).toHaveLength(1);
+  return list[0] as T;
+}
+
+/** The last element of [list]. */
+export function last<T>(list: readonly T[]): T {
+  expect(list.length).toBeGreaterThan(0);
+  return list[list.length - 1] as T;
 }

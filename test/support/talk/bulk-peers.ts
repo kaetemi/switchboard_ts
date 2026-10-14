@@ -242,3 +242,25 @@ export class SourceController {
     };
   }
 }
+
+/**
+ * A byte source that makes a chunk each time its reader asks for one, as
+ * the Dart tests' source fed by a periodic timer while not paused; whether
+ * its reader cancelled it shows.
+ */
+export class PulledSource {
+  readonly cancelled = new Deferred<void>();
+  readonly stream: ReadableStream<Uint8Array>;
+
+  constructor(make: () => Uint8Array) {
+    this.stream = new ReadableStream<Uint8Array>(
+      {
+        pull: (controller) => controller.enqueue(make()),
+        cancel: () => {
+          this.cancelled.resolve();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+  }
+}

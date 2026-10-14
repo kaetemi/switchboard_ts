@@ -14,25 +14,35 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { afterEach, beforeEach, describe, expect, onTestFinished, test } from 'vitest';
 import { bytesEqual, hexBytes, hexString } from '../../../src/core/bytes.ts';
-import type { MuxChannelCarrier } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
-import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage, TalkOptions, TalkStream } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { forwardMessage } from '../../../src/core/talk/talk-forward.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
+import { until } from '../../support/talk/bulk-peers.ts';
+import { Carrier } from '../../support/talk/carrier.ts';
 import { costOf, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { type FrameEnd, frameLink } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
+  expectRemote,
+  expectSame,
   expectStatus,
+  first,
+  flush,
+  last,
   Outcome,
+  only,
   Queue,
+  rejection,
+  rejectsRemote,
   rejectsStatus,
+  toList,
 } from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
@@ -111,81 +121,10 @@ function listen<T>(
 // ---------------------------------------------------------------------------
 // Helpers
 
-/** The only element of [list]. */
-function only<T>(list: readonly T[]): T {
-  expect(list).toHaveLength(1);
-  return list[0] as T;
-}
-
-/** The last element of [list]. */
-function last<T>(list: readonly T[]): T {
-  expect(list.length).toBeGreaterThan(0);
-  return list[list.length - 1] as T;
-}
-
 /** The single byte of [payload]. */
 function single(payload: Uint8Array): number {
   expect(payload).toHaveLength(1);
   return payload[0] as number;
-}
-
-/** Every value of [iterable], as Dart's `Stream.toList`; marked handled until awaited. */
-function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const list = (async () => {
-    const values: T[] = [];
-    for await (const value of iterable) {
-      values.push(value);
-    }
-    return values;
-  })();
-  list.catch(() => {});
-  return list;
-}
-
-/** The first value of [iterable], which then stops, as Dart's `Stream.first`. */
-async function first<T>(iterable: AsyncIterable<T>): Promise<T> {
-  for await (const value of iterable) {
-    return value;
-  }
-  throw new Error('no element');
-}
-
-/** The error [promise] rejects with; fails the test if it resolves. */
-async function rejection(promise: Promise<unknown>): Promise<unknown> {
-  try {
-    await promise;
-  } catch (e) {
-    return e;
-  }
-  throw new Error('expected a rejection');
-}
-
-/** Expects [error] to be an abort that came from the peer, with [code]. */
-function expectRemote(error: unknown, code: StatusCode): TalkAbortError {
-  expect(error).toBeInstanceOf(TalkAbortError);
-  expect((error as TalkAbortError).status.code).toBe(code);
-  return error as TalkAbortError;
-}
-
-/** Expects [promise] to reject with an abort that came from the peer, with [code]. */
-async function rejectsRemote(promise: Promise<unknown>, code: StatusCode): Promise<TalkAbortError> {
-  return expectRemote(await rejection(promise), code);
-}
-
-/** Expects [actual] to be the same status as [expected]: code and bytes. */
-function expectSame(actual: Status | undefined, expected: Status): void {
-  expect(actual?.equals(expected), `${actual} is ${expected}`).toBe(true);
-}
-
-/** Polls [condition] until it holds; fails if it does not within a bound. */
-async function until(condition: () => boolean): Promise<void> {
-  for (let i = 0; i < 2000; i++) {
-    if (condition()) {
-      return;
-    }
-    await flush(1);
-  }
-  expect(condition(), 'condition not met').toBe(true);
 }
 
 /** Values that arrive one by one, taken in order, as a Dart `StreamQueue` over a controller. */
@@ -235,66 +174,6 @@ function record(
     }
   })();
   return frames;
-}
-
-/**
- * A channel carrying a mux channel, as a slot channel does: Dart's
- * `SlotChannel` with a reopen that finds nowhere else to go, which passes
- * everything through to the mux channel. With [limit], subframes longer
- * than it are refused FRAME_TOO_LARGE when sent, as `_LimitedSink` does.
- */
-class Carrier implements MuxChannelCarrier {
-  readonly channel: FakeMuxChannel;
-  readonly #limit: number | undefined;
-
-  constructor(channel: FakeMuxChannel, limit?: number) {
-    this.channel = channel;
-    this.#limit = limit;
-  }
-
-  get readable(): ReadableStream<Uint8Array> {
-    return this.channel.readable;
-  }
-
-  get writable(): WritableStream<Uint8Array> {
-    return this.channel.writable;
-  }
-
-  get manualCredit(): boolean {
-    return this.channel.manualCredit;
-  }
-
-  set manualCredit(value: boolean) {
-    this.channel.manualCredit = value;
-  }
-
-  consumed(bytes: number, subframes?: number): void {
-    this.channel.consumed(bytes, subframes);
-  }
-
-  send(subframe: Uint8Array): Promise<void> {
-    const limit = this.#limit;
-    if (limit !== undefined && subframe.length > limit) {
-      throw SwitchboardError.of(StatusCode.frameTooLarge);
-    }
-    return this.channel.send(subframe);
-  }
-
-  get isWritable(): boolean {
-    return this.channel.isWritable;
-  }
-
-  get whenWritable(): Promise<void> {
-    return this.channel.whenWritable;
-  }
-
-  close(status?: Status): Promise<void> {
-    return this.channel.close(status);
-  }
-
-  get done(): Promise<Status> {
-    return this.channel.done;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -663,7 +542,7 @@ for (const hops of [1, 2]) {
 
 describe('timeouts', () => {
   test("a deadline the backend declares reaches the client with the backend's buffer only, through every hop", async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({ proxies: 2, clock });
     const held: TalkMessage[] = [];
     serve(chain.backend, (m) => {
@@ -682,7 +561,7 @@ describe('timeouts', () => {
     expect(r.deadline).toBe(t0 + 65_000);
     // The backend gives up at its own deadline; its abort passes the
     // proxies, which time nothing out themselves.
-    await clock.elapse(60_000);
+    await clock.elapseAsync(60_000);
     expectRemote(result.error, StatusCode.deadlineExceeded);
     await chain.close();
     await flush();
@@ -690,7 +569,7 @@ describe('timeouts', () => {
   });
 
   test('EXTEND from the backend keeps the client waiting', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       proxies: 2,
       clock,
@@ -715,11 +594,11 @@ describe('timeouts', () => {
     expect(held).toHaveLength(2);
     const [slow, tick] = held as [TalkMessage, TalkMessage];
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       void slow.extend();
       void tick.replyItem(bytes([i]));
     }
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(result.isDone).toBe(false);
     expect(items.isDone).toBe(false);
     expect(extensions).toBe(5);
@@ -734,7 +613,7 @@ describe('timeouts', () => {
   });
 
   test('the proxy imposes no timeout of its own', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       client: { requestTimeout: 1000 },
@@ -746,7 +625,7 @@ describe('timeouts', () => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     expect(result.isDone).toBe(false);
     expect(clock.pendingCount, 'the client only').toBe(1);
     void (held as TalkMessage).reply(bytes([1]));
@@ -758,14 +637,14 @@ describe('timeouts', () => {
   });
 
   test('the backend responder timeout reaches the client as DEADLINE_EXCEEDED', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({ clock, backend: { replyTimeout: 30 } });
     let held: TalkMessage | undefined;
     serve(chain.backend, (m) => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expectRemote(result.error, StatusCode.deadlineExceeded);
     expect((held as TalkMessage).isCancelled).toBe(true);
     chain.expectIdle();
@@ -775,7 +654,7 @@ describe('timeouts', () => {
   });
 
   test('the client timeout cancels the forwarded request', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       client: { requestTimeout: 30 },
@@ -786,7 +665,7 @@ describe('timeouts', () => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expectStatus(result.error, StatusCode.deadlineExceeded);
     expect(result.error).not.toBeInstanceOf(TalkAbortError);
     expect((held as TalkMessage).isCancelled).toBe(true);
@@ -808,7 +687,7 @@ describe('frame level', () => {
     // proxy's channel to the client is a mux channel whose carrier refuses
     // the item FRAME_TOO_LARGE when sent, as `_LimitedSink` does: only a
     // mux channel (or one carrying it) refuses a frame when sending.
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [left, right] = fakeMuxPair({ mux: { clock } });
     const toClient = left.open(empty);
     const client = await right.accept();
@@ -2001,7 +1880,7 @@ describe('item windows', () => {
   // the note after the proxy groups).
 
   test("the proxy runs no credit bound of its own; the backend's does", async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       proxy: { creditTimeout: 1000 },
@@ -2013,10 +1892,10 @@ describe('item windows', () => {
     });
     const s = chain.client.streamRequest('LIST', empty, { window: 0 });
     const done = new Outcome(s.done);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(done.isDone).toBe(false);
     only(held).setCreditTimeout(3000);
-    await clock.elapse(3000);
+    await clock.elapseAsync(3000);
     expectRemote(done.error, StatusCode.deadlineExceeded);
     await chain.close();
     await flush();

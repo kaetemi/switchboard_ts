@@ -1,5 +1,8 @@
 // Vectors from the wiki page "Polyverse Switchboard Test Vectors", section
 // "Talk messages", and the Dart `vectors/talk_vectors_test.dart` beyond them.
+// The wiki's are read from test/vectors/wiki-vectors.json by id (through
+// test/support/vectors.ts), so test/vectors/coverage.test.ts checks both
+// Talk tables; the Dart file's further cases keep their hex here.
 import { describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../src/core/address/index.ts';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
@@ -7,29 +10,26 @@ import { Name } from '../../src/core/name.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
 import { TalkBulkOpen, TalkBulkReference } from '../../src/core/talk/talk-bulk.ts';
 import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
+import { type WikiVector, wikiBytes, wikiVector, wikiVectors } from '../support/vectors.ts';
 
 const minute = 60_000;
 
-/** Positive wiki vectors, with the frame each one must decode to. */
-const positive: [string, string, TalkFrame][] = [
+/** The positive wiki vectors (table talk-messages#4), with the frame each one must decode to. */
+const positive: [WikiVector, TalkFrame][] = [
   [
-    'Plain message "HELLO", payload 01',
-    '01 48 45 4C 4C 4F 00 00 00 01',
+    wikiVector('test-vectors/talk-messages/plain-message-hello-payload-01'),
     new TalkFrame({ kind: TalkKind.message, procedure: Name.of('HELLO'), payload: hexBytes('01') }),
   ],
   [
-    'Request "GET_PROF" id 1, empty payload',
-    '03 47 45 54 5F 50 52 4F 46 01 00 00',
+    wikiVector('test-vectors/talk-messages/request-get-prof-id-1-empty-payload'),
     new TalkFrame({ kind: TalkKind.message, procedure: Name.of('GET_PROF'), requestId: 1 }),
   ],
   [
-    'Final response to 1, no procedure, payload FF',
-    '04 01 00 00 FF',
+    wikiVector('test-vectors/talk-messages/final-response-to-1-no-procedure-payload-ff'),
     new TalkFrame({ kind: TalkKind.message, responseId: 1, payload: hexBytes('FF') }),
   ],
   [
-    'Stream request "LIST" id 2, unlimited window',
-    '0B 4C 49 53 54 00 00 00 00 02 00 00 FF FF FF FF',
+    wikiVector('test-vectors/talk-messages/stream-request-list-id-2-unlimited-window'),
     new TalkFrame({
       kind: TalkKind.message,
       procedure: Name.of('LIST'),
@@ -38,8 +38,7 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Stream request "LIST" id 2, window 16',
-    '0B 4C 49 53 54 00 00 00 00 02 00 00 10 00 00 00',
+    wikiVector('test-vectors/talk-messages/stream-request-list-id-2-window-16'),
     new TalkFrame({
       kind: TalkKind.message,
       procedure: Name.of('LIST'),
@@ -49,8 +48,7 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Stream item "ITEM" to 2, payload 07',
-    '15 49 54 45 4D 00 00 00 00 02 00 00 07',
+    wikiVector('test-vectors/talk-messages/stream-item-item-to-2-payload-07'),
     new TalkFrame({
       kind: TalkKind.streamItem,
       procedure: Name.of('ITEM'),
@@ -59,13 +57,11 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'End of stream (final response) to 2, empty',
-    '04 02 00 00',
+    wikiVector('test-vectors/talk-messages/end-of-stream-final-response-to-2-empty'),
     new TalkFrame({ kind: TalkKind.message, responseId: 2 }),
   ],
   [
-    'Abort response to 1, NOT_FOUND, "nope"',
-    '24 01 00 00 05 00 6E 6F 70 65',
+    wikiVector('test-vectors/talk-messages/abort-response-to-1-not-found-nope'),
     new TalkFrame({
       kind: TalkKind.abort,
       responseId: 1,
@@ -73,13 +69,13 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Extend response to 1 (restart the default timeout)',
-    '34 01 00 00',
+    wikiVector('test-vectors/talk-messages/extend-response-to-1-restart-the-default-timeout'),
     new TalkFrame({ kind: TalkKind.extend, responseId: 1 }),
   ],
   [
-    'Extend response to 1, deadline 900000 ms, renew 300000 ms',
-    '34 01 00 00 A0 BB 0D 00 E0 93 04 00',
+    wikiVector(
+      'test-vectors/talk-messages/extend-response-to-1-deadline-900000-ms-renew-300000-ms',
+    ),
     new TalkFrame({
       kind: TalkKind.extend,
       responseId: 1,
@@ -87,8 +83,9 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Extend response to 1, deadline 900000 ms, renew unchanged',
-    '34 01 00 00 A0 BB 0D 00 00 00 00 00',
+    wikiVector(
+      'test-vectors/talk-messages/extend-response-to-1-deadline-900000-ms-renew-unchanged',
+    ),
     new TalkFrame({
       kind: TalkKind.extend,
       responseId: 1,
@@ -96,18 +93,17 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Credit for own stream request 2, 8 more items',
-    '32 02 00 00 08 00 00 00',
+    wikiVector('test-vectors/talk-messages/credit-for-own-stream-request-2-8-more-items'),
     new TalkFrame({ kind: TalkKind.extend, requestId: 2, payload: TalkFrame.creditPayload(8) }),
   ],
   [
-    'The same credit forwarded by a message chain proxy whose own request toward the backend is 5',
-    '32 05 00 00 08 00 00 00',
+    wikiVector(
+      'test-vectors/talk-messages/the-same-credit-forwarded-by-a-message-chain-proxy-whose-own-request-toward-the',
+    ),
     new TalkFrame({ kind: TalkKind.extend, requestId: 5, payload: TalkFrame.creditPayload(8) }),
   ],
   [
-    'Cancel own request 2',
-    '22 02 00 00 01 00',
+    wikiVector('test-vectors/talk-messages/cancel-own-request-2'),
     new TalkFrame({
       kind: TalkKind.abort,
       requestId: 2,
@@ -115,16 +111,14 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Channel abort, UNAUTHENTICATED, no reason',
-    '20 10 00',
+    wikiVector('test-vectors/talk-messages/channel-abort-unauthenticated-no-reason'),
     new TalkFrame({
       kind: TalkKind.abort,
       payload: Status.of(StatusCode.unauthenticated).encode(),
     }),
   ],
   [
-    'Chained: response to 1 that is request 7 "MORE"',
-    '07 4D 4F 52 45 00 00 00 00 07 00 00 01 00 00',
+    wikiVector('test-vectors/talk-messages/chained-response-to-1-that-is-request-7-more'),
     new TalkFrame({
       kind: TalkKind.message,
       procedure: Name.of('MORE'),
@@ -133,13 +127,13 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Request id 0xFFFFFF "X"',
-    '03 58 00 00 00 00 00 00 00 FF FF FF',
+    wikiVector('test-vectors/talk-messages/request-id-0xffffff-x'),
     new TalkFrame({ kind: TalkKind.message, procedure: Name.of('X'), requestId: 0xffffff }),
   ],
   [
-    'Request "PUT" id 1 with a bulk payload: bulk number 1, 1048576 bytes',
-    '43 50 55 54 00 00 00 00 00 01 00 00 01 00 00 00 00 00 10 00 00 00',
+    wikiVector(
+      'test-vectors/talk-messages/request-put-id-1-with-a-bulk-payload-bulk-number-1-1048576-bytes',
+    ),
     new TalkFrame({
       kind: TalkKind.message,
       procedure: Name.of('PUT'),
@@ -149,8 +143,9 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Final response to 1 with a bulk payload: bulk number 1, length unknown',
-    '44 01 00 00 01 00 00 00 FF FF FF FF FF FF',
+    wikiVector(
+      'test-vectors/talk-messages/final-response-to-1-with-a-bulk-payload-bulk-number-1-length-unknown',
+    ),
     new TalkFrame({
       kind: TalkKind.message,
       responseId: 1,
@@ -159,8 +154,9 @@ const positive: [string, string, TalkFrame][] = [
     }),
   ],
   [
-    'Stream item to 2 with a bulk payload: bulk number 2, 0 bytes',
-    '54 02 00 00 02 00 00 00 00 00 00 00 00 00',
+    wikiVector(
+      'test-vectors/talk-messages/stream-item-to-2-with-a-bulk-payload-bulk-number-2-0-bytes',
+    ),
     new TalkFrame({
       kind: TalkKind.streamItem,
       responseId: 2,
@@ -170,26 +166,26 @@ const positive: [string, string, TalkFrame][] = [
   ],
 ];
 
-/** Negative wiki vectors (each must be a channel protocol error). */
-const negative: [string, string][] = [
-  ['BULK on an abort', '64 01 00 00 05 00'],
-  ['BULK on an extend', '74 01 00 00'],
-  ['BULK with a 4-byte reference', '43 50 55 54 00 00 00 00 00 01 00 00 01 00 00 00'],
-  ['STREAM without HAS_REQUEST', '09 48 45 4C 4C 4F 00 00 00'],
-  ['Stream request truncated before its window', '0B 4C 49 53 54 00 00 00 00 02 00 00 FF FF'],
-  ['Request id 0', '03 48 45 4C 4C 4F 00 00 00 00 00 00'],
-  ['STREAM_ITEM without HAS_RESPONSE', '11 48 45 4C 4C 4F 00 00 00'],
-  ['EXTEND with both ids', '36 01 00 00 02 00 00'],
-  ['EXTEND with neither id', '30'],
-  ['Credit with an 8-byte payload', '32 02 00 00 A0 BB 0D 00 E0 93 04 00'],
-  ['Credit of 0 items', '32 02 00 00 00 00 00 00'],
-  ['STREAM on a cancel', '2A 02 00 00 01 00'],
-  ['STREAM on a credit', '3A 02 00 00 08 00 00 00'],
-  ['EXTEND with a 4-byte payload', '34 01 00 00 A0 BB 0D 00'],
-  ['ABORT with both ids', '26 01 00 00 02 00 00 01 00'],
-  ['Plain message without procedure', '00 01'],
-  ['Truncated procedure', '01 48 45'],
-];
+/** The negative wiki vectors (table talk-messages#5): each must be a channel protocol error. */
+const negative: WikiVector[] = wikiVectors(
+  'test-vectors/talk-messages/bulk-on-an-abort',
+  'test-vectors/talk-messages/bulk-on-an-extend',
+  'test-vectors/talk-messages/bulk-with-a-4-byte-reference',
+  'test-vectors/talk-messages/stream-without-has-request',
+  'test-vectors/talk-messages/stream-request-truncated-before-its-window',
+  'test-vectors/talk-messages/request-id-0',
+  'test-vectors/talk-messages/stream-item-without-has-response',
+  'test-vectors/talk-messages/extend-with-both-ids',
+  'test-vectors/talk-messages/extend-with-neither-id',
+  'test-vectors/talk-messages/credit-with-an-8-byte-payload',
+  'test-vectors/talk-messages/credit-of-0-items',
+  'test-vectors/talk-messages/stream-on-a-cancel',
+  'test-vectors/talk-messages/stream-on-a-credit',
+  'test-vectors/talk-messages/extend-with-a-4-byte-payload',
+  'test-vectors/talk-messages/abort-with-both-ids',
+  'test-vectors/talk-messages/plain-message-without-procedure',
+  'test-vectors/talk-messages/truncated-procedure',
+);
 
 /** Further violations of the flag rules in talk.md that are not wiki vectors. */
 const negativeExtra: [string, string][] = [
@@ -244,24 +240,37 @@ function expectProtocolError(action: () => unknown): void {
 }
 
 describe('Talk vectors, positive', () => {
-  test.each(positive)('%s', (_name, hex, expected) => {
-    const bytes = hexBytes(hex);
-    const frame = TalkFrame.decode(bytes);
-    expect(frame.equals(expected), `${frame} equals ${expected}`).toBe(true);
-    expect(hexString(frame.encode())).toBe(hexString(bytes));
-    expect(hexString(expected.encode())).toBe(hexString(bytes));
-  });
+  test.each(positive.map(([v, frame]) => [v.case, v.id, frame] as const))(
+    '%s',
+    (_name, id, expected) => {
+      const bytes = wikiBytes(id);
+      const frame = TalkFrame.decode(bytes);
+      expect(frame.equals(expected), `${frame} equals ${expected}`).toBe(true);
+      expect(hexString(frame.encode())).toBe(hexString(bytes));
+      expect(hexString(expected.encode())).toBe(hexString(bytes));
+    },
+  );
 
   test('bulk references decode', () => {
     expect(
-      decodeHex(
-        '43 50 55 54 00 00 00 00 00 01 00 00 01 00 00 00 00 00 10 00 00 00',
+      TalkFrame.decode(
+        wikiBytes(
+          'test-vectors/talk-messages/request-put-id-1-with-a-bulk-payload-bulk-number-1-1048576-bytes',
+        ),
       ).bulkReference.equals(new TalkBulkReference(1, 1048576)),
     ).toBe(true);
-    const unknown = decodeHex('44 01 00 00 01 00 00 00 FF FF FF FF FF FF').bulkReference;
+    const unknown = TalkFrame.decode(
+      wikiBytes(
+        'test-vectors/talk-messages/final-response-to-1-with-a-bulk-payload-bulk-number-1-length-unknown',
+      ),
+    ).bulkReference;
     expect(unknown.number).toBe(1);
     expect(unknown.length).toBeUndefined();
-    const empty = decodeHex('54 02 00 00 02 00 00 00 00 00 00 00 00 00').bulkReference;
+    const empty = TalkFrame.decode(
+      wikiBytes(
+        'test-vectors/talk-messages/stream-item-to-2-with-a-bulk-payload-bulk-number-2-0-bytes',
+      ),
+    ).bulkReference;
     expect(empty.number).toBe(2);
     expect(empty.length).toBe(0);
     // The largest values survive the 48-bit arithmetic.
@@ -273,12 +282,18 @@ describe('Talk vectors, positive', () => {
 
   test('abort statuses decode', () => {
     expect(
-      decodeHex('24 01 00 00 05 00 6E 6F 70 65').status.equals(
-        Status.of(StatusCode.notFound, 'nope'),
-      ),
+      TalkFrame.decode(
+        wikiBytes('test-vectors/talk-messages/abort-response-to-1-not-found-nope'),
+      ).status.equals(Status.of(StatusCode.notFound, 'nope')),
     ).toBe(true);
-    expect(decodeHex('22 02 00 00 01 00').status.known).toBe(StatusCode.cancelled);
-    expect(decodeHex('20 10 00').status.known).toBe(StatusCode.unauthenticated);
+    expect(
+      TalkFrame.decode(wikiBytes('test-vectors/talk-messages/cancel-own-request-2')).status.known,
+    ).toBe(StatusCode.cancelled);
+    expect(
+      TalkFrame.decode(
+        wikiBytes('test-vectors/talk-messages/channel-abort-unauthenticated-no-reason'),
+      ).status.known,
+    ).toBe(StatusCode.unauthenticated);
     // An empty abort payload means UNKNOWN (talk.md, ABORT), not OK.
     expect(decodeHex('24 01 00 00').status.equals(Status.of(StatusCode.unknown))).toBe(true);
     expect(decodeHex('20').status.known).toBe(StatusCode.unknown);
@@ -286,8 +301,8 @@ describe('Talk vectors, positive', () => {
 });
 
 describe('Talk vectors, negative', () => {
-  test.each(negative)('%s', (_name, hex) => {
-    expectProtocolError(() => decodeHex(hex));
+  test.each(negative.map((v) => [v.case, v.id] as const))('%s', (_name, id) => {
+    expectProtocolError(() => TalkFrame.decode(wikiBytes(id)));
   });
 });
 

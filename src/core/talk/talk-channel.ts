@@ -262,6 +262,16 @@ export class TalkChannel implements TalkChannelContract {
   /** Reports frames consumed to a flow-controlled raw channel; undefined when it is not one. */
   readonly #consume: ((bytes: number, frames: number) => void) | undefined;
 
+  /**
+   * The mux channel {@link #readHeld} counts for, and the cost of the
+   * frames this channel took from its reader and did not report consumed
+   * yet: the part of the mux channel's `heldBytes` that {@link #onData}
+   * had. The rest of it was delivered toward the reader and not read yet
+   * ({@link #deliveredUnread}).
+   */
+  #heldMux: MuxChannel | undefined;
+  #readHeld = 0;
+
   // Bulk payloads: the mux channel the bulk channels of the peer are routed
   // for; bulk numbers this side used; transfers in both directions.
   #registeredMux: MuxChannel | undefined;
@@ -1468,6 +1478,7 @@ export class TalkChannel implements TalkChannelContract {
 
   #onData(data: Uint8Array): void {
     const wire = data.length;
+    this.#noteRead(wire);
     if (this.#closing) {
       this._credit(wire);
       return;
@@ -1519,7 +1530,42 @@ export class TalkChannel implements TalkChannelContract {
     } catch (e) {
       // Accounting mismatch: logged, never fatal to the channel.
       this._log('warn', `credit accounting: ${e}`);
+      return;
     }
+    const mux = this.#mux;
+    if (mux !== undefined && mux === this.#heldMux) {
+      // What the mux channel counts as consumed: the bytes and an overhead per frame.
+      this.#readHeld -= bytes + mux.sendCost(0) * frames;
+    }
+  }
+
+  /** A frame of [length] bytes was taken from the reader: its cost is held by this channel now. */
+  #noteRead(length: number): void {
+    const mux = this.#mux;
+    if (mux === undefined || this.#consume === undefined) {
+      return;
+    }
+    if (mux !== this.#heldMux) {
+      // A slot channel's replacement: nothing was received on the first.
+      this.#heldMux = mux;
+      this.#readHeld = 0;
+    }
+    this.#readHeld += mux.sendCost(length);
+  }
+
+  /**
+   * What [mux] delivered toward this channel's reader (through the channel
+   * carrying it, if any) that {@link #onData} has not had yet, at cost: a
+   * frame read from the mux channel's readable is out of its
+   * `bufferedBytes` before the read's continuation here runs, and a
+   * carrier such as a slot channel reads it a step ahead of this channel.
+   */
+  #deliveredUnread(mux: MuxChannel): number {
+    if (this.#consume === undefined) {
+      return 0;
+    }
+    const held = mux.heldBytes - (mux === this.#heldMux ? this.#readHeld : 0);
+    return held > 0 ? held : 0;
   }
 
   /** @internal Returns the credit of [message], once: it was handed to the application, or consumed by the channel. */
@@ -1672,8 +1718,10 @@ export class TalkChannel implements TalkChannelContract {
     }
     // The frames of this channel received before the OPEN may not be read
     // yet (this side reads them asynchronously, where the Dart mux delivers
-    // them as they arrive): the references among them claim bulk channels
-    // ahead of this one. Beyond the bound, the count waits for them.
+    // them as they arrive): buffered in the mux channel, or delivered
+    // toward the reader and not read (a step behind the mux, two through a
+    // slot channel). The references among them claim bulk channels ahead
+    // of this one. Beyond the bound, the count waits for them.
     const max = this.options.maxUnclaimedBulk;
     if (this.#bulkUnclaimed.size >= max + this.#unreadReferences()) {
       this.#refuseUnclaimed(b, number);
@@ -1710,7 +1758,9 @@ export class TalkChannel implements TalkChannelContract {
 
   /**
    * At most how many BULK references the frames this channel received and
-   * did not read yet can carry: each costs at least what a message frame
+   * did not read yet can carry: those the mux channel buffers, and those
+   * it delivered toward the reader that were not read yet
+   * ({@link #deliveredUnread}). Each costs at least what a message frame
    * of a bare reference does.
    */
   #unreadReferences(): number {
@@ -1718,10 +1768,8 @@ export class TalkChannel implements TalkChannelContract {
     if (mux === undefined) {
       return 0;
     }
-    const buffered = mux.bufferedBytes;
-    return buffered > 0
-      ? Math.floor(buffered / mux.sendCost(TalkBulkReference.encodedLength + 1))
-      : 0;
+    const unread = mux.bufferedBytes + this.#deliveredUnread(mux);
+    return unread > 0 ? Math.floor(unread / mux.sendCost(TalkBulkReference.encodedLength + 1)) : 0;
   }
 
   /**

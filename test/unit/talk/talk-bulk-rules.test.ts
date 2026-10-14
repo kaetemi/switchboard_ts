@@ -12,113 +12,61 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // on its connection itself; the peers here install it on both
 // connections at once, as the Dart `Peers` routes bulk channels with
 // `TalkChannel.adoptBulk` from the start. Timings the Dart tests take in
-// real time run on a FakeClock.
+// real time run on a ManualClock.
 
 import { describe, expect, onTestFinished, test } from 'vitest';
 import { bytesEqual, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
-import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TalkMessage, TalkOptions } from '../../../src/core/talk/contract.ts';
-import { TalkBulkOpen, TalkBulkReference } from '../../../src/core/talk/talk-bulk.ts';
+import { TalkBulkOpen } from '../../../src/core/talk/talk-bulk.ts';
 import { installBulkRouting } from '../../../src/core/talk/talk-bulk-routes.ts';
 import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel.ts';
-import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   collect,
   generated,
   Peers,
+  PulledSource,
   pattern,
   SourceController,
   until,
 } from '../../support/talk/bulk-peers.ts';
 import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
+import { bulkMessage, bulkOpen } from '../../support/talk/frames.ts';
 import {
   bytes,
   Collector,
+  expectBytes,
   expectStatus,
+  flush,
   Outcome,
   rejectsStatus,
   serve,
+  sleep,
 } from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
 
-/** Expects [actual] to hold the bytes of [expected]. */
-function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
-  expect(actual.length).toBe(expected.length);
-  expect(bytesEqual(actual, expected), 'bytes differ').toBe(true);
-}
-
-/** [ms] of [clock]. */
-function sleep(clock: FakeClock, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    clock.setTimeout(resolve, ms);
-  });
-}
-
 /** Moves [clock] on in steps of [step] until [promise] settled (at most [limit] ms), and returns it. */
 async function elapseUntil<T>(
-  clock: FakeClock,
+  clock: ManualClock,
   promise: Promise<T>,
   limit = 60_000,
   step = 5,
 ): Promise<T> {
   const outcome = new Outcome(promise);
   for (let t = 0; t < limit && !outcome.isDone; t += step) {
-    await clock.elapse(step);
+    await clock.elapseAsync(step);
   }
   expect(outcome.isDone, `not settled within ${limit} ms`).toBe(true);
   return promise;
 }
 
-/**
- * A byte source that makes a chunk each time its reader asks for one, as
- * the Dart tests' source fed by a periodic timer while not paused; whether
- * its reader cancelled it shows.
- */
-class PulledSource {
-  readonly cancelled = new Deferred<void>();
-  readonly stream: ReadableStream<Uint8Array>;
-
-  constructor(make: () => Uint8Array) {
-    this.stream = new ReadableStream<Uint8Array>(
-      {
-        pull: (controller) => controller.enqueue(make()),
-        cancel: () => {
-          this.cancelled.resolve();
-        },
-      },
-      { highWaterMark: 0 },
-    );
-  }
-}
-
 /** The next Talk channel the client of [peers] opened, at the server (Dart's `peers.accepted.next`). */
 async function accept(peers: Peers): Promise<TalkChannel> {
   return new TalkChannel(await peers.server.accept(), peers.serverOptions);
-}
-
-/** The encoded frame of a BULK message referencing bulk [number]. */
-function bulkMessage(
-  procedure: string,
-  number: number,
-  options: { requestId?: number; length?: number } = {},
-): Uint8Array {
-  return new TalkFrame({
-    kind: TalkKind.message,
-    procedure: Name.of(procedure),
-    requestId: options.requestId,
-    bulk: true,
-    payload: new TalkBulkReference(number, options.length).encode(),
-  }).encode();
-}
-
-/** The open payload of bulk channel [number] for [parent]. */
-function bulkOpen(parent: MuxChannel, number: number): Uint8Array {
-  return new TalkBulkOpen(parent.id, number).encode();
 }
 
 // The tests of the Dart file before the group 'timeouts' are in
@@ -129,7 +77,7 @@ describe('timeouts', () => {
 
   /** [count] pieces of [size] bytes, one every [every] ms of [clock]. */
   async function* slow(
-    clock: FakeClock,
+    clock: ManualClock,
     count: number,
     size: number,
     every: number,
@@ -141,7 +89,7 @@ describe('timeouts', () => {
   }
 
   test('an upload longer than both timeouts succeeds while it progresses (reassembled)', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peers = await Peers.connect({ options: { clock }, serverOptions: short });
     const [talk, server] = await peers.open({ options: short });
     serve(server, (m) => m.reply(bytes([1])));
@@ -154,7 +102,7 @@ describe('timeouts', () => {
   });
 
   test('a streamed upload read for longer than both timeouts, declared with EXTEND', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peers = await Peers.connect({
       options: { clock },
       serverOptions: { ...short, streamBulk: () => true },
@@ -181,7 +129,7 @@ describe('timeouts', () => {
   });
 
   test('a stalled upload times out and is cancelled', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peers = await Peers.connect({ options: { clock }, serverOptions: short });
     const [talk, server] = await peers.open({ options: short });
     const served: TalkMessage[] = [];
@@ -552,7 +500,7 @@ describe('bulk channel rules', () => {
   });
 
   test('a bulk channel no message references in time is closed', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peers = await Peers.connect({
       options: { clock },
       serverOptions: { bulkOpenTimeout: 50 },
@@ -562,7 +510,7 @@ describe('bulk channel rules', () => {
     serve(server, () => {});
     const bulk = raw.openAfter(bulkOpen(raw, 1));
     await bulk.send(new Uint8Array(1000));
-    await clock.elapse(50);
+    await clock.elapseAsync(50);
     expect((await bulk.done).known).toBe(StatusCode.cancelled);
     // A late reference to it is a protocol error.
     await raw.send(bulkMessage('PUT', 1));
@@ -594,7 +542,7 @@ describe('bulk channel rules', () => {
   });
 
   test('a reference to a bulk number never opened is a channel protocol error', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peers = await Peers.connect({
       options: { clock },
       serverOptions: { bulkOpenTimeout: 50 },
@@ -603,7 +551,7 @@ describe('bulk channel rules', () => {
     const server = await accept(peers);
     serve(server, () => {});
     await raw.send(bulkMessage('PUT', 5));
-    await clock.elapse(50);
+    await clock.elapseAsync(50);
     expect((await elapseUntil(clock, raw.done)).known).toBe(StatusCode.protocolError);
     expect((await server.done).known).toBe(StatusCode.protocolError);
   });
