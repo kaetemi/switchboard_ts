@@ -10,9 +10,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  * `switchboard_quic`'s `QuicConnector`, `QuicListener`, `QuicSession` and
  * `QuicStream`. The binding (records, channels, the control stream, HELLO,
  * identity rules) is written once against these interfaces; the providers
- * implement them: the native provider (`@polyverse/switchboard/node`, an
+ * implement them: the native provider (`@kaetemi/switchboard/node`, an
  * N-API addon over quinn: `quic://` raw QUIC and `https://` WebTransport,
- * client and listener) and the web provider (`@polyverse/switchboard/web`,
+ * client and listener) and the web provider (`@kaetemi/switchboard/web`,
  * the browser's WebTransport API: `https://` only, no listener).
  *
  * Reads are pull-based so that unread data stays in the stack and holds

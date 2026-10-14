@@ -3,7 +3,7 @@
 ## Install
 
 ```sh
-npm install @polyverse/switchboard
+npm install @kaetemi/switchboard
 npm install ws            # Node only: WebSocket servers (and a client with a receive limit)
 ```
 
@@ -12,7 +12,7 @@ Node.js 22 or newer. ES modules only: `import`, not `require`.
 ## A service and a client
 
 ```ts
-import { EndpointResolver, Status, StatusCode, Switchboard } from '@polyverse/switchboard/node';
+import { EndpointResolver, Status, StatusCode, Switchboard } from '@kaetemi/switchboard/node';
 
 const server = new Switchboard();
 server.registerService('echo', async (incoming) => {
@@ -70,7 +70,7 @@ await channel.close();
 ## A browser client
 
 ```ts
-import { ReconnectingClient, connectWebSocket, webTransport } from '@polyverse/switchboard/web';
+import { ReconnectingClient, connectWebSocket, webTransport } from '@kaetemi/switchboard/web';
 
 const client = new ReconnectingClient(() => connectWebSocket('wss://edge.example.com/sb'));
 // or over WebTransport:

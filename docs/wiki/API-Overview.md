@@ -4,10 +4,10 @@
 
 | Import | Contents |
 | --- | --- |
-| `@polyverse/switchboard` | the runtime-neutral core |
-| `@polyverse/switchboard/node` | the core, TCP and WebSocket listeners and connectors, the native QUIC provider, the Node `Switchboard` |
-| `@polyverse/switchboard/web` | the core, the WebTransport provider, a connect-only `Switchboard` |
-| `@polyverse/switchboard/testing` | `ManualClock`, the fake QUIC provider, harness helpers |
+| `@kaetemi/switchboard` | the runtime-neutral core |
+| `@kaetemi/switchboard/node` | the core, TCP and WebSocket listeners and connectors, the native QUIC provider, the Node `Switchboard` |
+| `@kaetemi/switchboard/web` | the core, the WebTransport provider, a connect-only `Switchboard` |
+| `@kaetemi/switchboard/testing` | `ManualClock`, the fake QUIC provider, harness helpers |
 
 ## Idioms
 
