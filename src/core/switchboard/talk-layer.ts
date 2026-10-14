@@ -58,3 +58,49 @@ export function refuseBulk(channel: MuxChannel): void {
     // Closing already.
   }
 }
+
+/** Takes a bulk channel the peer opened for a parent channel, with its bulk number. */
+export type BulkTarget = (bulk: MuxChannel, number: number) => void;
+
+const bulkChannels = new WeakSet<MuxChannel>();
+
+/**
+ * The Talk layer's routing of `_bulk` channels to their parent, as a
+ * forwarder (the proxy) uses it: the port of Dart's `BulkRoutes`. Until
+ * the Talk layer lands, nothing routes bulk channels ({@link
+ * installBulkRouting} does nothing and dispatch refuses them), so a target
+ * registered here is never called; only the marks are kept.
+ */
+export const bulkRoutes = Object.freeze({
+  /** Bulk channels held for a parent no target took yet; beyond, RESOURCE_EXHAUSTED. */
+  maxHeld: 16,
+  /** How long a bulk channel is held for a target, in milliseconds. */
+  heldTimeout: 10_000,
+  /** Marks [channel] as a bulk channel, which no bulk channel may name as its parent. */
+  markBulk(channel: MuxChannel): void {
+    bulkChannels.add(channel);
+  },
+  /** Whether [channel] is a bulk channel. */
+  isBulk(channel: MuxChannel): boolean {
+    return bulkChannels.has(channel);
+  },
+  /**
+   * [target] takes the bulk channels the peer opens for [parent] from now
+   * on, and first those held for it until now, in order.
+   */
+  register(parent: MuxChannel, target: BulkTarget): void {
+    void parent;
+    void target;
+  },
+  /**
+   * [target] goes on taking the bulk channels that name [parent] after it
+   * ended, until [until] settles (a connection whose channels are not
+   * ordered); false, keeping nothing, when it cannot.
+   */
+  linger(parent: MuxChannel, target: BulkTarget, until: Promise<void>): boolean {
+    void parent;
+    void target;
+    void until;
+    return false;
+  },
+});
