@@ -10,6 +10,7 @@ import type { Name, NameLike } from '../name.ts';
 import type { Status, SwitchboardError } from '../status.ts';
 import type { Clock } from '../util/clock.ts';
 import type { Logger } from '../util/logger.ts';
+import type { TalkFrame } from './talk-frame.ts';
 
 /**
  * The Talk layer (wiki page "Polyverse Switchboard Talk") as the layers
@@ -55,6 +56,13 @@ export interface TalkOptions {
   readonly bulkIdleTimeout: number;
   /** Receiving: which bulk messages are delivered at once with their payload as a stream; undefined: all reassembled first. */
   readonly streamBulk: ((message: TalkMessage) => boolean) | undefined;
+  /**
+   * Responder: the credit bound, how long a stream request with a finite
+   * item window may stay exhausted while this side has something to send
+   * (and a request opened with window 0 from its arrival until the first
+   * grant); then ABORT DEADLINE_EXCEEDED. Default 60 000; 0: no bound.
+   */
+  readonly creditTimeout: number;
   /** Time and timers; undefined: the connection's clock. */
   readonly clock: Clock | undefined;
   /** Diagnostics; undefined: the connection's logger. */
@@ -78,6 +86,7 @@ export const defaultTalkOptions: TalkOptions = Object.freeze({
   bulkOpenTimeout: 10_000,
   bulkIdleTimeout: 30_000,
   streamBulk: undefined,
+  creditTimeout: 60_000,
   clock: undefined,
   logger: undefined,
 });
@@ -112,6 +121,12 @@ export interface RequestOptions extends SendOptions {
   onExtend?: ((extension: { deadline?: number; renew?: number }) => void) | undefined;
   /** The answer is delivered in wire order with the channel's messages. */
   ordered?: boolean | undefined;
+  /**
+   * Stream requests: the item window, how many items the responder may
+   * send before this side grants more (`TalkStream.grant`); 0 for none
+   * until a grant. Undefined: unlimited.
+   */
+  window?: number | undefined;
 }
 
 /** What a reply takes. */
@@ -125,9 +140,11 @@ export interface ReplyRequestOptions extends ReplyOptions {
   timeout?: number | undefined;
   signal?: AbortSignal | undefined;
   onExtend?: ((extension: { deadline?: number; renew?: number }) => void) | undefined;
+  /** Stream requests: the item window, as for `RequestOptions.window`. */
+  window?: number | undefined;
 }
 
-/** The peer sent ABORT. */
+/** The peer sent ABORT. The class is exported from `talk-channel.ts` (and the barrel). */
 export interface TalkAbortError extends SwitchboardError {
   /** A channel abort rather than an abort response. */
   readonly isChannelAbort: boolean;
@@ -138,7 +155,10 @@ export interface TalkRequest {
   readonly requestId: number;
   /** The final response; never an unhandled rejection. */
   readonly response: Promise<TalkMessage>;
-  /** When the requester timeout expires (milliseconds since the epoch); undefined: none or ended. */
+  /**
+   * When the requester timeout expires, in the time of the channel's clock
+   * (`clock.now()`, monotonic); undefined: none, or ended.
+   */
   readonly deadline: number | undefined;
   cancel(status?: Status): void;
 }
@@ -146,7 +166,17 @@ export interface TalkRequest {
 /** A handle for a stream request: the items, then the final response. Iterating it iterates `items`. */
 export interface TalkStream extends AsyncIterable<TalkMessage> {
   readonly requestId: number;
+  /** As `TalkRequest.deadline`; also undefined while the item window is exhausted. */
   readonly deadline: number | undefined;
+  /** The item window as this side sees it: granted less arrived; undefined when unlimited. */
+  readonly window: number | undefined;
+  /**
+   * Grants the responder [items] more items (sends a credit). Nothing is
+   * granted on the application's behalf.
+   *
+   * @throws {RangeError} below 1 or beyond the largest window; {@link Error} for an unlimited window.
+   */
+  grant(items: number): void;
   /** STREAM_ITEMs; errors on abort, timeout or cancel; stopping the iteration cancels the request. */
   readonly items: AsyncIterable<TalkMessage>;
   /** The final response (may carry a payload and may itself be a request). */
@@ -157,6 +187,8 @@ export interface TalkStream extends AsyncIterable<TalkMessage> {
 /** An incoming message: plain message, request, or response, with the reply API. */
 export interface TalkMessage {
   readonly channel: TalkChannel;
+  /** The decoded wire frame. */
+  readonly frame: TalkFrame;
   readonly procedure: Name;
   /** The procedure as text (lossy for non-UTF-8 names). */
   readonly procedureName: string;
@@ -187,6 +219,15 @@ export interface TalkMessage {
   /** Aborted when cancelled: pass it to what the handler awaits. */
   readonly signal: AbortSignal;
   readonly canReply: boolean;
+  /**
+   * Stream requests with a finite item window: what the peer granted less
+   * the items sent; undefined when unlimited or not a stream request.
+   */
+  readonly window: number | undefined;
+  /** Resolves once {@link window} is above 0 or the request ended; at once when unlimited. Never rejects. */
+  readonly whenCredit: Promise<void>;
+  /** Per-request credit bound: undefined = `TalkOptions.creditTimeout`, 0 = none. */
+  setCreditTimeout(timeout: number | undefined): void;
 
   // Reply API: each throws FAILED_PRECONDITION if !expectsReply or already finally replied.
   reply(payload?: PayloadLike, options?: ReplyOptions): Promise<void>;
@@ -201,7 +242,7 @@ export interface TalkMessage {
   /** replyItem per item, then reply(trailer); an error from `items` becomes replyAbort. Never rejects. */
   replyStream(
     items: AsyncIterable<PayloadLike> | Iterable<PayloadLike>,
-    options?: ReplyOptions & { trailer?: PayloadLike },
+    options?: ReplyOptions & { trailer?: PayloadLike; creditTimeout?: number | undefined },
   ): Promise<void>;
   /** @throws {RangeError} for OK. */
   replyAbort(status: Status): Promise<void>;
