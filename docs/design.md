@@ -67,11 +67,16 @@ await channel.close();
 A browser client over WebTransport, reconnecting, with a persistent channel:
 
 ```ts
-import { ReconnectingClient, webTransport } from '@kaetemi/switchboard/web';
+import { ReconnectingClient, connectQuic, webTransport } from '@kaetemi/switchboard/web';
 
-const client = new ReconnectingClient(webTransport('https://edge.example.com:4433/sb', {
-  serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
-}));
+const client = new ReconnectingClient({
+  connect: (options, { signal }) =>
+    connectQuic('https://edge.example.com:4433/sb', webTransport(), {
+      options,
+      signal,
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+    }),
+});
 client.openPersistentTalk('chat', async (talk) => {
   for await (const message of talk.messages) render(message.json());
 });
@@ -268,7 +273,7 @@ What changes:
 
 - Delivery is pull based (section 5). A channel not being read holds its credit; `break` out of `for await` discards and closes.
 - Two hooks replace Dart's address decoding inside the mux: `connection.adoptIncoming(filter)` lets a layer claim peer-opened channels before they reach `incoming` (Talk claims `_bulk` channels for their parent), and `connection.admitAfterGoAway(predicate)` decides which OPENs are still accepted after GOAWAY (Talk admits `_bulk` continuations).
-- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`).
+- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`). As in Dart, it carries no identity exchange and neither hook: the QUIC binding has its own (exporter binding, held control messages) and the frame mux its own (held frames). Decided 2026-10-14 with PR #9.
 - Control message codecs (`MuxPing`, `MuxGoAway`, `MuxLimits`, `MuxNonce`, `MuxIdent`, `MuxCredit`, `MuxHello`) are exported for the vectors and for the QUIC binding, which reuses NONCE, IDENT, GOAWAY and PING.
 
 ### 6.4 Identity: `identity/contract.ts`
@@ -336,7 +341,7 @@ Ports `naming/*.dart` and the slot machinery: the `_ns` protocol codecs (REGISTE
 
 ### 6.9 Clients: `client/`
 
-`ReconnectingClient(connector, options)` over a `TransportConnector` or a `QuicConnector` endpoint: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
+`ReconnectingClient(connector, options)` over a `TransportConnector` (the frame mux over the transport) or a `ConnectionConnector` object `{ connect(options, { signal }) }` (Dart's `ReconnectingClient.connections`), which is how QUIC and WebTransport plug in; a web entry-point helper returning such a connector is a QUIC-thread option: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
 
 ### 6.10 QUIC and WebTransport binding: `quic/contract.ts`, `quic/`
 
