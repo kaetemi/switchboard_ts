@@ -119,13 +119,20 @@ export function errorJson(error: unknown): Json {
   return { kind: 'other', type, message };
 }
 
-/** A status as JSON: code and reason. */
+/** A status as JSON: code, reason, and its bytes after the code. */
 export function statusJson(status: Status): Json {
-  return { code: status.code, reason: status.reason };
+  return { code: status.code, reason: status.reason, body: hex(status.encode().subarray(2)) };
 }
 
-/** The status a command names: `code` (default [code]) and `reason`. */
+/**
+ * The status a command names: `statusHex` (a status payload, decoded as
+ * is), else `code` (default [code]) and `reason`.
+ */
 export function statusArg(cmd: Json, code = 0): Status {
+  const raw = cmd['statusHex'];
+  if (raw !== undefined && raw !== null) {
+    return Status.decode(bytesOf(raw));
+  }
   return new Status(intArg(cmd, 'code') ?? code, stringArg(cmd, 'reason') ?? '');
 }
 

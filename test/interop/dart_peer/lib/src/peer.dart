@@ -109,6 +109,14 @@ class _Peer {
       verifier: identity.verifier,
       identifyOutgoing: id.identifyOutgoing,
       identityTimeout: id.identityTimeout,
+      // A proxy, a relay or a naming client of this node dials QUIC and
+      // WebTransport endpoints too.
+      bindings: [
+        QuicSwitchboardBinding(
+          NativeQuicProvider(),
+          webTransportCertificateVerified: false,
+        ),
+      ],
     );
     await client.identify(identity);
     // Accepted connections are reported once their peer identified; with

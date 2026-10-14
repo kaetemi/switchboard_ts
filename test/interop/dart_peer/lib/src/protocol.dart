@@ -86,15 +86,19 @@ Map<String, Object?> errorJson(Object error) {
   return {'kind': 'other', 'type': type, 'message': error.toString()};
 }
 
-/// A status as JSON: code and reason.
+/// A status as JSON: code, reason, and its bytes after the code.
 Map<String, Object?> statusJson(Status status) => {
   'code': status.code,
   'reason': status.reason,
+  'body': hex(status.encode().sublist(2)),
 };
 
-/// The status a command names: `code` (default 0) and `reason`.
+/// The status a command names: `statusHex` (a status payload, decoded as
+/// is), else `code` (default [code]) and `reason`.
 Status statusArg(Map<String, Object?> cmd, {int code = 0}) =>
-    Status(intArg(cmd, 'code') ?? code, stringArg(cmd, 'reason') ?? '');
+    cmd['statusHex'] != null
+    ? Status.decode(bytesOf(cmd['statusHex']))
+    : Status(intArg(cmd, 'code') ?? code, stringArg(cmd, 'reason') ?? '');
 
 /// An optional integer argument.
 int? intArg(Map<String, Object?> cmd, String key) {

@@ -13,6 +13,7 @@ import {
   type Logger,
   type LogLevel,
   nativeQuic,
+  nativeQuicAvailability,
   QuicBindingConnection,
   QuicIdentityRules,
   Switchboard,
@@ -158,6 +159,11 @@ class Peer {
       verifier: identity.verifier,
       identifyOutgoing: id.identifyOutgoing,
       identityTimeout: id.identityTimeout,
+      // A proxy, a relay or a naming client of this node dials QUIC and
+      // WebTransport endpoints too.
+      ...(nativeQuicAvailability().available
+        ? { quic: nativeQuic(), quicBinding: { webTransportCertificateVerified: false } }
+        : {}),
       ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
     });
     this.#node = node;

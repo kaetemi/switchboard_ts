@@ -537,10 +537,8 @@ function controlFields(m: MuxControlMessage): Json | null {
         const c = MuxCredit.decode(m.payload);
         return { channelId: c.channelId, bytes: c.bytes };
       }
-      case MuxControlType.goAway: {
-        const s = m.goAwayStatus;
-        return { code: s.code, reason: s.reason };
-      }
+      case MuxControlType.goAway:
+        return statusJson(m.goAwayStatus);
       case MuxControlType.ident: {
         const i = MuxIdent.decode(m.payload);
         return {

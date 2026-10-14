@@ -101,8 +101,30 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
 | `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
 | `identity` | none | what the peer presents and verifies (below) |
+| `naming` | none | `{assignmentHoldMs}` (default 0): serve a naming service as `_ns` instance 1, listed in its own table at the peer's endpoints |
+| `proxy` | none | `{endpoint, types, revealOwners}`: `proxyHandler` for each of `types` (default `echo`), forwarding to their instance 1 at `endpoint` |
+| `relay` | none | `{endpoint, types}`: a `RelayService` at `_relay` (`allowEndpoints`, no identity required) relaying `types` (default `echo`) to their instance 1 at `endpoint` |
 
 The options apply to the listeners' connections and to the connections the client commands make.
+
+### Mesh
+
+The listening node and the client node both dial `quic://` and `https://` endpoints, so a proxy, a relay, a forwarding service or a naming client reaches a peer over any transport. A service spec with `anyInstance: true` also serves the instances of its type no other registration serves (an id the naming service assigned). The naming commands open naming clients on nodes of their own, whose resolver is a `NamingResolver` over the client:
+
+| Op | Arguments | Value |
+| --- | --- | --- |
+| `naming.open` | `endpoint`, `watch` (default true) | `{naming}`: a started naming client of the naming service at `endpoint`; its table's changes are `naming.event {naming, up, type, instance, endpoints, metadata}`, and the slot requests it gets (all accepted at once, `ASSIGN` answered holding) `naming.slot {naming, request, type, slot, epoch, to}` |
+| `naming.synced` | `naming` | `null` once the table first synced |
+| `naming.register` | `naming`, `type`, `instance`, `endpoints` (default the peer's own), `metadata` | `{instance}` |
+| `naming.unregister` | `naming`, `type`, `instance` | `null` |
+| `naming.defineSlots` | `naming`, `type`, `count`, `mode` (`managed`, `static`), `lazy`, `shared`, `capacity` | `null` |
+| `naming.claim` | `naming`, `type`, `slot`, `holding` | `{epoch}` |
+| `naming.release` | `naming`, `type`, `slot`, `keepStorage` | `null` |
+| `naming.locate` | `naming`, `type`, `slot` | `{state, owner, epoch}`, the state by name |
+| `naming.channel` | `naming`, `address` (`type`, `instance`, `shard`, `payload`) | `{talk, channel, connection}`: a Talk channel opened through the resolver, as `talk.open` reports it |
+| `naming.close` | `naming` | `null` |
+
+`chain.ts` runs scenarios of three or more peers (`describeChains`): every role played by either implementation, eight cells per transport for three roles, started from the backend to the client.
 
 ### Identity
 
@@ -176,7 +198,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `stream.grant` | `stream`, `items` | `null`: item credit |
 | `stream.cancel` | `stream`, `code`, `reason` | `null` |
 | `channel.send` | `channel`, `hex` | `null`: one subframe |
-| `channel.close` | `channel`, `code`, `reason` | `null` |
+| `channel.close` | `channel`, `code`, `reason` or `statusHex` | `null`; `statusHex` is a status payload sent as is (`MOVED` with its fields) |
 | `connection.ping` | `connection`, `payload` | `{rttMs}` |
 | `connection.goAway` | `connection`, `code` (default 33), `reason` | `null` |
 | `connection.close` | `connection` | `null` |
@@ -185,7 +207,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 
 An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes); `talk.request`, `talk.stream` and `talk.send` also take `bulkPattern: {length, chunk, declared}`, an empty payload with the `BIG` pattern of `length` bytes as a bulk source in pieces of `chunk` bytes (default 1000), its length declared unless `declared` is false. Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.
 
-Connections report `connection.goAway {connection, code, reason}` when the far side sends GOAWAY and `connection.closed {connection, code, reason}` when they end; channels report `channel.closed {channel, code, reason}`. An error no command answers (in a service, say) is `peer.error {error}`.
+Connections report `connection.goAway {connection, code, reason, body}` when the far side sends GOAWAY and `connection.closed {connection, code, reason, body}` when they end; channels report `channel.closed {channel, code, reason, body}` (`body`: the status payload's bytes after the code, hex). An error no command answers (in a service, say) is `peer.error {error}`.
 
 ### Oracle kinds
 
