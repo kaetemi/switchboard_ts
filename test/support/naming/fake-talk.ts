@@ -10,8 +10,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // what the naming client and service use of `talk/contract.ts`, with the
 // Dart semantics: requests and replies, stream items, aborts and cancels,
 // requester and responder timeouts, EXTEND, `ordered` answers, the request
-// limits, close and channel abort. Frames are objects, not bytes; bulk
-// payloads and replies that are requests are not supported.
+// limits, close and channel abort. Frames are objects, not bytes, delivered
+// one per microtask as the controller's asynchronous stream delivers them
+// (or synchronously, with `sync`); bulk payloads and replies that are
+// requests are not supported.
 
 import { type PayloadLike, toPayload, utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
@@ -601,6 +603,10 @@ export class FakeTalkChannel implements TalkChannel {
   /** Every frame this side sent, in order (for tests that check the wire). */
   readonly sent: FakeFrame[] = [];
 
+  /** Frames written and not delivered yet, and whether their delivery is scheduled. */
+  readonly #pending: FakeFrame[] = [];
+  #scheduled = false;
+
   constructor(options: TalkOptions, sync: boolean) {
     this.options = options;
     this.clock = options.clock ?? systemClock;
@@ -680,8 +686,32 @@ export class FakeTalkChannel implements TalkChannel {
     if (this.#sync) {
       peer.receive(frame);
     } else {
-      queueMicrotask(() => peer.receive(frame));
+      this.#pending.push(frame);
+      this.#schedule(peer);
     }
+  }
+
+  /**
+   * Delivers the next frame written and not delivered yet in a microtask,
+   * then schedules the one after it: one frame per microtask, behind what
+   * the delivery set off, as Dart's asynchronous `StreamController` (the
+   * Dart harness's `StreamChannelController`) delivers its events.
+   */
+  #schedule(peer: FakeTalkChannel): void {
+    if (this.#scheduled) {
+      return;
+    }
+    this.#scheduled = true;
+    queueMicrotask(() => {
+      this.#scheduled = false;
+      const frame = this.#pending.shift();
+      if (frame !== undefined) {
+        peer.receive(frame);
+      }
+      if (this.#pending.length > 0) {
+        this.#schedule(peer);
+      }
+    });
   }
 
   forgetIncoming(message: FakeMessage): void {
