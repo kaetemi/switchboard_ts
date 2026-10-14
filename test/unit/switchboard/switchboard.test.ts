@@ -325,7 +325,8 @@ describe('dispatch', () => {
     const quickUri = await quick.listenMemory();
     const checks: unknown[] = [];
     quick.registerService(svc, (incoming) => {
-      const talk = incoming.talk();
+      // The package's TalkChannel (the class) types what a handler gets.
+      const talk: TalkChannel = incoming.talk();
       checks.push(incoming.talk() === talk, talk.options.replyTimeout, talk.raw);
       void talk.serve((message) => {
         if (message.procedureName === 'ECHO') {
