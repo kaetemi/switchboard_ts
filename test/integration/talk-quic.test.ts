@@ -18,7 +18,6 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // network delivers on real time; Talk's timeouts are far off.
 
 import { describe, expect, test } from 'vitest';
-import { bytesEqual } from '../../src/core/bytes.ts';
 import type { MuxChannel } from '../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../src/core/mux/mux-frame.ts';
 import { Name } from '../../src/core/name.ts';
@@ -43,7 +42,7 @@ import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
 import { FakeQuicNetwork, type FakeStreamInfo } from '../../src/testing/fake-quic-provider.ts';
 import { collect, generated, pattern } from '../support/talk/bulk-peers.ts';
-import { bytes, Collector, rejectsStatus, serve } from '../support/talk/helpers.ts';
+import { bytes, Collector, expectBytes, rejectsStatus, serve } from '../support/talk/helpers.ts';
 import {
   bindingAndRaw,
   concat,
@@ -55,12 +54,6 @@ import {
 } from '../unit/quic/harness.ts';
 
 const empty = new Uint8Array(0);
-
-/** Expects [actual] to hold the bytes of [expected]. */
-function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
-  expect(actual.length).toBe(expected.length);
-  expect(bytesEqual(actual, expected), 'bytes differ').toBe(true);
-}
 
 /**
  * A network whose streams the initiator writes are delivered after the

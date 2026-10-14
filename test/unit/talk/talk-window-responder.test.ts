@@ -13,55 +13,33 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // `talk-window.test.ts`.
 
 import { describe, expect, test } from 'vitest';
-import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import type { TimerHandle } from '../../../src/core/util/clock.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
+import { until } from '../../support/talk/bulk-peers.ts';
 import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
+import { credit, itemFrame, streamRequestFrame } from '../../support/talk/frames.ts';
 import {
   bytes,
   Collector,
   expectStatus,
   flush,
+  last,
   Outcome,
+  only,
   Queue,
   rejectsStatus,
   serve,
 } from '../../support/talk/helpers.ts';
+import { TimerClock } from '../../support/talk/timer-clock.ts';
 
 const empty = new Uint8Array(0);
 const second = 1000;
 const hour = 3600 * second;
 const day = 24 * hour;
-
-/** A credit for request [id] of [items] items. */
-function credit(id: number, items: number): TalkFrame {
-  return new TalkFrame({
-    kind: TalkKind.extend,
-    requestId: id,
-    payload: TalkFrame.creditPayload(items),
-  });
-}
-
-/** A stream request [id] "LIST" with [window]. */
-function streamRequestFrame(id: number, window: number): TalkFrame {
-  return new TalkFrame({
-    kind: TalkKind.message,
-    procedure: Name.of('LIST'),
-    requestId: id,
-    stream: true,
-    window,
-  });
-}
-
-/** A stream item for request [id]. */
-function itemFrame(id: number, value: number): TalkFrame {
-  return new TalkFrame({ kind: TalkKind.streamItem, responseId: id, payload: bytes([value]) });
-}
 
 /** A Dart `RawPeer`: over a channel that ends with a status, as the Dart fake mux channel does. */
 function rawPeer(options: ConstructorParameters<typeof RawPeer>[0] = {}): RawPeer {
@@ -83,18 +61,6 @@ function itemsOf(p: Pair): TalkFrame[] {
   return p.bToA.filter((f) => f.kind === TalkKind.streamItem);
 }
 
-/** The single element of [list]. */
-function single<T>(list: readonly T[]): T {
-  expect(list).toHaveLength(1);
-  return list[0] as T;
-}
-
-/** The last element of [list]. */
-function last<T>(list: readonly T[]): T {
-  expect(list.length).toBeGreaterThan(0);
-  return list[list.length - 1] as T;
-}
-
 /** The single next request [channel] receives; the consumer stops after it, as Dart's `messages.first` does. */
 async function nextRequest(channel: TalkChannel): Promise<TalkMessage> {
   const iterator = channel.messages[Symbol.asyncIterator]();
@@ -104,41 +70,6 @@ async function nextRequest(channel: TalkChannel): Promise<TalkMessage> {
     throw new Error('no request');
   }
   return result.value;
-}
-
-/** Polls [condition] until it holds, at most 5 s. */
-async function until(condition: () => boolean): Promise<void> {
-  const deadline = performance.now() + 5000;
-  while (!condition()) {
-    if (performance.now() > deadline) {
-      throw new Error('condition not met');
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
-  }
-}
-
-/** A {@link ManualClock} that tells the delays of its pending timers, as `fake_async`'s `pendingTimers` does. */
-class TimerClock extends ManualClock {
-  readonly #delays = new Map<TimerHandle, number>();
-
-  override setTimeout(callback: () => void, ms: number): TimerHandle {
-    const handle: TimerHandle = super.setTimeout(() => {
-      this.#delays.delete(handle);
-      callback();
-    }, ms);
-    this.#delays.set(handle, ms);
-    return handle;
-  }
-
-  override clearTimeout(handle: TimerHandle): void {
-    this.#delays.delete(handle);
-    super.clearTimeout(handle);
-  }
-
-  /** The delays the pending timers were armed with. */
-  get pendingDelays(): number[] {
-    return [...this.#delays.values()];
-  }
 }
 
 /**
@@ -204,7 +135,7 @@ describe('timeouts', () => {
     const done = new Outcome(s.done);
     new Collector(s.items);
     await flush();
-    const id = single(peer.received).requestId;
+    const id = only(peer.received).requestId;
     expect(s.deadline).toBeDefined();
     await clock.elapseAsync(5 * second);
     peer.send(itemFrame(id, 1));
@@ -309,7 +240,7 @@ describe('timeouts', () => {
     const done = new Outcome(s.done);
     new Collector(s.items);
     await flush();
-    const id = single(peer.received).requestId;
+    const id = only(peer.received).requestId;
     // The responder declares a deadline of 5 s.
     peer.send(
       new TalkFrame({
@@ -418,7 +349,7 @@ describe('timeouts', () => {
     await clock.elapseAsync(2 * second);
     expect(repliesTo(peer, 1)).toEqual([]);
     await clock.elapseAsync(second);
-    expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(held?.isCancelled).toBe(true);
     // A grant in time stops it, and starts the responder timeout, which
     // did not run before.
@@ -431,7 +362,7 @@ describe('timeouts', () => {
     expect(repliesTo(peer, 2)).toEqual([]);
     await clock.elapseAsync(second);
     expect(
-      single(repliesTo(peer, 2)).status.equals(
+      only(repliesTo(peer, 2)).status.equals(
         Status.of(StatusCode.deadlineExceeded, 'no reply in time'),
       ),
     ).toBe(true);
@@ -455,10 +386,10 @@ describe('timeouts', () => {
     void held1.replyStream([bytes([1])], { creditTimeout: 7 * second });
     held2.setCreditTimeout(0);
     await clock.elapseAsync(5 * second);
-    expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(repliesTo(peer, 2)).toEqual([]);
     await clock.elapseAsync(2 * second);
-    expect(single(repliesTo(peer, 2)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 2)).status.known).toBe(StatusCode.deadlineExceeded);
     void held2.replyItem(bytes([1]));
     await clock.elapseAsync(2 * day);
     expect(repliesTo(peer, 3)).toEqual([]);
@@ -468,7 +399,7 @@ describe('timeouts', () => {
     await clock.elapseAsync(59 * second);
     expect(repliesTo(peer, 3)).toEqual([]);
     await clock.elapseAsync(second);
-    expect(single(repliesTo(peer, 3)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 3)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(clock.pendingCount).toBe(0);
     void peer.talk.close();
     await flush();
@@ -505,10 +436,10 @@ describe('timeouts', () => {
     });
     peer.send(streamRequestFrame(1, 0));
     await flush();
-    const old = new Outcome(single(held).replyItem(bytes([1])));
+    const old = new Outcome(only(held).replyItem(bytes([1])));
     await clock.elapseAsync(3 * second);
     expectStatus(old.error, StatusCode.deadlineExceeded);
-    expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     // Sent before the abort reached the peer: ignored.
     peer.send(credit(1, 1));
     await flush();
@@ -532,7 +463,7 @@ describe('timeouts', () => {
     expect(
       repliesTo(peer, 1)
         .filter((f) => f.kind === TalkKind.streamItem)
-        .map((f) => single([...f.payload])),
+        .map((f) => only([...f.payload])),
     ).toEqual([3]);
     expect(held[2]?.window).toBe(0);
     void peer.talk.close();
@@ -562,7 +493,7 @@ describe('timeouts', () => {
     expectTimersInRange();
     expect(repliesTo(peer, 1)).toEqual([]);
     await clock.elapseAsync(day);
-    expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
+    expect(only(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(clock.pendingCount).toBe(0);
     void peer.talk.close();
     await flush();
@@ -644,7 +575,7 @@ describe('the responder', () => {
     const served = nextRequest(p.b);
     const s = p.a.streamRequest('LIST', empty, { window: 2 });
     const items: number[] = [];
-    new Collector(s.items, { onValue: (i) => items.push(single([...i.payload])) });
+    new Collector(s.items, { onValue: (i) => items.push(only([...i.payload])) });
     const log: string[] = [];
     async function* source(): AsyncGenerator<Uint8Array> {
       for (let i = 0; i < 5; i++) {
@@ -740,7 +671,7 @@ describe('the responder', () => {
       .add(bytes([2]))
       .add(bytes([3]));
     const items: number[] = [];
-    new Collector(s.items, { onValue: (i) => items.push(single([...i.payload])) });
+    new Collector(s.items, { onValue: (i) => items.push(only([...i.payload])) });
     await flush();
     expect(items).toEqual([1]);
     expect(s.window).toBe(0);
@@ -777,8 +708,8 @@ describe('the responder', () => {
       }),
     );
     await flush();
-    expect(single(repliesTo(peer, 1)).kind).toBe(TalkKind.abort);
-    expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.cancelled);
+    expect(only(repliesTo(peer, 1)).kind).toBe(TalkKind.abort);
+    expect(only(repliesTo(peer, 1)).status.known).toBe(StatusCode.cancelled);
     expectStatus(item.error, StatusCode.cancelled);
     expectStatus(chainedDone.error, StatusCode.cancelled);
     expect(m.isCancelled).toBe(true);

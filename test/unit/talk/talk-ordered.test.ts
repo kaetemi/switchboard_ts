@@ -17,13 +17,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // consumer takes any of it.
 
 import { describe, expect, test } from 'vitest';
-import type { MuxChannelCarrier } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TalkMessage, TalkOptions } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
+import { Carrier } from '../../support/talk/carrier.ts';
 import { channelPair, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { type FrameEnd, frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
@@ -40,99 +40,20 @@ import {
 
 const empty = new Uint8Array(0);
 
-/**
- * Carries a Talk channel on a fake mux channel, seeing each frame Talk
- * sends as it is sent, and refusing what it is told to: the counterpart of
- * the Dart `_InterceptingSink` and `_LimitedSink`. Talk hands every frame
- * to the carrier's `send` synchronously, and a refusal thrown there reaches
- * whoever sent the frame, as `MuxChannel.send` throws FRAME_TOO_LARGE.
- */
-class InterceptingCarrier implements MuxChannelCarrier {
-  readonly channel: FakeMuxChannel;
-
-  /**
-   * Subframes over this many bytes are refused FRAME_TOO_LARGE. Talk sizes
-   * its frames against the channel's `maxSubframeLength` (beyond it a
-   * message goes as a bulk payload), so a refusal needs a lower limit here.
-   */
-  limit = Number.POSITIVE_INFINITY;
-
-  /**
-   * When set, gets each frame instead of passing it on: the interceptor
-   * passes it on with `pass`, and may do more before or after, or throw
-   * instead.
-   */
-  intercept: ((frame: TalkFrame, pass: () => Promise<void>) => Promise<void>) | undefined;
-
-  constructor(channel: FakeMuxChannel) {
-    this.channel = channel;
-  }
-
-  get readable(): ReadableStream<Uint8Array> {
-    return this.channel.readable;
-  }
-
-  get writable(): WritableStream<Uint8Array> {
-    return this.channel.writable;
-  }
-
-  get manualCredit(): boolean {
-    return this.channel.manualCredit;
-  }
-
-  set manualCredit(value: boolean) {
-    this.channel.manualCredit = value;
-  }
-
-  consumed(bytes: number, subframes?: number): void {
-    this.channel.consumed(bytes, subframes);
-  }
-
-  send(subframe: Uint8Array): Promise<void> {
-    if (subframe.length > this.limit) {
-      throw SwitchboardError.of(
-        StatusCode.frameTooLarge,
-        `subframe of ${subframe.length} bytes, more than ${this.limit}`,
-      );
-    }
-    const intercept = this.intercept;
-    if (intercept === undefined) {
-      return this.channel.send(subframe);
-    }
-    return intercept(TalkFrame.decode(subframe), () => this.channel.send(subframe));
-  }
-
-  get isWritable(): boolean {
-    return this.channel.isWritable;
-  }
-
-  get whenWritable(): Promise<void> {
-    return this.channel.whenWritable;
-  }
-
-  close(status?: Status): Promise<void> {
-    return this.channel.close(status);
-  }
-
-  get done(): Promise<Status> {
-    return this.channel.done;
-  }
-}
-
-/** A Talk channel on an {@link InterceptingCarrier}, and the far end of its mux channel. */
+/** A Talk channel on an {@link Carrier}, and the far end of its mux channel. */
 async function carriedChannel(
   options?: Partial<TalkOptions>,
-): Promise<[TalkChannel, InterceptingCarrier, FakeMuxChannel]> {
+): Promise<[TalkChannel, Carrier, FakeMuxChannel]> {
   const clock = options?.clock;
   const [client, server] = fakeMuxPair(clock === undefined ? {} : { mux: { clock } });
   const [local, remote] = await channelPair(client, server);
-  const carrier = new InterceptingCarrier(local);
+  const carrier = new Carrier(local);
   return [new TalkChannel(carrier, options), carrier, remote];
 }
 
 /**
  * A responder holding request 1 of a peer driven by hand, on an
- * {@link InterceptingCarrier}. [cancelDuring] has the peer cancel the
+ * {@link Carrier}. [cancelDuring] has the peer cancel the
  * request the moment the responder sends a reply: the Dart responder
  * handled the cancel inside its own send, over a synchronous link; here
  * the cancel crosses the reply on the wire and is read once the send
@@ -148,19 +69,14 @@ class SyncResponder {
   }
 
   readonly talk: TalkChannel;
-  readonly #carrier: InterceptingCarrier;
+  readonly #carrier: Carrier;
   readonly #peer: FakeMuxChannel;
   readonly #held: TalkMessage[] = [];
 
   /** Every frame the responder sent, in wire order. */
   readonly sent: TalkFrame[] = [];
 
-  private constructor(
-    talk: TalkChannel,
-    carrier: InterceptingCarrier,
-    peer: FakeMuxChannel,
-    stream: boolean,
-  ) {
+  private constructor(talk: TalkChannel, carrier: Carrier, peer: FakeMuxChannel, stream: boolean) {
     this.talk = talk;
     this.#carrier = carrier;
     this.#peer = peer;

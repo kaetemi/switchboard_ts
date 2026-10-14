@@ -15,8 +15,6 @@ import { Name } from '../../../src/core/name.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import type { TimerHandle } from '../../../src/core/util/clock.ts';
-import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
@@ -25,7 +23,9 @@ import {
   Outcome,
   serve,
   throwsStatus,
+  toList,
 } from '../../support/talk/helpers.ts';
+import { TimerClock } from '../../support/talk/timer-clock.ts';
 
 const empty = new Uint8Array(0);
 const ms30 = 30;
@@ -38,30 +38,6 @@ const day = 24 * hour;
  */
 const maxTimerDelay = 0x7fffffff;
 
-/** A {@link ManualClock} that knows the delay of each pending timer, as `fake_async`'s `pendingTimers` do. */
-class TimerClock extends ManualClock {
-  readonly #delays = new Map<TimerHandle, number>();
-
-  override setTimeout(callback: () => void, ms: number): TimerHandle {
-    const handle = super.setTimeout(() => {
-      this.#delays.delete(handle);
-      callback();
-    }, ms);
-    this.#delays.set(handle, ms);
-    return handle;
-  }
-
-  override clearTimeout(handle: TimerHandle): void {
-    this.#delays.delete(handle);
-    super.clearTimeout(handle);
-  }
-
-  /** The delays the pending timers were armed with. */
-  get pendingDelays(): number[] {
-    return [...this.#delays.values()];
-  }
-}
-
 function expectTimersInRange(clock: TimerClock): void {
   for (const delay of clock.pendingDelays) {
     expect(delay, 'longer timers fire at once on JavaScript').toBeLessThanOrEqual(maxTimerDelay);
@@ -71,15 +47,6 @@ function expectTimersInRange(clock: TimerClock): void {
 /** Waits [ms] of real time. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Every value of [iterable], as Dart's `Stream.toList`. */
-async function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const values: T[] = [];
-  for await (const value of iterable) {
-    values.push(value);
-  }
-  return values;
 }
 
 describe('timeouts', () => {

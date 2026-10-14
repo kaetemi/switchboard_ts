@@ -27,7 +27,7 @@ import {
   type TalkMessage,
   type TalkOptions,
 } from '../../src/core/talk/contract.ts';
-import { TalkBulkOpen, TalkBulkReference } from '../../src/core/talk/talk-bulk.ts';
+import { TalkBulkOpen } from '../../src/core/talk/talk-bulk.ts';
 import { installBulkRouting } from '../../src/core/talk/talk-bulk-routes.ts';
 import { TalkAbortError, TalkChannel } from '../../src/core/talk/talk-channel.ts';
 import { forwardMessage } from '../../src/core/talk/talk-forward.ts';
@@ -49,36 +49,25 @@ import {
   nextIncoming,
   FrameMuxPeers as Peers,
 } from '../support/talk/frame-mux-peers.ts';
+import { bulkFrame } from '../support/talk/frames.ts';
 import {
   bytes,
   Collector,
+  expectBytes,
   expectStatus,
   flush,
   Outcome,
   Queue,
+  rawOf,
   rejectsStatus,
   serve,
+  within,
 } from '../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
 
 /** Lets what the frame mux and Talk have in flight settle: the Dart tests' short real-time waits. */
 const settle = (): Promise<void> => flush(20);
-
-/** Expects [actual] to hold the bytes of [expected]. */
-function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
-  expect(actual.length).toBe(expected.length);
-  expect(bytesEqual(actual, expected)).toBe(true);
-}
-
-/** The mux channel under [talk]. */
-function rawOf(talk: TalkChannel): MuxChannel {
-  const raw = talk.raw;
-  if (raw === undefined) {
-    throw new Error('not over a mux channel');
-  }
-  return raw;
-}
 
 /**
  * Moves [clock] on a millisecond at a time, letting what each step sets
@@ -95,39 +84,6 @@ function autoAdvance(clock: ManualClock): () => void {
   return () => {
     running = false;
   };
-}
-
-/** [promise], failing after [ms] of real time (Dart's `Future.timeout`). */
-function within<T>(promise: Promise<T>, ms = 1000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no outcome within ${ms} ms`)), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
-/** A message frame with the `BULK` flag referencing bulk channel [number]. */
-function bulkFrame(
-  init: { procedure?: string; requestId?: number; responseId?: number; kind?: TalkKind },
-  number: number,
-  length?: number,
-): Uint8Array {
-  return new TalkFrame({
-    kind: init.kind ?? TalkKind.message,
-    procedure: init.procedure === undefined ? undefined : Name.of(init.procedure),
-    requestId: init.requestId,
-    responseId: init.responseId,
-    bulk: true,
-    payload: new TalkBulkReference(number, length).encode(),
-  }).encode();
 }
 
 test('bulk channels finished before their references are not retained', async () => {

@@ -42,6 +42,7 @@ import {
   rejectsStatus,
   serve,
   throwsStatus,
+  toList,
 } from '../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
@@ -71,15 +72,6 @@ async function nextMessage(channel: TalkChannel): Promise<TalkMessage> {
     return message;
   }
   throw new Error('no message');
-}
-
-/** Every value of [iterable]. */
-async function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const values: T[] = [];
-  for await (const value of iterable) {
-    values.push(value);
-  }
-  return values;
 }
 
 describe('mux_talk_test over the frame mux', () => {

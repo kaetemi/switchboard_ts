@@ -34,6 +34,7 @@ import { ManualClock } from '../../src/testing/manual-clock.ts';
 import {
   collect,
   generated,
+  PulledSource,
   pattern,
   SourceController,
   until,
@@ -45,30 +46,20 @@ import {
   type RawMuxPeer,
   rawMuxPair,
 } from '../support/talk/frame-mux-peers.ts';
+import { bulkMessage, bulkOpen } from '../support/talk/frames.ts';
 import {
   bytes,
   Collector,
+  expectBytes,
   expectStatus,
   flush,
   Outcome,
   rejectsStatus,
   serve,
+  sleep,
 } from '../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
-
-/** Expects [actual] to hold the bytes of [expected]. */
-function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
-  expect(actual.length).toBe(expected.length);
-  expect(bytesEqual(actual, expected), 'bytes differ').toBe(true);
-}
-
-/** [ms] of [clock]. */
-function sleep(clock: ManualClock, ms: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    clock.setTimeout(resolve, ms);
-  });
-}
 
 /** Moves [clock] on in steps of [step] until [promise] settled (at most [limit] ms), and returns it. */
 async function elapseUntil<T>(
@@ -85,51 +76,9 @@ async function elapseUntil<T>(
   return promise;
 }
 
-/**
- * A byte source that makes a chunk each time its reader asks for one, as
- * the Dart tests' source fed by a periodic timer while not paused; whether
- * its reader cancelled it shows.
- */
-class PulledSource {
-  readonly cancelled = new Deferred<void>();
-  readonly stream: ReadableStream<Uint8Array>;
-
-  constructor(make: () => Uint8Array) {
-    this.stream = new ReadableStream<Uint8Array>(
-      {
-        pull: (controller) => controller.enqueue(make()),
-        cancel: () => {
-          this.cancelled.resolve();
-        },
-      },
-      { highWaterMark: 0 },
-    );
-  }
-}
-
 /** The next Talk channel the client of [peers] opened, at the server (Dart's `peers.accepted.next`). */
 async function accept(peers: Peers): Promise<TalkChannel> {
   return new TalkChannel(await peers.accept(), peers.serverOptions);
-}
-
-/** The encoded frame of a BULK message referencing bulk [number]. */
-function bulkMessage(
-  procedure: string,
-  number: number,
-  options: { requestId?: number; length?: number } = {},
-): Uint8Array {
-  return new TalkFrame({
-    kind: TalkKind.message,
-    procedure: Name.of(procedure),
-    requestId: options.requestId,
-    bulk: true,
-    payload: new TalkBulkReference(number, options.length).encode(),
-  }).encode();
-}
-
-/** The open payload of bulk channel [number] for [parent]. */
-function bulkOpen(parent: MuxChannel, number: number): Uint8Array {
-  return new TalkBulkOpen(parent.id, number).encode();
 }
 
 // The tests of the Dart file before the group 'timeouts' are in

@@ -11,7 +11,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { describe, expect, test } from 'vitest';
 import { hexString } from '../../../src/core/bytes.ts';
-import { Status, StatusCode, type SwitchboardError } from '../../../src/core/status.ts';
+import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage, TalkOptions } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
@@ -21,6 +21,7 @@ import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
+  expectRemote,
   expectStatus,
   flush,
   Outcome,
@@ -54,12 +55,6 @@ async function failure(promise: Promise<unknown>): Promise<unknown> {
   }
   expect(rejected, 'expected a rejection').toBe(true);
   return error;
-}
-
-/** Expects [error] to be the peer's abort with [code]. */
-function expectRemote(error: unknown, code: StatusCode): void {
-  expect(error).toBeInstanceOf(TalkAbortError);
-  expect((error as SwitchboardError).status.code).toBe(code);
 }
 
 /** Expects [error] to be a local failure with [code], not the peer's abort. */

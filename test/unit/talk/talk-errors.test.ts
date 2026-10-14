@@ -22,44 +22,19 @@ import { Pair, RawPeer, type StatusFrameEnd } from '../../support/talk/frame-lin
 import {
   bytes,
   Collector,
+  expectSame,
   expectStatus,
   flush,
   Outcome,
+  rejection,
   rejectsStatus,
   serve,
   throwsStatus,
+  toList,
   uncaughtErrors,
 } from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
-
-/** Expects [actual] to be the same status as [expected]: code and bytes. */
-function expectSame(actual: Status | undefined, expected: Status): void {
-  expect(actual?.equals(expected), `${actual} is ${expected}`).toBe(true);
-}
-
-/** The error [promise] rejects with; fails the test if it resolves. */
-async function rejection(promise: Promise<unknown>): Promise<unknown> {
-  try {
-    await promise;
-  } catch (e) {
-    return e;
-  }
-  throw new Error('expected a rejection');
-}
-
-/** Every value of [iterable], as Dart's `Stream.toList`; marked handled until awaited. */
-function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const list = (async () => {
-    const values: T[] = [];
-    for await (const value of iterable) {
-      values.push(value);
-    }
-    return values;
-  })();
-  list.catch(() => {});
-  return list;
-}
 
 /** The status channel under a {@link RawPeer} made with `status: true`. */
 function statusOf(peer: RawPeer): StatusFrameEnd {
