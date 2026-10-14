@@ -8,8 +8,9 @@ Planned layout:
 native/
   Cargo.toml          the napi-rs crate, mirroring the sbq C ABI function for function
   src/lib.rs
-  sbq-vendor/         switchboard_quic/native/sbq at the pinned commit, crate-type plus "rlib"
-                      (replaced by a git dependency once that line lands upstream)
+  sbq-vendor/         switchboard_quic/native/sbq at the commit in sbq-vendor/COMMIT, crate-type plus "rlib";
+                      refreshed by tool/sync-sbq.mjs, checked in CI; no other edits, so it can move to a
+                      dedicated shim repository shared with the Dart package once the port is ready
   npm/<target>/       per-platform package manifests published as optionalDependencies
 ```
 

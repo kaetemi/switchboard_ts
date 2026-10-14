@@ -13,4 +13,5 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  * threads agree to share. Each thread adds its own under its name.
  */
 
+export * from './fake-quic-provider.ts';
 export { ManualClock } from './manual-clock.ts';
