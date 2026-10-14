@@ -129,6 +129,8 @@ export interface FrameMuxPairInit {
   readonly acceptor?: Partial<MuxOptions>;
   /** Options of the memory transport pair (a delivery delay, a frame size limit). */
   readonly transport?: MemoryTransportOptions;
+  /** The two connected transports to run over (the initiator's first) instead of a memory pair: TCP on the loopback, say. */
+  readonly transports?: readonly [FrameTransport, FrameTransport];
   /** Install bulk routing on both connections at once (default true): Dart routes with `TalkChannel.adoptBulk` from the start. */
   readonly routeBulk?: boolean;
   /** Records what both sides write. */
@@ -144,13 +146,13 @@ export interface FrameMuxPairInit {
 }
 
 /**
- * An initiator and an acceptor frame mux over a memory transport pair,
- * closed when the test finishes.
+ * An initiator and an acceptor frame mux over a memory transport pair (or
+ * over the `transports` given), closed when the test finishes.
  */
 export function frameMuxPair(
   init: FrameMuxPairInit = {},
 ): [FrameMuxConnection, FrameMuxConnection] {
-  const [memoryA, memoryB] = memoryTransportPair(init.transport);
+  const [memoryA, memoryB] = init.transports ?? memoryTransportPair(init.transport);
   const wire = init.wire;
   let a: FrameTransport = wire === undefined ? memoryA : tapped(memoryA, wire, 'initiator');
   let b: FrameTransport = wire === undefined ? memoryB : tapped(memoryB, wire, 'acceptor');
@@ -246,11 +248,13 @@ export class FrameMuxPeers {
       options?: Partial<MuxOptions>;
       serverOptions?: Partial<TalkOptions>;
       transport?: MemoryTransportOptions;
+      transports?: readonly [FrameTransport, FrameTransport];
     } = {},
   ): FrameMuxPeers {
     const [client, server] = frameMuxPair({
       ...(init.options === undefined ? {} : { options: init.options }),
       ...(init.transport === undefined ? {} : { transport: init.transport }),
+      ...(init.transports === undefined ? {} : { transports: init.transports }),
     });
     return new FrameMuxPeers(client, server, init.serverOptions);
   }

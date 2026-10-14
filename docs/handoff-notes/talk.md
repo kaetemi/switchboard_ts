@@ -49,11 +49,10 @@ The test fixtures are in `test/support/talk/`:
 * `talk-frame-mux-forward.test.ts` (53): forwarding chains over frame mux pairs, 'bulk payloads' and 'forwarding credit' (with the real `SlotChannel`).
 * `talk-quic.test.ts` (17, one `test.fails`): Talk over `QuicBindingConnection` on the fake provider: unordered channels, bulk streams overtaking or lagging their references and their parent, lingering with drain holds, `_bulk` continuations after GOAWAY.
 
-Not ported here: 'over TCP' itself, which goes in `test/integration/talk-tcp.test.ts` once `connectTcp` lands.
+* `talk-tcp.test.ts` (9): the 'over TCP' group of `talk_bulk_test` over the frame mux on loopback TCP (`connectTcp`, `listenTcp`), `mux_talk_test` over TCP, and a stalled reader holding its channel at the window.
 
 ## Not ported, with the reason in the test file
 
-* **`talk_bulk_test` 'over TCP':** there is no TCP transport yet. The same tests run 'over memory' on the fake mux, and on the frame mux, also with transport latency, in `test/integration/talk-frame-mux-bulk.test.ts`.
 * **`talk_forward_test` '1 proxy, synchronous transport' and '2 proxies, synchronous transport' (22 tests), plus 3 loop cases in 'item windows':** a Talk channel reads through a ReadableStream, which never delivers inside a send. The non-sync variants are fully ported.
 * **`talk_test` 'onError(null) on the subscription logs instead':** this is about Dart's `StreamSubscription.onError`, which TS has no equivalent for.
 * **`talk_test` 'synchronous transport' (11 tests):** ported, but adapted. The peer's cancel crosses the reply on the wire instead of arriving inside the send. They use a carrier that can intercept or refuse each frame. The held-cancel path (`#sending`/`#heldCancel` in `IncomingMessage`) is reachable only through re-entrant forwarding, and no test reaches it.
@@ -77,7 +76,7 @@ All of these are documented in the code.
 ## Fixes the integration tests found
 
 * **Bulk admission at the bound** (the `_adoptBulk` allowance above, commit "Talk: count frames on their way to the reader in bulk admission"; test 'a reference on its way to Talk frees its place for the next OPEN, over a slot channel').
-* **After this side's GOAWAY, `installBulkRouting` admits a `_bulk` continuation for a parent that is open or that Talk still lingers on** (Dart's QUIC binding: open or retained for its drain). Before, a late bulk stream of a closed parent Talk waited for was refused GOING_AWAY (test "after this side's GOAWAY, the late bulk channel Talk waits for is admitted, and the GOAWAY waits for it" in `talk-quic.test.ts`).
+* **After this side's GOAWAY, `installBulkRouting` admits a `_bulk` continuation for a parent that is open or that the connection retains for its drain** (Dart's QUIC binding: open or retained for its drain). Before, a late bulk stream of a closed parent Talk waited for was refused GOING_AWAY (test "after this side's GOAWAY, the late bulk channel Talk waits for is admitted, and the GOAWAY waits for it" in `talk-quic.test.ts`). The node thread fixed the same on main at the same time (by `retainedForDrain`, which also covers a proxy's pipe); the merge kept that version.
 
 ## Known gap (reported, `test.fails` in `talk-quic.test.ts`)
 
@@ -85,10 +84,9 @@ Over the QUIC binding, which reads a channel's stream only as far as what it del
 
 ## Remaining
 
-1. **Bulk over TCP** (`test/integration/talk-tcp.test.ts`) once `connectTcp` lands: the four tests of 'over memory' in `talk-frame-mux-bulk.test.ts` over loopback TCP.
-2. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) need the TS peer and the node. Talk itself is ready for them.
-3. **The QUIC bulk burst gap** above.
-4. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
+1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) need the TS peer. Talk itself is ready for them.
+2. **The QUIC bulk burst gap** above.
+3. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
 
 ## Conventions this thread followed
 

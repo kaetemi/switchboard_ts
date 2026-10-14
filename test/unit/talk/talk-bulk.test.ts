@@ -893,9 +893,11 @@ describe('over memory', () => {
   });
 });
 
-// Not ported: 'over TCP': this thread has no mux over TCP yet; the
-// integration tests over the real mux and transports cover it once the mux
-// lands. (The group runs the four tests of 'over memory' over loopback TCP.)
+// Not ported here: 'over TCP' (the four tests of 'over memory' over
+// loopback TCP) needs a real transport; it runs over the frame mux on TCP
+// in test/integration/talk-tcp.test.ts, and over the frame mux on the
+// memory pair, with and without transport latency, in
+// test/integration/talk-frame-mux-bulk.test.ts.
 
 test('a send with a bulk payload completes once the payload went whole, and fails with how its transfer ended', async () => {
   const peers = await Peers.connect({

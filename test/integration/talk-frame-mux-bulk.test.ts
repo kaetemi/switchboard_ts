@@ -808,10 +808,10 @@ describe('idle timeout', () => {
 
 // The Dart group 'over TCP' runs the four tests of 'over memory' over
 // loopback TCP. Not ported here: over TCP lives in
-// test/integration/talk-tcp.test.ts once connectTcp lands. Adapted to the
-// frame mux below: the same four tests over a memory transport that
-// delivers each frame a millisecond after it was written, as a socket does
-// on its own turns of the event loop, with time on a ManualClock.
+// test/integration/talk-tcp.test.ts. Adapted to the frame mux below as
+// well: the same four tests over a memory transport that delivers each
+// frame a millisecond after it was written, as a socket does on its own
+// turns of the event loop, with time on a ManualClock.
 
 for (const latency of [false, true]) {
   describe(latency ? 'over the frame mux with transport latency' : 'over memory', () => {
