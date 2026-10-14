@@ -886,6 +886,17 @@
       "text": "`0F 61 62 00 00 00 00 00 00 01 00 00 00 00 00 02 00 00 00 01 68 FF`"
     },
     {
+      "id": "test-vectors/address-headers/empty-open-payload-zero-bytes",
+      "page": "test-vectors",
+      "section": "Address headers",
+      "table": "address-headers#6",
+      "case": "Empty OPEN payload (zero bytes)",
+      "hex": null,
+      "negative": false,
+      "composite": true,
+      "text": "decodes as default service, no payload"
+    },
+    {
       "id": "test-vectors/address-headers/relay-inner-worker-g-instance-0x2a-app-payload-01-02",
       "page": "test-vectors",
       "section": "Address headers",

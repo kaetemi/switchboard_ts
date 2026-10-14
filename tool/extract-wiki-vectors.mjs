@@ -20,10 +20,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 //
 // What becomes a vector:
 //
-// - Every row of a table whose bytes column (`Bytes`, `Change`, `On the
-//   wire`, `8-byte name`) holds backticked hex or `(empty)`, or describes a
-//   change to the table's base blob ("offsets into C1"). A cell that is not
-//   one hex literal is `composite`; its `hex` is resolved when the cell is
+// - Every row of a table with a bytes column (`Bytes`, `Change`, `On the
+//   wire`, `8-byte name`). A cell that is not one hex literal or `(empty)` is
+//   `composite`; its `hex` is resolved when the cell is
 //   one of the forms the wiki uses (`X` followed by 32 bytes `11`; `X`, the 86
 //   bytes of C1, `Y`; the endpoint defined above the table; byte N = `XX`;
 //   `00` appended; last byte removed) and null otherwise. A cell of several
@@ -306,10 +305,6 @@ function parse(page, text, fromHeading, blobs, pending) {
       const empty = cell === '(empty)';
       const literal = cell.match(/^`([^`]*)`$/)?.[1];
       const plain = literal !== undefined && hexPattern.test(literal);
-      const hasHex = [...cell.matchAll(/`([^`]*)`/g)].some((g) => hexPattern.test(g[1] ?? ''));
-      if (!plain && !empty && !hasHex && base === null) {
-        continue;
-      }
       const caseName = (row[0] ?? '').replace(/`/g, '');
       const vector = {
         id: `${page}/${sectionSlug()}/${slug(caseName)}`,
