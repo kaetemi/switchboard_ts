@@ -341,6 +341,8 @@ export class FakeMessage implements TalkMessage {
   readonly #abort = new AbortController();
   #finished = false;
   #timer: TimerHandle | undefined;
+  /** The responder timeout set with {@link setReplyTimeout}; undefined: the channel's. */
+  #replyTimeout: number | undefined;
 
   constructor(
     channel: FakeTalkChannel,
@@ -539,8 +541,12 @@ export class FakeMessage implements TalkMessage {
       deadline: deadline === undefined ? undefined : deadline + buffer,
       renew: renew === undefined ? undefined : renew + buffer,
     });
-    if (deadline === undefined && renew === undefined) {
-      this.#arm(this.channel.options.replyTimeout);
+    const gap = this.#replyTimeout ?? this.channel.options.replyTimeout;
+    if (gap <= 0) {
+      // No responder timeout (`setReplyTimeout(0)`): what is declared only
+      // tells the requester, as with the Dart `TalkChannel`.
+    } else if (deadline === undefined && renew === undefined) {
+      this.#arm(gap);
     } else {
       this.#arm(Math.max(1, Math.min(deadline ?? Infinity, renew ?? Infinity)));
     }
@@ -548,6 +554,7 @@ export class FakeMessage implements TalkMessage {
   }
 
   setReplyTimeout(timeout: number | undefined): void {
+    this.#replyTimeout = timeout;
     this.#arm(timeout ?? this.channel.options.replyTimeout);
   }
 
