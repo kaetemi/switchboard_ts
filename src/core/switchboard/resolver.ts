@@ -6,6 +6,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { ServiceAddress } from '../address/index.ts';
 import type { Name } from '../name.ts';
+import { downEvent, serviceRecord, upEvent } from '../naming/naming-protocol.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import { Broadcast } from './broadcast.ts';
 import type { Resolver, ServiceEvent, ServiceRecord } from './contract.ts';
@@ -34,15 +35,6 @@ export interface BrokeringResolver extends Resolver {
 /** Whether [resolver] can broker connections ({@link BrokeringResolver}). */
 export function isBrokeringResolver(resolver: Resolver): resolver is BrokeringResolver {
   return typeof (resolver as Partial<BrokeringResolver>).connectTo === 'function';
-}
-
-/** A service record: an address, its endpoints and metadata. */
-export function serviceRecord(
-  address: ServiceAddress,
-  endpoints: readonly string[] = [],
-  metadata: Uint8Array = new Uint8Array(0),
-): ServiceRecord {
-  return { address, endpoints: Object.freeze([...endpoints]), metadata };
 }
 
 function closedError(what: string): SwitchboardError {
@@ -81,14 +73,14 @@ export class StaticResolver implements Resolver {
   add(record: ServiceRecord): void {
     this.#checkOpen();
     this.#table.set(record.address.key, record);
-    this.#events.push({ up: true, record });
+    this.#events.push(upEvent(record));
   }
 
   /** Removes the record of [address] if present and emits a DOWN event. */
   remove(address: ServiceAddress): void {
     this.#checkOpen();
     if (this.#table.delete(address.key)) {
-      this.#events.push({ up: false, record: serviceRecord(address) });
+      this.#events.push(downEvent(address));
     }
   }
 
@@ -135,7 +127,7 @@ export class EndpointResolver implements Resolver {
     if (this.#closed) {
       throw closedError('endpoint resolver');
     }
-    return [serviceRecord(new ServiceAddress(type), [this.endpoint])];
+    return [serviceRecord(new ServiceAddress(type), { endpoints: [this.endpoint] })];
   }
 
   get events(): AsyncIterable<ServiceEvent> {

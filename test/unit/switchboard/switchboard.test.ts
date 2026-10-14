@@ -9,14 +9,11 @@ import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.
 import { utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
+import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { IncomingChannel } from '../../../src/core/switchboard/contract.ts';
-import {
-  EndpointResolver,
-  StaticResolver,
-  serviceRecord,
-} from '../../../src/core/switchboard/resolver.ts';
+import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import {
   type ServiceAddressLike,
   Switchboard,
@@ -686,7 +683,9 @@ describe('connection pool', () => {
     const racing = new RacingSwitchboard({
       runtime: currentRuntime(),
       muxOptions: fast,
-      resolver: new StaticResolver([serviceRecord(new ServiceAddress(svc, 1), [uri])]),
+      resolver: new StaticResolver([
+        serviceRecord(new ServiceAddress(svc, 1), { endpoints: [uri] }),
+      ]),
     });
     onCleanup(() => racing.close());
     const firstConnection = await racing.connect(uri);
@@ -766,8 +765,8 @@ describe('openChannel', () => {
     // Deliberately out of order: selection sorts by instance.
     const both = () =>
       new StaticResolver([
-        serviceRecord(new ServiceAddress(svc, 2), [twoUri]),
-        serviceRecord(new ServiceAddress(svc, 1), [oneUri]),
+        serviceRecord(new ServiceAddress(svc, 2), { endpoints: [twoUri] }),
+        serviceRecord(new ServiceAddress(svc, 1), { endpoints: [oneUri] }),
       ]);
     return { seen, oneUri, twoUri, both };
   }
@@ -846,9 +845,9 @@ describe('openChannel', () => {
     const dead = 'mem://dead';
     const client = node({
       resolver: new StaticResolver([
-        serviceRecord(new ServiceAddress(svc, 1), [dead, oneUri]),
-        serviceRecord(new ServiceAddress(svc, 2), [dead]),
-        serviceRecord(new ServiceAddress(svc, 3), []),
+        serviceRecord(new ServiceAddress(svc, 1), { endpoints: [dead, oneUri] }),
+        serviceRecord(new ServiceAddress(svc, 2), { endpoints: [dead] }),
+        serviceRecord(new ServiceAddress(svc, 3), { endpoints: [] }),
       ]),
     });
     expect(await tagOf(await client.openChannel(new ServiceAddress(svc, 1)))).toBe('one');
@@ -871,8 +870,11 @@ describe('openChannel', () => {
     const { seen, oneUri, twoUri } = await setUp();
     const client = node({
       resolver: new StaticResolver([
-        serviceRecord(new ServiceAddress(svc, 1), [oneUri], bytes('blue')),
-        serviceRecord(new ServiceAddress(svc, 2), [twoUri], bytes('green')),
+        serviceRecord(new ServiceAddress(svc, 1), { endpoints: [oneUri], metadata: bytes('blue') }),
+        serviceRecord(new ServiceAddress(svc, 2), {
+          endpoints: [twoUri],
+          metadata: bytes('green'),
+        }),
       ]),
     });
     const green = (record: { metadata: Uint8Array }) => utf8Decode(record.metadata) === 'green';
@@ -936,8 +938,8 @@ describe('openChannel', () => {
     const self = node();
     const own = await self.listenMemory();
     self.resolver = new StaticResolver([
-      serviceRecord(new ServiceAddress(svc, 1), [own]),
-      serviceRecord(new ServiceAddress(svc, 2), [oneUri]),
+      serviceRecord(new ServiceAddress(svc, 1), { endpoints: [own] }),
+      serviceRecord(new ServiceAddress(svc, 2), { endpoints: [oneUri] }),
     ]);
     const { record } = await self.selectAndConnect(svc, { shard: 0, excludeOwnEndpoints: true });
     expect(record.address.instance).toBe(2);

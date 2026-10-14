@@ -10,6 +10,7 @@ import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import { type Credential, Right } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name, type NameLike } from '../../../src/core/name.ts';
+import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type {
@@ -19,11 +20,7 @@ import type {
   Resolver,
   ServiceRecord,
 } from '../../../src/core/switchboard/contract.ts';
-import {
-  type BrokeringResolver,
-  StaticResolver,
-  serviceRecord,
-} from '../../../src/core/switchboard/resolver.ts';
+import { type BrokeringResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
 import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
@@ -751,7 +748,9 @@ describe('identifying', () => {
     const client = node({
       credential: npcCredential(),
       holderKey: npcKey,
-      resolver: new StaticResolver([serviceRecord(new ServiceAddress(npc, 5), [uri])]),
+      resolver: new StaticResolver([
+        serviceRecord(new ServiceAddress(npc, 5), { endpoints: [uri] }),
+      ]),
       expectedIdentityFor: (_endpoint, record) => {
         records.push(record);
         return 'gate';

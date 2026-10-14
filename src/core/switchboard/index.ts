@@ -13,7 +13,6 @@ export {
   EndpointResolver,
   isBrokeringResolver,
   StaticResolver,
-  serviceRecord,
 } from './resolver.ts';
 export type {
   BindingDialSettings,

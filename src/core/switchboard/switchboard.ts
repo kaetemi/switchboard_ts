@@ -19,6 +19,7 @@ import {
   muxOptions,
 } from '../mux/contract.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
+import { serviceRecord } from '../naming/naming-protocol.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
 import { type TalkChannel, type TalkOptions, talkOptions } from '../talk/contract.ts';
 import { defaultMaxFrameSize, type FrameTransport } from '../transport/contract.ts';
@@ -52,7 +53,7 @@ import { genericStatus } from './generic-status.ts';
 import { waitForIdentityChange } from './identity-wait.ts';
 import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
-import { type BrokeringResolver, isBrokeringResolver, serviceRecord } from './resolver.ts';
+import { type BrokeringResolver, isBrokeringResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
 import { installBulkRouting, isBulkAddress, refuseBulk, talkOver } from './talk-layer.ts';
 import {
@@ -2249,7 +2250,7 @@ export class Switchboard implements AsyncDisposable {
           // the instance asked for, metadata included.
           const selected =
             record.address.isAny && !address.isAny
-              ? serviceRecord(address, record.endpoints, record.metadata)
+              ? serviceRecord(address, { endpoints: record.endpoints, metadata: record.metadata })
               : record;
           return new Route(selected, connection);
         } catch (e) {
@@ -2341,7 +2342,7 @@ export class Switchboard implements AsyncDisposable {
       const identity = config.identity;
       const metadata = identity === undefined ? emptyBytes : utf8Encode(identity);
       records = explicit.map((endpoint) =>
-        serviceRecord(new ServiceAddress(config.type), [endpoint], metadata),
+        serviceRecord(new ServiceAddress(config.type), { endpoints: [endpoint], metadata }),
       );
     } else {
       if (resolver === undefined) {

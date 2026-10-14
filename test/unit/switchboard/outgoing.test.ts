@@ -9,10 +9,11 @@ import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.
 import { bytesEqual, utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
+import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { ChannelPolicy, ServiceRecord } from '../../../src/core/switchboard/contract.ts';
-import { StaticResolver, serviceRecord } from '../../../src/core/switchboard/resolver.ts';
+import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import {
   bytes,
@@ -60,7 +61,10 @@ class Target {
   }
 
   record(metadata?: Uint8Array): ServiceRecord {
-    return serviceRecord(new ServiceAddress(svc, this.id), [this.uri], metadata);
+    return serviceRecord(new ServiceAddress(svc, this.id), {
+      endpoints: [this.uri],
+      metadata: metadata,
+    });
   }
 
   async start(): Promise<this> {
@@ -424,7 +428,10 @@ describe('credentialFor', () => {
     const seen: (ServiceRecord | undefined)[] = [];
     const client = node({
       resolver: new StaticResolver([
-        serviceRecord(new ServiceAddress(svc), [a.uri], bytes('worker-key')),
+        serviceRecord(new ServiceAddress(svc), {
+          endpoints: [a.uri],
+          metadata: bytes('worker-key'),
+        }),
       ]),
       defaultPayload: meshSecret,
       credentialFor: (_endpoint, record) => {
