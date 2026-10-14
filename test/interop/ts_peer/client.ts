@@ -36,7 +36,7 @@ import {
   statusArg,
   stringArg,
 } from './protocol.ts';
-import { pattern } from './services.ts';
+import { chunks, pattern } from './services.ts';
 
 /** The client commands. */
 export const clientOps = [
@@ -99,19 +99,30 @@ export class Client {
       case 'talk.open':
         return this.#talkOpen(cmd);
       case 'talk.request': {
-        const t = h.get(cmd['talk'], 't', 'talk channel');
-        const reply = await t.request(requiredString(cmd, 'procedure'), payloadOf(cmd), {
+        const handle = requiredString(cmd, 'talk');
+        const t = h.get(handle, 't', 'talk channel');
+        const { payload, bulk } = payloadAndBulk(cmd);
+        const r = t.startRequest(requiredString(cmd, 'procedure'), payload, {
+          ...bulk,
           timeout: intArg(cmd, 'timeoutMs'),
+          onExtend: (extension) =>
+            this.#ctx.out.event('talk.extend', {
+              talk: handle,
+              requestId: r.requestId,
+              ...extensionJson(extension),
+            }),
         });
-        return messageJson(reply, boolArg(cmd, 'digest'));
+        return messageJson(await r.response, boolArg(cmd, 'digest'));
       }
       case 'talk.stream':
         return this.#talkStream(cmd);
-      case 'talk.send':
+      case 'talk.send': {
+        const { payload, bulk } = payloadAndBulk(cmd);
         await h
           .get(cmd['talk'], 't', 'talk channel')
-          .send(requiredString(cmd, 'procedure'), payloadOf(cmd));
+          .send(requiredString(cmd, 'procedure'), payload, bulk);
         return null;
+      }
       case 'talk.close':
         await h.get(cmd['talk'], 't', 'talk channel').close(statusArg(cmd));
         return null;
@@ -148,6 +159,15 @@ export class Client {
       default:
         throw new ArgumentProblem(`unknown op ${op}`);
     }
+  }
+
+  /**
+   * A Talk channel to [openPayload]'s service at [endpoint], on a pooled
+   * connection: what a `forward` service forwards to.
+   */
+  async openTalk(endpoint: string, openPayload: Uint8Array): Promise<TalkChannel> {
+    const c = await this.#client.connect(endpoint);
+    return new TalkChannel(c.open(openPayload), this.#ctx.config.talk);
   }
 
   /** Closes the client node. */
@@ -191,11 +211,16 @@ export class Client {
   #talkStream(cmd: Json): Json {
     const ctx = this.#ctx;
     const t = ctx.handles.get(cmd['talk'], 't', 'talk channel');
-    const s = t.streamRequest(requiredString(cmd, 'procedure'), payloadOf(cmd), {
+    const { payload, bulk } = payloadAndBulk(cmd);
+    let handle: string | undefined;
+    const s = t.streamRequest(requiredString(cmd, 'procedure'), payload, {
+      ...bulk,
       timeout: intArg(cmd, 'timeoutMs'),
       window: intArg(cmd, 'window'),
+      onExtend: (extension) =>
+        ctx.out.event('talk.extend', { stream: handle, ...extensionJson(extension) }),
     });
-    const handle = ctx.handles.add('s', s);
+    handle = ctx.handles.add('s', s);
     const digest = boolArg(cmd, 'digest');
     void (async () => {
       let index = 0;
@@ -271,6 +296,33 @@ export function openPayload(cmd: Json): Uint8Array {
     host: stringArg(a, 'host'),
     payload: bytesOf(a['payload']),
   }).encode();
+}
+
+/**
+ * A command's payload, and with `bulkPattern` (`{length, chunk, declared}`)
+ * instead an empty payload and the `BIG` pattern of `length` bytes as a bulk
+ * source in pieces of `chunk` (default 1000), its length declared unless
+ * `declared` is false.
+ */
+export function payloadAndBulk(cmd: Json): {
+  payload: Uint8Array;
+  bulk: { bulk?: Iterable<Uint8Array>; bulkLength?: number };
+} {
+  const spec = objectArg(cmd, 'bulkPattern');
+  if (spec === undefined) {
+    return { payload: payloadOf(cmd), bulk: {} };
+  }
+  const length = intArg(spec, 'length') ?? 0;
+  const source = chunks(pattern(length), intArg(spec, 'chunk') ?? 1000);
+  return {
+    payload: new Uint8Array(0),
+    bulk: boolArg(spec, 'declared', true) ? { bulk: source, bulkLength: length } : { bulk: source },
+  };
+}
+
+/** An `EXTEND` as the `talk.extend` event reports it, in milliseconds. */
+function extensionJson(extension: { deadline?: number; renew?: number }): Json {
+  return { deadlineMs: extension.deadline ?? null, renewMs: extension.renew ?? null };
 }
 
 /**

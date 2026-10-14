@@ -30,6 +30,9 @@ class PeerContext {
   /// Every object a command or a service created.
   final Handles handles = Handles();
 
+  /// The endpoints this peer listens on, in the order of `listen`.
+  final List<String> endpoints = [];
+
   /// Registers [connection] and reports its GOAWAY and its end as events.
   String trackConnection(MuxConnection connection) {
     final existing = handles.nameOf(connection);

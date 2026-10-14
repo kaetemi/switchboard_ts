@@ -73,6 +73,7 @@ Map<String, Object?> errorJson(Object error) {
       'type': type,
       'code': error.status.code,
       'reason': error.status.reason,
+      'body': hex(error.status.encode().sublist(2)),
       'message': error.toString(),
     };
   }

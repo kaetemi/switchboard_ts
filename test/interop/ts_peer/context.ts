@@ -57,6 +57,8 @@ export class PeerContext {
   readonly logger: Logger | undefined;
   /** Every object a command or a service created. */
   readonly handles = new Handles<HandleKinds>();
+  /** The endpoints this peer listens on, in the order of `listen`. */
+  readonly endpoints: string[] = [];
 
   constructor(out: Output, config: PeerConfig, logger: Logger | undefined) {
     this.out = out;

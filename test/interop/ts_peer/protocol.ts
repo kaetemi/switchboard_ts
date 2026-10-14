@@ -98,6 +98,7 @@ export function errorJson(error: unknown): Json {
       type,
       code: error.status.code,
       reason: error.status.reason,
+      body: hex(error.status.encode().subarray(2)),
       message: `${error}`,
     };
   }

@@ -84,11 +84,16 @@ export interface TalkConfig {
   creditTimeoutMs?: number;
 }
 
-/** A service: `echo` serves the interop procedures, `raw` hands out channels, `sink` never reads. */
+/**
+ * A service: `echo` serves the interop procedures, `raw` hands out channels,
+ * `sink` never reads, `forward` forwards Talk to [target].
+ */
 export interface ServiceConfig {
   type: string;
-  behaviour?: 'echo' | 'raw' | 'sink';
+  behaviour?: 'echo' | 'raw' | 'sink' | 'forward';
   instance?: number;
+  /** `forward`: the service forwarded to; the endpoint defaults to the peer's first listener. */
+  target?: { endpoint?: string; type?: string; instance?: number };
 }
 
 /** An error as a peer reports it. */
@@ -100,6 +105,8 @@ export interface PeerErrorInfo {
   readonly message: string;
   readonly code?: number;
   readonly reason?: string;
+  /** For kind `status`: the status payload's bytes after the code, hex, as received. */
+  readonly body?: string;
 }
 
 /** A failed command, carrying what the peer reported. */

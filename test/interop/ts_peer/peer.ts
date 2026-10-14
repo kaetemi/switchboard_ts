@@ -149,7 +149,7 @@ class Peer {
     }, this.#watchdogSeconds * 1000);
     watchdog.unref();
     for (const s of this.#ctx.config.services) {
-      registerService(this.#node, s, this.#ctx);
+      registerService(this.#node, s, this.#ctx, this.#client);
     }
     this.#ready = {
       protocol: peerProtocolVersion,
@@ -178,11 +178,14 @@ class Peer {
     const node = this.#node;
     const loopback = '127.0.0.1';
     const endpoints: Json = {};
+    const own = this.#ctx.endpoints;
     if (config.listen.includes('tcp')) {
       endpoints['tcp'] = await node.listenTcp(loopback, 0);
+      own.push(endpoints['tcp'] as string);
     }
     if (config.listen.includes('ws')) {
       endpoints['ws'] = await node.listenWebSocket(loopback, 0, { path: config.path });
+      own.push(endpoints['ws'] as string);
     }
     if (config.listen.includes('quic') || config.listen.includes('webtransport')) {
       // One self-signed certificate for both, as the Dart peer has; nobody
@@ -195,12 +198,14 @@ class Peer {
       };
       if (config.listen.includes('quic')) {
         endpoints['quic'] = await node.listenQuic(loopback, 0, options);
+        own.push(endpoints['quic'] as string);
       }
       if (config.listen.includes('webtransport')) {
         endpoints['webtransport'] = await node.listenWebTransport(loopback, 0, {
           ...options,
           path: config.path,
         });
+        own.push(endpoints['webtransport'] as string);
       }
       endpoints['certificateSha256'] = Array.from(certificate.sha256, (b) =>
         b.toString(16).padStart(2, '0'),

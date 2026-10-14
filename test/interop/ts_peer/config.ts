@@ -26,16 +26,28 @@ export const transports = ['tcp', 'ws', 'quic', 'webtransport'] as const;
 export type Transport = (typeof transports)[number];
 
 /** The behaviours a service can have. */
-export const behaviours = ['echo', 'raw', 'sink'] as const;
+export const behaviours = ['echo', 'raw', 'sink', 'forward'] as const;
+
+/** What a `forward` service forwards to. */
+export interface ForwardTarget {
+  /** The endpoint; undefined for this peer's first listener. */
+  readonly endpoint: string | undefined;
+  /** The service type; undefined for `echo`. */
+  readonly type: string | undefined;
+  /** The instance. */
+  readonly instance: number;
+}
 
 /** One registered service: a type, an instance id, and the behaviour that serves it. */
 export interface ServiceSpec {
   /** The service type. */
   readonly type: string;
-  /** `echo` (the interop procedures), `raw` (channels as handles) or `sink` (never read). */
+  /** `echo` (the interop procedures), `raw` (channels as handles), `sink` (never read), `forward`. */
   readonly behaviour: (typeof behaviours)[number];
   /** The instance id; 0 registers the type's default handler. */
   readonly instance: number;
+  /** `forward`: what it forwards to. */
+  readonly target: ForwardTarget;
 }
 
 /** Everything the command line configures. */
@@ -52,11 +64,13 @@ export interface PeerConfig {
   readonly services: readonly ServiceSpec[];
 }
 
+const noTarget: ForwardTarget = { endpoint: undefined, type: undefined, instance: 0 };
+
 /** `echo`, `raw` and `sink` at instance 1. */
 export const defaultServices: readonly ServiceSpec[] = [
-  { type: 'echo', behaviour: 'echo', instance: 1 },
-  { type: 'raw', behaviour: 'raw', instance: 1 },
-  { type: 'sink', behaviour: 'sink', instance: 1 },
+  { type: 'echo', behaviour: 'echo', instance: 1, target: noTarget },
+  { type: 'raw', behaviour: 'raw', instance: 1, target: noTarget },
+  { type: 'sink', behaviour: 'sink', instance: 1, target: noTarget },
 ];
 
 /** Reads the JSON configuration; absent keys keep their defaults. */
@@ -85,10 +99,16 @@ export function peerConfig(json: Json): PeerConfig {
             if (!(behaviours as readonly string[]).includes(behaviour)) {
               throw new ArgumentProblem(`unknown service behaviour ${behaviour}`);
             }
+            const target = objectArg(spec, 'target') ?? {};
             return {
               type: requiredString(spec, 'type'),
               behaviour: behaviour as ServiceSpec['behaviour'],
               instance: intArg(spec, 'instance') ?? 0,
+              target: {
+                endpoint: stringArg(target, 'endpoint'),
+                type: stringArg(target, 'type'),
+                instance: intArg(target, 'instance') ?? 0,
+              },
             };
           }),
   };

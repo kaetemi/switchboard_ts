@@ -79,19 +79,35 @@ class Client {
       case 'talk.open':
         return _talkOpen(cmd);
       case 'talk.request':
-        final t = h.get<TalkChannel>(cmd['talk'], 'talk channel');
-        final reply = await t.request(
+        final handle = requiredString(cmd, 'talk');
+        final t = h.get<TalkChannel>(handle, 'talk channel');
+        final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
+        late final TalkRequest r;
+        r = t.startRequest(
           requiredString(cmd, 'procedure'),
-          _payload(cmd),
+          payload,
+          bulk: bulk,
+          bulkLength: bulkLength,
           timeout: msArg(cmd, 'timeoutMs'),
+          onExtend: (deadline, renew) => ctx.out.event('talk.extend', {
+            'talk': handle,
+            'requestId': r.requestId,
+            ..._extensionJson(deadline, renew),
+          }),
         );
-        return _messageJson(reply, digest: boolArg(cmd, 'digest'));
+        return _messageJson(await r.response, digest: boolArg(cmd, 'digest'));
       case 'talk.stream':
         return _talkStream(cmd);
       case 'talk.send':
+        final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
         await h
             .get<TalkChannel>(cmd['talk'], 'talk channel')
-            .send(requiredString(cmd, 'procedure'), _payload(cmd));
+            .send(
+              requiredString(cmd, 'procedure'),
+              payload,
+              bulk: bulk,
+              bulkLength: bulkLength,
+            );
         return null;
       case 'talk.close':
         await h
@@ -138,6 +154,13 @@ class Client {
     }
   }
 
+  /// A Talk channel to [openPayload]'s service at [endpoint], on a pooled
+  /// connection: what a `forward` service forwards to.
+  Future<TalkChannel> openTalk(String endpoint, Uint8List openPayload) async {
+    final c = await _client.connect(Uri.parse(endpoint));
+    return TalkChannel(c.open(openPayload), options: ctx.config.talk);
+  }
+
   /// Closes the client node.
   Future<void> close() async {
     await _node?.close();
@@ -164,6 +187,42 @@ class Client {
       payload: bytesOf(a['payload']),
     ).encode();
   }
+
+  /// A command's payload, and with `bulkPattern` (`{length, chunk,
+  /// declared}`) instead an empty payload and the `BIG` pattern of
+  /// `length` bytes as a bulk source in pieces of `chunk` (default 1000),
+  /// its length declared unless `declared` is false.
+  static (Uint8List, Stream<List<int>>?, int?) _payloadAndBulk(
+    Map<String, Object?> cmd,
+  ) {
+    final spec = objectArg(cmd, 'bulkPattern');
+    if (spec == null) {
+      return (_payload(cmd), null, null);
+    }
+    final length = intArg(spec, 'length') ?? 0;
+    final chunk = intArg(spec, 'chunk') ?? 1000;
+    final bytes = pattern(length);
+    Stream<List<int>> pieces() async* {
+      for (var at = 0; at < length; at += chunk) {
+        yield bytes.sublist(at, at + chunk < length ? at + chunk : length);
+      }
+    }
+
+    return (
+      Uint8List(0),
+      pieces(),
+      boolArg(spec, 'declared', fallback: true) ? length : null,
+    );
+  }
+
+  /// An `EXTEND` as the `talk.extend` event reports it, in milliseconds.
+  static Map<String, Object?> _extensionJson(
+    Duration? deadline,
+    Duration? renew,
+  ) => {
+    'deadlineMs': deadline?.inMilliseconds,
+    'renewMs': renew?.inMilliseconds,
+  };
 
   /// A command's payload: `payload` (hex), `text` (UTF-8) or
   /// `patternLength` (the `BIG` pattern of that many bytes).
@@ -207,13 +266,21 @@ class Client {
 
   Map<String, Object?> _talkStream(Map<String, Object?> cmd) {
     final t = ctx.handles.get<TalkChannel>(cmd['talk'], 'talk channel');
+    final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
+    String? handle;
     final s = t.streamRequest(
       requiredString(cmd, 'procedure'),
-      _payload(cmd),
+      payload,
+      bulk: bulk,
+      bulkLength: bulkLength,
       timeout: msArg(cmd, 'timeoutMs'),
       window: intArg(cmd, 'window'),
+      onExtend: (deadline, renew) => ctx.out.event('talk.extend', {
+        'stream': handle,
+        ..._extensionJson(deadline, renew),
+      }),
     );
-    final handle = ctx.handles.add('s', s);
+    handle = ctx.handles.add('s', s);
     final digest = boolArg(cmd, 'digest');
     unawaited(() async {
       var index = 0;

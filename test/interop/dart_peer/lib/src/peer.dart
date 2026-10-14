@@ -101,7 +101,7 @@ class _Peer {
       talkOptions: ctx.config.talk,
     );
     for (final s in ctx.config.services) {
-      registerService(node, s, ctx);
+      registerService(node, s, ctx, client);
     }
     _ready = {
       'protocol': peerProtocolVersion,
@@ -135,10 +135,12 @@ class _Peer {
     final endpoints = <String, Object?>{};
     if (listen.contains('tcp')) {
       endpoints['tcp'] = '${await node.listenTcp(loopback, 0)}';
+      ctx.endpoints.add(endpoints['tcp']! as String);
     }
     if (listen.contains('ws')) {
       endpoints['ws'] =
           '${await node.listenWebSocket(loopback, 0, path: path)}';
+      ctx.endpoints.add(endpoints['ws']! as String);
     }
     if (listen.contains('quic') || listen.contains('webtransport')) {
       final provider = NativeQuicProvider();
@@ -156,6 +158,7 @@ class _Peer {
           identityRules: QuicIdentityRules.none,
         );
         _quicListeners.add(l);
+        ctx.endpoints.add('${l.endpoint}');
         return '${l.endpoint}';
       }
 

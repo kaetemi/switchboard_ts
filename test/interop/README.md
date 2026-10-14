@@ -6,7 +6,7 @@ The Dart implementation (`kaetemi/switchboard` and `kaetemi/switchboard_quic`) r
 test/interop/
   dart_peer/          the Dart peer: a package depending on the Dart repositories by path,
                       built with `dart build cli` to an AOT executable; dart_commits.txt pins them
-  ts_peer/            the TS peer (not yet: it needs the mux and Talk ports)
+  ts_peer/            the TS peer over the public Node entry, run as `node ts_peer/main.ts`
   protocol.ts         the protocol's messages as types
   launcher.ts         spawns a peer, waits for READY, speaks JSON lines, logs events
   peers.ts            which peers this run has (the Dart peer from the global setup)
@@ -82,7 +82,7 @@ Version 1. The peer is started as `<peer> [--config <json>] [--log <level>] [--w
 
   Only the transports the peer listens on appear; the QUIC listeners share one self-signed ECDSA P-256 certificate whose SHA-256 is `certificateSha256` (for WebTransport's `serverCertificateHashes`).
 - **Commands**, one JSON object per line on stdin: `{"id": 7, "op": "talk.request", ...}`. Each gets exactly one response line, `{"id": 7, "ok": true, "value": ...}` or `{"id": 7, "ok": false, "error": {...}}`. Commands run concurrently, so responses can come out of order.
-- **Errors** are `{"kind", "type", "message"}` plus `code` and `reason` for kind `status`: `status` (a Switchboard status: an abort, a refused channel, a protocol error), `format` (malformed input to a codec), `argument` (a bad command), `other`. `type` is the implementation's error class and differs between implementations; tests compare `kind` and `code`.
+- **Errors** are `{"kind", "type", "message"}` plus `code`, `reason` and `body` (the status payload's bytes after the code, hex, as received) for kind `status`: `status` (a Switchboard status: an abort, a refused channel, a protocol error), `format` (malformed input to a codec), `argument` (a bad command), `other`. `type` is the implementation's error class and differs between implementations; tests compare `kind` and `code`.
 - **Events** are unsolicited lines `{"event": "channel.closed", "channel": "ch3", "code": 5, "reason": ""}`.
 - **Handles**: every object a command or a service creates gets a string handle that is never reused within the process: `c` connections, `ch` channels, `t` Talk channels, `s` streams.
 - **Lifetime**: the peer exits on `shutdown`, at the end of stdin (so a test runner that dies leaves no orphan), on SIGTERM or SIGINT, and after the watchdog (default 600 s, exit code 3).
@@ -99,7 +99,7 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `path` | `/sb` | the WebSocket and WebTransport path |
 | `mux` | Dart defaults | `maxFrameSize`, `maxChannels`, `shortIdsOnly`, `keepAliveIntervalMs` (0 disables), `keepAliveTimeoutMs`, `goAwayGraceMs`, `announceLimits`, `closeConfirmTimeoutMs`, `identityTimeoutMs`, `requireNamedIdent`, `initialWindow`, `awaitPeerLimits` |
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
-| `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]` |
+| `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
 
 The options apply to the listeners' connections and to the connections the client commands make.
 
@@ -115,7 +115,12 @@ Behaviours both peers implement identically, so a scenario can run against eithe
 | `UPPER` | text | final response with ASCII `a`–`z` upper-cased, other bytes as they are |
 | `SIZE` | anything | final response `"<length> <sha256 lower-case hex>"` of the request payload |
 | `BIG` | `n` | final response of n bytes, byte i = `(i * 31) & 0xFF` |
+| `BIGSTRM` | `n` | final response with the `BIG` pattern of n bytes as a bulk payload of undeclared length, streamed in 1000-byte pieces |
 | `COUNT` | `n` | n stream items `"1"` … `"n"`, then the final response `"done"` |
+| `BIGITEMS` | `n size` | n stream items of the `BIG` pattern of `size` bytes, then the final response `"done"` |
+| `HOW` | anything | final response `"inline <length>"` or `"bulk <length>"`: how the request's payload arrived |
+| `EXTEND` | `ms` | `EXTEND` declaring a deadline of 2 × ms (the wire value adds the responder's buffer, 5000 ms by default), then the final response `"extended"` after ms milliseconds |
+| `STATUS` | a status payload | abort response with that status, decoded as is: its bytes after the code pass byte for byte (`MOVED`, `RELOCATED`) |
 | `ABORT` | `code reason` | abort response with that status |
 | `SLOW` | `ms` | final response `"slow"` after ms milliseconds |
 | `STALL` | | never answers |
@@ -125,11 +130,13 @@ Behaviours both peers implement identically, so a scenario can run against eithe
 | `WHOAMI` | | final response with the peer's verified identity, empty without one |
 | anything else | | abort response `UNIMPLEMENTED`, no reason |
 
-A plain message (no reply expected) to `echo` is reported as `service.message {service, procedure, payload}`.
+A plain message (no reply expected) to `echo` is reported as `service.message {service, procedure, bulk, payload}`.
 
 **`raw`**: each incoming channel becomes a handle: `channel.incoming {channel, connection, service, id, type, instance, shard, host, payload}`, its subframes `channel.data {channel, hex}`, its end `channel.closed {channel, code, reason}`. `channel.send` and `channel.close` drive it.
 
 **`sink`**: accepts the channel and never reads it, so its window fills up.
+
+**`forward`**: a message chain intermediary. Every message of the channel is forwarded (`forwardMessage`) on a Talk channel of its own to the service the spec's `target` names, `{"endpoint", "type", "instance"}` (the endpoint defaults to the peer's first listener, the type to `echo`), dialled through the peer's client node on a pooled connection; every message from there comes back the same way, and a close on either side closes the other with its status. `{"type": "fwd", "behaviour": "forward", "target": {"type": "echo", "instance": 1}}`.
 
 ### Commands
 
@@ -145,8 +152,8 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connect` | `endpoint` | `{connection}`: a new connection, not pooled |
 | `open` | `connection`, `address` or `openHex` | `{channel, id}`: a raw channel, its data and end reported as events |
 | `talk.open` | `connection` or `endpoint`, `address` or `openHex` | `{talk, channel, connection}`; messages the far side sends on it are `talk.message {talk, requestId, procedure, bulk, payload}` |
-| `talk.request` | `talk`, `procedure`, payload, `timeoutMs`, `digest` | the final response: `{procedure, bulk, payload}`, or with `digest` `{procedure, bulk, size, sha256}`; a status error for an abort |
-| `talk.stream` | `talk`, `procedure`, payload, `window`, `timeoutMs`, `digest` | `{stream, requestId}`; then `talk.item {stream, index, ...message}` per item and `talk.done {stream, items, ...message}` or `talk.done {stream, items, error}` |
+| `talk.request` | `talk`, `procedure`, payload, `timeoutMs`, `digest` | the final response: `{procedure, bulk, payload}`, or with `digest` `{procedure, bulk, size, sha256}`; a status error for an abort. Each `EXTEND` of the responder is reported as `talk.extend {talk, requestId, deadlineMs, renewMs}` (null for an absent field) |
+| `talk.stream` | `talk`, `procedure`, payload, `window`, `timeoutMs`, `digest` | `{stream, requestId}`; then `talk.item {stream, index, ...message}` per item and `talk.done {stream, items, ...message}` or `talk.done {stream, items, error}`; `talk.extend {stream, deadlineMs, renewMs}` |
 | `talk.send` | `talk`, `procedure`, payload | `null`: a plain message |
 | `talk.close` | `talk`, `code`, `reason` | `null` |
 | `stream.grant` | `stream`, `items` | `null`: item credit |
@@ -158,7 +165,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connection.close` | `connection` | `null` |
 | `request` | `endpoint`, `service`, `instance`, `procedure`, payload, `timeoutMs`, `digest` | one request on a connection of its own, closed afterwards |
 
-An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes). Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.
+An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes); `talk.request`, `talk.stream` and `talk.send` also take `bulkPattern: {length, chunk, declared}`, an empty payload with the `BIG` pattern of `length` bytes as a bulk source in pieces of `chunk` bytes (default 1000), its length declared unless `declared` is false. Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.
 
 Connections report `connection.goAway {connection, code, reason}` when the far side sends GOAWAY and `connection.closed {connection, code, reason}` when they end; channels report `channel.closed {channel, code, reason}`. An error no command answers (in a service, say) is `peer.error {error}`.
 
