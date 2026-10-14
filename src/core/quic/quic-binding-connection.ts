@@ -6,6 +6,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { bytesEqual, concatBytes, utf8Encode } from '../bytes.ts';
 import type { Credential, PeerIdentity } from '../identity/contract.ts';
+import { secureRandomBytes } from '../identity/secure-random.ts';
+import { BindingConnection } from '../mux/binding-connection.ts';
 import {
   type IdentifyOptions,
   type MuxChannel,
@@ -13,11 +15,20 @@ import {
   type MuxOptions,
   muxOptions,
 } from '../mux/contract.ts';
+import { MuxControlMessage, MuxControlType, MuxFrame } from '../mux/mux-frame.ts';
+import {
+  checkMuxStatus,
+  MuxIdent,
+  maxControlPayloadLength,
+  statusForWire,
+  statusFromWire,
+  truncateStatus,
+  verifyIdent,
+} from '../mux/mux-protocol.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import type { LogLevel } from '../util/logger.ts';
-import { BindingConnection } from './binding-connection-stub.ts';
 import { attempt, delay, isSessionEnd, quicLoggerName, withTimeout } from './binding-util.ts';
 import {
   QuicError,
@@ -31,14 +42,6 @@ import {
   switchboardAlpn,
   webTransportExporterLabel,
 } from './contract.ts';
-import {
-  ControlMessage,
-  ControlType,
-  Ident,
-  isReservedChannelId,
-  secureRandomBytes,
-  verifyIdent,
-} from './control-stub.ts';
 import { quicExporterLength } from './exporter.ts';
 import { QuicHello, quicHelloType } from './hello.ts';
 import {
@@ -67,13 +70,6 @@ import {
   quicRecordHeaderSize,
   statusOfQuicErrorCode,
 } from './records.ts';
-import {
-  checkMuxStatus,
-  maxControlPayloadLength,
-  statusForWire,
-  statusFromWire,
-  truncateStatus,
-} from './wire-status.ts';
 
 /** How a connection of the binding is started; see {@link QuicBindingConnection.start}. */
 export interface QuicBindingStartOptions {
@@ -220,7 +216,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   readonly #mutualIdentification = new Deferred<void>();
   #identityEvent: Deferred<void> | undefined;
   #verifying = false;
-  #heldControl: ControlMessage[] = [];
+  #heldControl: MuxControlMessage[] = [];
 
   private constructor(
     session: QuicSession,
@@ -755,7 +751,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   // The control stream -------------------------------------------------------
 
   /** Queues [message] on the control stream; written once it exists. */
-  #sendControl(message: ControlMessage): void {
+  #sendControl(message: MuxControlMessage): void {
     if (this.#closing) {
       return;
     }
@@ -888,7 +884,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     if (body.length === 0) {
       throw new ProtocolError('empty control record');
     }
-    const message = ControlMessage.decode(body);
+    const message = MuxControlMessage.decode(body);
     if (this.#verifying) {
       // Handled once the IDENT being verified has taken effect.
       if (this.#heldControl.length >= this.quicOptions.maxHeldControlMessages) {
@@ -906,7 +902,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     this.#handleControl(message);
   }
 
-  #handleControl(message: ControlMessage): void {
+  #handleControl(message: MuxControlMessage): void {
     if (this.#peerHello === undefined) {
       if (message.type !== quicHelloType) {
         throw new ProtocolError(`control message ${message.type} before HELLO`);
@@ -917,24 +913,24 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     switch (message.type) {
       case quicHelloType:
         throw new ProtocolError('second HELLO');
-      case ControlType.ping:
-        this.#sendControl(ControlMessage.pong(message.payload));
+      case MuxControlType.ping:
+        this.#sendControl(MuxControlMessage.pong(message.payload));
         return;
-      case ControlType.pong:
+      case MuxControlType.pong:
         this.#completePing(message.payload);
         return;
-      case ControlType.goAway:
+      case MuxControlType.goAway:
         this.#onPeerGoAway(statusFromWire(message.goAwayStatus));
         return;
-      case ControlType.limits:
+      case MuxControlType.limits:
         throw new ProtocolError('LIMITS over the QUIC binding');
-      case ControlType.nonce:
+      case MuxControlType.nonce:
         this.#onPeerNonce(message.payload);
         return;
-      case ControlType.ident:
+      case MuxControlType.ident:
         this.#onIdent(message.payload);
         return;
-      case ControlType.credit:
+      case MuxControlType.credit:
         throw new ProtocolError('CREDIT over the QUIC binding');
       default:
         this.#log('debug', `${this}: ignoring control type ${message.type}`);
@@ -1084,7 +1080,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       this.#onControlStream(stream, reader);
       return;
     }
-    if (isReservedChannelId(id)) {
+    if (MuxFrame.isReservedId(id)) {
       throw new ProtocolError(`OPEN of the reserved channel ${id}`);
     }
     // The peer allocates odd ids if this side is the initiator.
@@ -1367,7 +1363,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    */
   #allocateId(): number {
     let id = this.#nextId;
-    while (isReservedChannelId(id)) {
+    while (MuxFrame.isReservedId(id)) {
       id += 2;
     }
     if (id > quicMaxChannelId) {
@@ -1407,7 +1403,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   // Ping, GOAWAY, close -------------------------------------------------------
 
   ping(payload?: Uint8Array, options?: { signal?: AbortSignal }): Promise<number> {
-    const message = ControlMessage.ping(payload ?? this.#nextPingPayload());
+    const message = MuxControlMessage.ping(payload ?? this.#nextPingPayload());
     const done = new Deferred<number>();
     const signal = options?.signal;
     if (this.#closing) {
@@ -1481,7 +1477,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       this.#goAwaySent = true;
       this.#ownGoAway = status;
       this.#log('debug', `${this}: sending GOAWAY ${status}`);
-      this.#sendControl(ControlMessage.goAway(statusForWire(status)));
+      this.#sendControl(MuxControlMessage.goAway(statusForWire(status)));
     }
     return this.#goAwayWait();
   }
@@ -1790,7 +1786,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     }
     this.#probing = true;
     this.#armKeepAlive(this.options.keepAliveTimeout);
-    this.#sendControl(ControlMessage.ping(this.#nextPingPayload()));
+    this.#sendControl(MuxControlMessage.ping(this.#nextPingPayload()));
   }
 
   // Identity ------------------------------------------------------------------
@@ -1835,11 +1831,11 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     const receiverBytes = receiver === undefined ? new Uint8Array(0) : utf8Encode(receiver);
     const credentialBytes = credential.encode();
     // Checks the lengths before anything is sent.
-    new Ident({
+    new MuxIdent({
       credential: credentialBytes,
       intent,
       receiver: receiverBytes,
-      proof: holder === undefined ? undefined : new Uint8Array(Ident.proofLength),
+      proof: holder === undefined ? undefined : new Uint8Array(MuxIdent.proofLength),
     }).encode();
     const identifying = this.#identify(
       credential,
@@ -1935,7 +1931,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     let proof: Uint8Array | undefined;
     if (holder !== undefined) {
       const key = options.holderKey as NonNullable<IdentifyOptions['holderKey']>;
-      const message = Ident.proofMessage(
+      const message = MuxIdent.proofMessage(
         localNonce,
         peerNonce,
         intent,
@@ -1962,8 +1958,8 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
         `${bound ? ', exporter-bound' : ''}`,
     );
     this.#sendControl(
-      ControlMessage.ident(
-        new Ident({ credential: credentialBytes, intent, receiver: receiverBytes, proof }),
+      MuxControlMessage.ident(
+        new MuxIdent({ credential: credentialBytes, intent, receiver: receiverBytes, proof }),
       ),
     );
     try {
@@ -2006,14 +2002,14 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   }
 
   #sendNonce(): Uint8Array {
-    const nonce = secureRandomBytes(Ident.nonceLength);
+    const nonce = secureRandomBytes(MuxIdent.nonceLength);
     this.#localNonce = nonce;
-    this.#sendControl(ControlMessage.nonce(nonce));
+    this.#sendControl(MuxControlMessage.nonce(nonce));
     return nonce;
   }
 
   #onPeerNonce(payload: Uint8Array): void {
-    if (payload.length !== Ident.nonceLength) {
+    if (payload.length !== MuxIdent.nonceLength) {
       throw new ProtocolError(`NONCE of ${payload.length} bytes`);
     }
     if (this.#peerNonce !== undefined) {
@@ -2043,7 +2039,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     if (localNonce === undefined || peerNonce === undefined) {
       throw new ProtocolError('IDENT before both nonces were exchanged');
     }
-    const ident = Ident.decode(payload);
+    const ident = MuxIdent.decode(payload);
     const verifier = this.options.identityVerifier;
     const bound = this.exporterBound;
     if (!bound && this.quicOptions.identity.requireExporterBinding) {
@@ -2063,7 +2059,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
 
   async #verifyIdent(
     verifier: NonNullable<MuxOptions['identityVerifier']>,
-    ident: Ident,
+    ident: MuxIdent,
     senderNonce: Uint8Array,
     receiverNonce: Uint8Array,
     bound: boolean,
@@ -2131,7 +2127,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     this.#peerIdentified.resolve(identity);
     this.#signalIdentity();
     while (this.#heldControl.length > 0 && !this.#verifying && !this.#closing) {
-      const message = this.#heldControl.shift() as ControlMessage;
+      const message = this.#heldControl.shift() as MuxControlMessage;
       this.#guarded(() => this.#handleControl(message));
     }
   }

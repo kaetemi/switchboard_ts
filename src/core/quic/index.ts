@@ -3,9 +3,9 @@
 // (`QuicBindingConnection`, `QuicBindingChannel`, the control stream,
 // `QuicIdentityRules`), `connectQuic` and `listenQuic`. The providers
 // live in `src/node/quic` and `src/web/quic`. The provider contract is the
-// lead's, in `contract.ts`. `binding-connection-stub.ts`, `control-stub.ts`
-// and `wire-status.ts` stand in for core pieces still to land and stay
-// unexported, as does `binding-util.ts`.
+// lead's, in `contract.ts`. The binding extends the core's
+// `BindingConnection` and reuses its control codecs and `verifyIdent`
+// (`src/core/mux`); `binding-util.ts` stays unexported.
 export * from './contract.ts';
 export * from './exporter.ts';
 export * from './hello.ts';

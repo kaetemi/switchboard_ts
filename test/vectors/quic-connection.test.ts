@@ -7,8 +7,8 @@
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection } from '../../src/core/mux/contract.ts';
+import { MuxControlMessage, MuxControlType } from '../../src/core/mux/mux-frame.ts';
 import type { QuicStream } from '../../src/core/quic/contract.ts';
-import { ControlMessage, ControlType } from '../../src/core/quic/control-stub.ts';
 import { quicHelloType } from '../../src/core/quic/hello.ts';
 import { StatusCode } from '../../src/core/status.ts';
 import { bindingAndRaw, expectStatus, within } from '../unit/quic/harness.ts';
@@ -144,10 +144,10 @@ describe('control stream', () => {
     test('an unknown control type is ignored', async () => {
       const [connection, raw] = await bindingAndRaw();
       expect((await raw.nextControl()).type).toBe(quicHelloType);
-      await raw.sendControl(new ControlMessage(0x7e, new Uint8Array(3)));
-      await raw.sendControl(ControlMessage.ping(hexBytes('DE AD')));
+      await raw.sendControl(new MuxControlMessage(0x7e, new Uint8Array(3)));
+      await raw.sendControl(MuxControlMessage.ping(hexBytes('DE AD')));
       const pong = await raw.nextControl();
-      expect(pong.type).toBe(ControlType.pong);
+      expect(pong.type).toBe(MuxControlType.pong);
       expect(hexString(pong.payload)).toBe('DE AD');
       expect(connection.isOpen).toBe(true);
     });

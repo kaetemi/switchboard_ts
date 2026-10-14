@@ -16,9 +16,10 @@ import type {
 } from '../../../src/core/identity/contract.ts';
 import { CredentialKind, SignatureKind } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
+import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
+import { MuxIdent } from '../../../src/core/mux/mux-protocol.ts';
 import { Name } from '../../../src/core/name.ts';
 import { QuicError, type QuicStream } from '../../../src/core/quic/contract.ts';
-import { ControlMessage, ControlType, Ident } from '../../../src/core/quic/control-stub.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
 import { QuicBindingConnection } from '../../../src/core/quic/quic-binding-connection.ts';
 import { QuicIdentityRules } from '../../../src/core/quic/quic-identity-rules.ts';
@@ -166,8 +167,8 @@ describe('review regressions', () => {
       rawEnd: { streamWindow: 32 },
       quicOptions: { controlOutputMark: 128 },
     });
-    await raw.sendControl(ControlMessage.ping(new Uint8Array(125)));
-    await raw.sendControl(ControlMessage.ping(new Uint8Array(125)));
+    await raw.sendControl(MuxControlMessage.ping(new Uint8Array(125)));
+    await raw.sendControl(MuxControlMessage.ping(new Uint8Array(125)));
     await until(() => connection.heldOutputBytes > 128);
     (raw.control as QuicStream).reset(StatusCode.cancelled);
     expectStatus(await within(connection.done), StatusCode.protocolError);
@@ -312,9 +313,9 @@ describe('review regressions', () => {
       );
       if (sentGoAway) {
         void connection.goAway();
-        await raw.nextControlOf(ControlType.goAway);
+        await raw.nextControlOf(MuxControlType.goAway);
       } else {
-        await raw.sendControl(ControlMessage.goAway(Status.of(StatusCode.goingAway)));
+        await raw.sendControl(MuxControlMessage.goAway(Status.of(StatusCode.goingAway)));
         await connection.peerGoAwayStatus;
       }
       await parent.write(encodeCloseRecord(Status.ok));
@@ -385,7 +386,7 @@ describe('review regressions', () => {
 
   test('second HELLO is a protocol error', async () => {
     const [connection, raw] = await bindingAndRaw();
-    await raw.sendControl(new ControlMessage(quicHelloType, new QuicHello().encode()));
+    await raw.sendControl(new MuxControlMessage(quicHelloType, new QuicHello().encode()));
     expectStatus(await within(connection.done), StatusCode.protocolError);
     expect((await raw.end).code).toBe(StatusCode.protocolError);
   });
@@ -435,9 +436,9 @@ describe('review regressions', () => {
     const [connection, raw] = await bindingAndRaw({
       quicOptions: { identity: QuicIdentityRules.listener },
     });
-    await raw.sendControl(ControlMessage.nonce(pattern(32)));
-    await raw.nextControlOf(ControlType.nonce);
-    await raw.sendControl(ControlMessage.ident(new Ident({ credential: new Uint8Array(0) })));
+    await raw.sendControl(MuxControlMessage.nonce(pattern(32)));
+    await raw.nextControlOf(MuxControlType.nonce);
+    await raw.sendControl(MuxControlMessage.ident(new MuxIdent({ credential: new Uint8Array(0) })));
     expectStatus(await within(connection.done), StatusCode.unauthenticated);
   });
 

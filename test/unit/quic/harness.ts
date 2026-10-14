@@ -4,9 +4,9 @@
 import { expect, onTestFinished } from 'vitest';
 import { bytesEqual } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
+import { MuxControlMessage } from '../../../src/core/mux/mux-frame.ts';
 import type { QuicSessionEnd, QuicStream } from '../../../src/core/quic/contract.ts';
 import { QuicStreamReset } from '../../../src/core/quic/contract.ts';
-import { ControlMessage } from '../../../src/core/quic/control-stub.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
 import { QuicBindingConnection } from '../../../src/core/quic/quic-binding-connection.ts';
 import type { QuicBindingOptions } from '../../../src/core/quic/quic-options.ts';
@@ -316,7 +316,7 @@ export class RawPeer {
     expect(decodeOpenBody((open as QuicRecord).body).id).toBe(0);
     const first = await within(reader.next(1 << 20));
     expect(first?.command).toBe(QuicRecordCommand.data);
-    const message = ControlMessage.decode((first as QuicRecord).body);
+    const message = MuxControlMessage.decode((first as QuicRecord).body);
     expect(message.type).toBe(quicHelloType);
     if (options.sendHello ?? true) {
       await stream.write(encodeDataRecord((options.hello ?? new QuicHello()).encodeMessage()));
@@ -327,19 +327,19 @@ export class RawPeer {
   }
 
   /** Writes a control message on the control stream. */
-  sendControl(message: ControlMessage): Promise<void> {
+  sendControl(message: MuxControlMessage): Promise<void> {
     return (this.control as QuicStream).write(encodeDataRecord(message.encode()));
   }
 
   /** The next control message the binding wrote. */
-  async nextControl(): Promise<ControlMessage> {
+  async nextControl(): Promise<MuxControlMessage> {
     const record = await within((this.controlReader as RecordReader).next(1 << 20));
     expect(record?.command).toBe(QuicRecordCommand.data);
-    return ControlMessage.decode((record as QuicRecord).body);
+    return MuxControlMessage.decode((record as QuicRecord).body);
   }
 
   /** The next control message of [type], skipping others. */
-  async nextControlOf(type: number): Promise<ControlMessage> {
+  async nextControlOf(type: number): Promise<MuxControlMessage> {
     for (;;) {
       const message = await this.nextControl();
       if (message.type === type) {

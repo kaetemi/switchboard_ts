@@ -9,14 +9,10 @@ import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
 import { hexBytes, readU48, writeU32, writeU48 } from '../../../src/core/bytes.ts';
 import type { HolderKey } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
+import { MuxIdent, verifyIdent } from '../../../src/core/mux/mux-protocol.ts';
 import { MovedStatus } from '../../../src/core/naming/naming-protocol.ts';
 import { QuicStreamReset, rawQuicExporterLabel } from '../../../src/core/quic/contract.ts';
-import {
-  ControlMessage,
-  ControlType,
-  Ident,
-  verifyIdent,
-} from '../../../src/core/quic/control-stub.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
 import {
   quicBulkPriority,
@@ -168,8 +164,8 @@ describe('channel ids', () => {
     await settle(50);
     expect(seen).toHaveLength(0);
     expect(connection.isOpen).toBe(true);
-    await raw.sendControl(ControlMessage.ping(bytes('alive')));
-    const pong = await raw.nextControlOf(ControlType.pong);
+    await raw.sendControl(MuxControlMessage.ping(bytes('alive')));
+    const pong = await raw.nextControlOf(MuxControlType.pong);
     expect(text(pong.payload)).toBe('alive');
   });
 });
@@ -624,7 +620,10 @@ describe('GOAWAY and the end of the connection', () => {
     await raw.openRaw(encodeOpenRecord(2, []));
     await until(() => atBinding.length === 1);
     void connection.goAway();
-    expectStatus((await raw.nextControlOf(ControlType.goAway)).goAwayStatus, StatusCode.goingAway);
+    expectStatus(
+      (await raw.nextControlOf(MuxControlType.goAway)).goAwayStatus,
+      StatusCode.goingAway,
+    );
     const late = await raw.openRaw(encodeOpenRecord(4, []));
     expect(await within(late.stopped)).toBe(StatusCode.goingAway);
     const [records] = await RawPeer.drain(late);
@@ -644,7 +643,7 @@ describe('GOAWAY and the end of the connection', () => {
     await raw.openRaw(encodeOpenRecord(4, []));
     await until(() => atBinding.length === 2);
     void connection.goAway();
-    await raw.nextControlOf(ControlType.goAway);
+    await raw.nextControlOf(MuxControlType.goAway);
     const bulkPending = new Deferred<void>();
     connection.retainForDrain(2, bulkPending.promise);
     onTestFinished(() => {
@@ -797,7 +796,7 @@ describe('keep-alive and the control stream', () => {
     let written = 0;
     const pinging = (async () => {
       for (let i = 0; i < 2000; i++) {
-        await raw.sendControl(ControlMessage.ping(new Uint8Array(100)));
+        await raw.sendControl(MuxControlMessage.ping(new Uint8Array(100)));
         written++;
       }
     })();
@@ -812,7 +811,7 @@ describe('keep-alive and the control stream', () => {
     void (async () => {
       while (pongs < 2000) {
         const message = await raw.nextControl();
-        if (message.type === ControlType.pong) {
+        if (message.type === MuxControlType.pong) {
           pongs++;
         }
       }
@@ -890,11 +889,11 @@ describe('resource limits', () => {
       options: { ...fast, identityVerifier: held },
       quicOptions: { maxHeldControlMessages: 3 },
     });
-    await raw.sendControl(ControlMessage.nonce(nonceOf(1)));
-    await raw.nextControlOf(ControlType.nonce);
-    await raw.sendControl(ControlMessage.ident(new Ident({ credential: new Uint8Array(1) })));
+    await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
+    await raw.nextControlOf(MuxControlType.nonce);
+    await raw.sendControl(MuxControlMessage.ident(new MuxIdent({ credential: new Uint8Array(1) })));
     for (let i = 0; i < 4; i++) {
-      await raw.sendControl(ControlMessage.ping(new Uint8Array(1)));
+      await raw.sendControl(MuxControlMessage.ping(new Uint8Array(1)));
     }
     expectStatus(await within(connection.done), StatusCode.resourceExhausted);
   });
@@ -929,14 +928,14 @@ describe('identity', () => {
   async function identOf(
     connection: QuicBindingConnection,
     raw: RawPeer,
-  ): Promise<[Ident, Uint8Array, Uint8Array]> {
+  ): Promise<[MuxIdent, Uint8Array, Uint8Array]> {
     const identifying = connection.identify(credentialOf('npc-7'), { holderKey: holder });
-    const nonce = await raw.nextControlOf(ControlType.nonce);
+    const nonce = await raw.nextControlOf(MuxControlType.nonce);
     const ours = new Uint8Array(32).fill(0x42);
-    await raw.sendControl(ControlMessage.nonce(ours));
-    const ident = Ident.decode((await raw.nextControlOf(ControlType.ident)).payload);
-    const ping = await raw.nextControlOf(ControlType.ping);
-    await raw.sendControl(ControlMessage.pong(ping.payload));
+    await raw.sendControl(MuxControlMessage.nonce(ours));
+    const ident = MuxIdent.decode((await raw.nextControlOf(MuxControlType.ident)).payload);
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
     await within(identifying);
     return [ident, nonce.payload, ours];
   }
@@ -1015,8 +1014,8 @@ describe('identity', () => {
     });
     await until(() => sender.peerHello !== undefined);
     const identifying = sender.identify(credentialOf('npc-7'), { holderKey: holder });
-    await rawReceiver.nextControlOf(ControlType.nonce);
-    await rawReceiver.sendControl(ControlMessage.nonce(nonceOf(9)));
+    await rawReceiver.nextControlOf(MuxControlType.nonce);
+    await rawReceiver.sendControl(MuxControlMessage.nonce(nonceOf(9)));
     await expectCode(identifying, StatusCode.unauthenticated);
     // Receiving: one is refused as failing verification.
     const [receiver, raw] = await bindingAndRaw({
@@ -1024,15 +1023,15 @@ describe('identity', () => {
       quicOptions: { identity: rules },
       rawHello: new QuicHello(),
     });
-    await raw.sendControl(ControlMessage.nonce(nonceOf(1)));
-    const theirs = await raw.nextControlOf(ControlType.nonce);
+    await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
+    const theirs = await raw.nextControlOf(MuxControlType.nonce);
     const ours = nonceOf(1);
     const credential = credentialOf('npc-7');
     await raw.sendControl(
-      ControlMessage.ident(
-        new Ident({
+      MuxControlMessage.ident(
+        new MuxIdent({
           credential: credential.encode(),
-          proof: await holder.sign(Ident.proofMessage(ours, theirs.payload, empty, empty)),
+          proof: await holder.sign(MuxIdent.proofMessage(ours, theirs.payload, empty, empty)),
         }),
       ),
     );
@@ -1065,12 +1064,12 @@ describe('identity', () => {
       holderKey: holder,
       receiver: 'server-1',
     });
-    const theirs = await raw.nextControlOf(ControlType.nonce);
+    const theirs = await raw.nextControlOf(MuxControlType.nonce);
     const ours = nonceOf(3);
-    await raw.sendControl(ControlMessage.nonce(ours));
-    await raw.nextControlOf(ControlType.ident);
-    const ping = await raw.nextControlOf(ControlType.ping);
-    await raw.sendControl(ControlMessage.pong(ping.payload));
+    await raw.sendControl(MuxControlMessage.nonce(ours));
+    await raw.nextControlOf(MuxControlType.ident);
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
     await settle(50);
     // Identified, but the acceptor has not: nothing opened but the control
     // stream.
@@ -1078,12 +1077,12 @@ describe('identity', () => {
     expect(early.isWritable).toBe(false);
     const exporter = await exporterOf(raw.session);
     await raw.sendControl(
-      ControlMessage.ident(
-        new Ident({
+      MuxControlMessage.ident(
+        new MuxIdent({
           credential: credentialOf('server-1').encode(),
           receiver: bytes('npc-7'),
           proof: await holder.sign(
-            Ident.proofMessage(ours, theirs.payload, empty, bytes('npc-7'), exporter),
+            MuxIdent.proofMessage(ours, theirs.payload, empty, bytes('npc-7'), exporter),
           ),
         }),
       ),
@@ -1119,12 +1118,12 @@ describe('identity', () => {
       rawHello: new QuicHello({ exporter: true }),
     });
     await raw.nextControl();
-    await raw.sendControl(ControlMessage.nonce(nonceOf(1)));
-    await raw.nextControlOf(ControlType.nonce);
+    await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
+    await raw.nextControlOf(MuxControlType.nonce);
     const bearer = fakeCredential('bearer');
-    await raw.sendControl(ControlMessage.ident(new Ident({ credential: bearer.encode() })));
-    await raw.sendControl(ControlMessage.ping(bytes('p')));
-    await raw.nextControlOf(ControlType.pong);
+    await raw.sendControl(MuxControlMessage.ident(new MuxIdent({ credential: bearer.encode() })));
+    await raw.sendControl(MuxControlMessage.ping(bytes('p')));
+    await raw.nextControlOf(MuxControlType.pong);
     expect(connection.exporterBound).toBe(true);
     expect(connection.peerIdentity?.identity).toBe('bearer');
     expect(connection.peerIdentityBound).toBe(false);
@@ -1148,27 +1147,27 @@ describe('identity', () => {
       rawHello: new QuicHello({ exporter: true }),
     });
     await raw.nextControl();
-    await raw.sendControl(ControlMessage.nonce(nonceOf(1)));
-    const theirs = await raw.nextControlOf(ControlType.nonce);
+    await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
+    const theirs = await raw.nextControlOf(MuxControlType.nonce);
     const ours = nonceOf(1);
     const credential = credentialOf('npc-7');
     const exporter = await exporterOf(raw.session);
     await raw.sendControl(
-      ControlMessage.ident(
-        new Ident({
+      MuxControlMessage.ident(
+        new MuxIdent({
           credential: credential.encode(),
           proof: await holder.sign(
-            Ident.proofMessage(ours, theirs.payload, empty, empty, exporter),
+            MuxIdent.proofMessage(ours, theirs.payload, empty, empty, exporter),
           ),
         }),
       ),
     );
-    await raw.sendControl(ControlMessage.ping(bytes('after')));
+    await raw.sendControl(MuxControlMessage.ping(bytes('after')));
     await until(() => held.calls === 1);
     await settle(50);
     expect(connection.peerIdentity).toBeUndefined();
     held.result.resolve(credential);
-    const pong = await raw.nextControlOf(ControlType.pong);
+    const pong = await raw.nextControlOf(MuxControlType.pong);
     expect(text(pong.payload)).toBe('after');
     expect(connection.peerIdentity?.identity).toBe('npc-7');
     expect(connection.peerIdentityBound).toBe(true);
@@ -1180,16 +1179,18 @@ describe('identity', () => {
       await raw.nextControl();
       switch (mistake) {
         case 'early ident':
-          await raw.sendControl(ControlMessage.ident(new Ident({ credential: new Uint8Array(1) })));
+          await raw.sendControl(
+            MuxControlMessage.ident(new MuxIdent({ credential: new Uint8Array(1) })),
+          );
           break;
         case 'second nonce':
-          await raw.sendControl(ControlMessage.nonce(nonceOf(1)));
-          await raw.sendControl(ControlMessage.nonce(nonceOf(2)));
+          await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
+          await raw.sendControl(MuxControlMessage.nonce(nonceOf(2)));
           break;
         default: {
           connection.identify(credentialOf('npc-7'), { holderKey: holder }).catch(() => {});
-          const theirs = await raw.nextControlOf(ControlType.nonce);
-          await raw.sendControl(ControlMessage.nonce(theirs.payload));
+          const theirs = await raw.nextControlOf(MuxControlType.nonce);
+          await raw.sendControl(MuxControlMessage.nonce(theirs.payload));
         }
       }
       expect((await within(connection.done)).code, mistake).toBe(StatusCode.protocolError);

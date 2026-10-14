@@ -12,6 +12,7 @@ import type {
   MuxOptions,
   MuxPriority,
 } from '../mux/contract.ts';
+import { checkMuxStatus } from '../mux/mux-protocol.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
@@ -37,7 +38,6 @@ import {
   statusOfQuicErrorCode,
   writeQuicRecordHeader,
 } from './records.ts';
-import { checkMuxStatus } from './wire-status.ts';
 
 /** The priority class of the control stream; see `QuicStream.priority`. */
 export const quicControlPriority = 2;
