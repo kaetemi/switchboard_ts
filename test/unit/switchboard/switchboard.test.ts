@@ -13,13 +13,15 @@ import {
 } from '../../../src/core/address/index.ts';
 import { utf8Decode } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
+import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
 import { Name } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
-import type { IncomingChannel } from '../../../src/core/switchboard/contract.ts';
+import type { ChannelHandler, IncomingChannel } from '../../../src/core/switchboard/contract.ts';
 import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
+import { TalkBulkOpen, TalkChannel } from '../../../src/core/talk/index.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import {
@@ -30,6 +32,7 @@ import {
   first,
   node,
   onCleanup,
+  overFrameMux,
   pump,
   rawPeer,
   rejectsWith,
@@ -39,7 +42,14 @@ import {
   tagOf,
   until,
 } from '../../support/node/harness.ts';
-import type { ToyMuxConnection } from '../../support/node/toy-mux.ts';
+import { ToyMuxConnection } from '../../support/node/toy-mux.ts';
+
+// Ports of the Dart `switchboard_test.dart` over `mem://` listeners (the
+// TCP and WebSocket listeners belong to the Node entry point and its
+// integration tests), over the toy mux and, from `over-frame-mux/`, over
+// the frame mux. The bulk channel cases whose payloads go bulk by the
+// channel's window (over the toy mux they go inline) run over the frame
+// mux only.
 
 /** Makes the server side send GOAWAY and waits until [connection] has seen it. */
 async function peerGoesAway(connection: MuxConnection, serverSide: MuxConnection): Promise<void> {
@@ -309,20 +319,35 @@ describe('dispatch', () => {
     expect(codeOf(await channel.done)).toBe('ok');
   });
 
-  test('talk() fails until the Talk layer lands', async () => {
-    const { server, client, uri } = await setUp();
-    const failed = new Deferred<unknown>();
-    server.registerService(svc, (incoming) => {
-      try {
-        incoming.talk();
-      } catch (e) {
-        failed.resolve(e);
-      }
-      void incoming.channel.close();
+  test('talk() wraps once with the default talk options', async () => {
+    const { client } = await setUp();
+    const quick = node({ talkOptions: { replyTimeout: 30 } });
+    const quickUri = await quick.listenMemory();
+    const checks: unknown[] = [];
+    quick.registerService(svc, (incoming) => {
+      // The package's TalkChannel (the class) types what a handler gets.
+      const talk: TalkChannel = incoming.talk();
+      checks.push(incoming.talk() === talk, talk.options.replyTimeout, talk.raw);
+      void talk.serve((message) => {
+        if (message.procedureName === 'ECHO') {
+          void message.reply(message.payload);
+        }
+        // Anything else is left unanswered: the responder timeout of the
+        // default options answers it.
+      });
     });
-    await (await client.openChannelAt(uri, svcAddress())).done;
-    const error = (await failed.promise) as SwitchboardError;
-    expect(error.is(StatusCode.unimplemented)).toBe(true);
+    const talk = await client.openTalkAt(quickUri, svcAddress());
+    expect(utf8Decode((await talk.request('ECHO', 'x')).payload)).toBe('x');
+    await rejectsWith(talk.request('IGNORE'), StatusCode.deadlineExceeded);
+    expect(checks.slice(0, 2)).toEqual([true, 30]);
+    expect(checks[2]).toBeDefined();
+    await talk.close();
+  });
+
+  test('the nodes of this run use its connection binding', async () => {
+    const { client, uri } = await setUp();
+    const connection = await client.connect(uri);
+    expect(connection).toBeInstanceOf(overFrameMux() ? FrameMuxConnection : ToyMuxConnection);
   });
 });
 
@@ -455,6 +480,42 @@ describe('listener policy', () => {
 });
 
 describe('bulk channels', () => {
+  /** A Talk service answering every request with its payload's length and whether it was bulk, after [delay] ms. */
+  function sizes(delay?: number): ChannelHandler {
+    return async (incoming) => {
+      if (delay !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      void incoming.talk().serve((m) => void m.reply(`${m.payload.length} ${m.isBulk}`));
+    };
+  }
+
+  if (overFrameMux()) {
+    test('are routed to their parent before the listener policy', async () => {
+      const server = node();
+      const client = node();
+      server.registerService(svc, sizes());
+      const seen: ChannelAddress[] = [];
+      const uri = await server.listenMemory({
+        policy: (address, connection) => {
+          seen.push(address);
+          return (
+            ChannelPolicies.denyReserved(address, connection) &&
+            ChannelPolicies.allowTypes([svc])(address, connection)
+          );
+        },
+      });
+      const talk = await client.openTalkAt(uri, svcAddress());
+      const answer = await talk.request('PUT', new Uint8Array(200_000));
+      expect(utf8Decode(answer.payload)).toBe('200000 true');
+      const streamed = await talk.request('PUT', undefined, { bulk: [new Uint8Array(5)] });
+      expect(utf8Decode(streamed.payload)).toBe('5 true');
+      // The policy saw the parent only.
+      expect(seen).toHaveLength(1);
+      expect(seen[0]?.type?.equals(svc)).toBe(true);
+    });
+  }
+
   test('naming no open channel are refused FAILED_PRECONDITION', async () => {
     const server = node();
     const seen: ChannelAddress[] = [];
@@ -466,18 +527,73 @@ describe('bulk channels', () => {
     });
     server.catchAll = tagged('catch-all');
     const connection = await node().connect(uri);
-    const bulkHeader = new Uint8Array(10);
-    bulkHeader[0] = 4242 & 0xff;
-    bulkHeader[1] = 4242 >> 8;
-    bulkHeader[6] = 1;
-    const stray = connection.open(
-      new ChannelAddress({ type: '_bulk', payload: bulkHeader }).encode(),
-    );
+    const stray = connection.open(new TalkBulkOpen(4242, 1).encode());
     expect(codeOf(await stray.done)).toBe('failedPrecondition');
-    // No policy saw it, and the connection is fine.
+    // Malformed: a protocol error for that channel only.
+    const malformed = connection.open(
+      new ChannelAddress({ type: '_bulk', payload: new Uint8Array(3) }).encode(),
+    );
+    expect(codeOf(await malformed.done)).toBe('protocolError');
+    // No policy saw them, and the connection is fine.
     expect(seen).toHaveLength(0);
     expect(connection.isOpen).toBe(true);
   });
+
+  test('for a channel read without Talk are refused FAILED_PRECONDITION', async () => {
+    const server = node();
+    const client = node();
+    const read = new Deferred<void>();
+    server.registerService(svc, (incoming) => {
+      void (async () => {
+        for await (const _ of incoming.channel.readable) {
+          read.resolve();
+        }
+      })();
+    });
+    const uri = await server.listenMemory();
+    const parent = await client.openChannelAt(uri, svcAddress());
+    await parent.send(new Uint8Array(1));
+    await read.promise;
+    const bulk = parent.openAfter(new TalkBulkOpen(parent.id, 1).encode());
+    expect(codeOf(await bulk.done)).toBe('failedPrecondition');
+  });
+
+  test('wait for a Talk layer created after the channel arrived', async () => {
+    const server = node();
+    const client = node();
+    server.registerService(svc, sizes(50));
+    const uri = await server.listenMemory();
+    const talk = await client.openTalkAt(uri, svcAddress());
+    const answer = await talk.request('PUT', undefined, {
+      bulk: [new Uint8Array(70_000)],
+      bulkLength: 70_000,
+    });
+    expect(utf8Decode(answer.payload)).toBe('70000 true');
+  });
+
+  if (overFrameMux()) {
+    test('flow both ways over a symmetric connection', async () => {
+      const server = node();
+      const client = node();
+      // The server pushes a channel to the client, which answers with a
+      // bulk response.
+      client.registerService(svc, (incoming) => {
+        void incoming.talk().serve((m) => void m.reply(new Uint8Array(100_000)));
+      });
+      const uri = await server.listenMemory();
+      const pushed = new Deferred<MuxConnection>();
+      server.registerService('hello', (incoming) => {
+        pushed.resolve(incoming.connection);
+        void incoming.channel.close();
+      });
+      await (await client.openChannelAt(uri, new ChannelAddress({ type: 'hello' }))).done;
+      const back = new TalkChannel(server.openChannelOn(await pushed.promise, svcAddress()));
+      const answer = await back.request('GET');
+      expect(answer.isBulk).toBe(true);
+      expect(answer.payload).toHaveLength(100_000);
+      await back.close();
+    });
+  }
 });
 
 describe('symmetric dispatch', () => {
@@ -486,35 +602,39 @@ describe('symmetric dispatch', () => {
     const uri = await server.listenMemory();
     const client = node({ defaultPayload: 'client' });
     const pushed: string[] = [];
-    const arrived = new Deferred<void>();
+    const payloads: string[] = [];
     client.registerService('push', async (incoming) => {
-      pushed.push(utf8Decode(incoming.address.payload));
-      for await (const frame of incoming.channel.readable) {
-        pushed.push(utf8Decode(frame));
+      payloads.push(utf8Decode(incoming.address.payload));
+      for await (const message of incoming.talk().messages) {
+        pushed.push(`${message.procedureName} ${message.text()}`);
+        void message.reply();
       }
-      arrived.resolve();
     });
     const accepted = collect(server);
     server.registerService('hello', async (incoming) => {
-      // An accepted connection carries the default payload.
       const back = server.openChannelOn(incoming.connection, new ChannelAddress({ type: 'push' }));
-      await back.send(incoming.address.payload);
-      await back.close();
+      const talk = new TalkChannel(back);
+      await talk.request('NEWS', incoming.address.payload);
+      await talk.close();
       await incoming.reject(Status.ok);
     });
     const hello = await client.openChannelAt(uri, new ChannelAddress({ type: 'hello' }));
-    await arrived.promise;
-    expect(pushed).toEqual(['', 'client']);
+    await until(() => pushed.length === 1);
+    expect(pushed).toEqual(['NEWS client']);
     expect(codeOf(await hello.done)).toBe('ok');
     // The server also reaches the client service through `connections`.
     expect(accepted).toHaveLength(1);
-    const back = server.openChannelOn(
-      accepted[0] as MuxConnection,
-      new ChannelAddress({ type: 'push', payload: 'explicit' }),
+    const talk = new TalkChannel(
+      server.openChannelOn(
+        accepted[0] as MuxConnection,
+        new ChannelAddress({ type: 'push', payload: 'explicit' }),
+      ),
     );
-    await back.close();
-    await until(() => pushed.length === 3);
-    expect(pushed[2]).toBe('explicit');
+    await talk.request('MORE', 'again');
+    await talk.close();
+    expect(pushed).toEqual(['NEWS client', 'MORE again']);
+    // An accepted connection carries no default payload; an explicit one passes.
+    expect(payloads).toEqual(['', 'explicit']);
   });
 });
 
@@ -906,6 +1026,8 @@ describe('openChannel', () => {
     await tagOf(
       await client.openChannelAt(oneUri, svcAddress({ instance: 1, payload: 'explicit' })),
     );
+    const talk = await client.openTalk(new ServiceAddress(svc, 1));
+    await talk.done;
     // An explicitly empty payload is the caller's.
     await tagOf(await client.openChannel(new ServiceAddress(svc, 1), { payload: '' }));
     expect(seen.map((s) => utf8Decode(s.address.payload))).toEqual([
@@ -913,6 +1035,7 @@ describe('openChannel', () => {
       'own',
       'cred',
       'explicit',
+      'cred',
       '',
     ]);
   });
@@ -951,20 +1074,38 @@ describe('openChannel', () => {
     expect(e.status.reason).toContain('this node');
   });
 
-  test('openTalk fails until the Talk layer lands, and closes the channel', async () => {
-    const { both } = await setUp();
-    const client = node({ resolver: both() });
-    await rejectsWith(client.openTalk('svc/1'), StatusCode.unimplemented);
+  test("openTalk wraps the channel with the node's Talk options and the call's", async () => {
+    const one = node();
+    one.registerService(svc, (incoming) => {
+      void incoming.talk().serve((m) => void m.reply(m.payload));
+    });
+    const uri = await one.listenMemory();
+    const client = node({
+      resolver: new EndpointResolver(uri),
+      talkOptions: { requestTimeout: 1234, replyTimeout: 99 },
+    });
+    const talk = await client.openTalk('svc', { talkOptions: { replyTimeout: 55 } });
+    expect(talk).toBeInstanceOf(TalkChannel);
+    expect(talk.options.requestTimeout).toBe(1234);
+    expect(talk.options.replyTimeout).toBe(55);
+    expect(utf8Decode((await talk.request('ECHO', 'x')).payload)).toBe('x');
+    const plain = await client.openTalkAt(uri, svcAddress());
+    expect(plain.options.replyTimeout).toBe(99);
+    await talk.close();
+    await plain.close();
   });
 });
 
 describe('close', () => {
   test('sends GOAWAY, stops listening and refuses new work', async () => {
     const server = new Switchboard({ runtime: currentRuntime(), muxOptions: fast });
-    server.registerService(svc, () => {});
+    server.registerService(svc, (incoming) => void incoming.talk());
     const uri = await server.listenMemory();
+    const other = await server.listenMemory();
     const client = node();
-    const held = await client.openChannelAt(uri, svcAddress());
+    const viaTalk = await client.openTalkAt(uri, svcAddress());
+    const held = await client.openChannelAt(other, svcAddress());
+    const pending = rejectsWith(viaTalk.request('WAIT'), StatusCode.goingAway);
     await pump();
     const start = Date.now();
     await server.close();
@@ -972,6 +1113,7 @@ describe('close', () => {
     expect(Date.now() - start).toBeLessThan(2000);
     expect(codeOf(await held.connection.done)).toBe('goingAway');
     expect(codeOf(await held.done)).toBe('goingAway');
+    await pending;
     await rejectsWith(client.connect(uri), StatusCode.unavailable);
     await rejectsWith(server.connect(uri), StatusCode.failedPrecondition);
     await rejectsWith(server.openChannelAt(uri, svcAddress()), StatusCode.failedPrecondition);

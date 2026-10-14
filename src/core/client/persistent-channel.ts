@@ -8,7 +8,7 @@ import type { ChannelAddress } from '../address/index.ts';
 import type { MuxChannel, MuxConnection } from '../mux/contract.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
 import { Broadcast } from '../switchboard/broadcast.ts';
-import type { TalkChannel } from '../talk/contract.ts';
+import type { TalkChannel } from '../talk/talk-channel.ts';
 import type { Clock, TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import type { LogLevel } from '../util/logger.ts';

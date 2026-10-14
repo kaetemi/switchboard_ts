@@ -6,13 +6,14 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // The reconnecting client against an in-memory endpoint, on a stepping
 // manual clock so that the backoff schedule is exact and the tests are
-// fast. A port of the Dart reconnecting_client_test.dart. The Talk cases
-// (openTalk, bulk payloads, PersistentTalk) check the stand-in behaviour
-// until the Talk layer lands; the GOAWAY and reconnectNow cases keep their
-// raw persistent channel and drop the Talk one beside it.
+// fast. A port of the Dart reconnecting_client_test.dart, over the toy mux
+// and, from `over-frame-mux/`, over the frame mux. The bulk payload case
+// needs the frame mux's window (over the toy mux the payload goes inline)
+// and runs over it only.
 
 import { afterEach, describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/index.ts';
+import { bytesEqual } from '../../../src/core/bytes.ts';
 import {
   ClientPhase,
   ClientState,
@@ -29,13 +30,14 @@ import {
 import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode, SwitchboardError, statusCodeName } from '../../../src/core/status.ts';
 import { IncomingChannel } from '../../../src/core/switchboard/incoming-channel.ts';
+import { TalkBulkOpen, TalkChannel } from '../../../src/core/talk/index.ts';
 import type { FrameTransport, TransportConnector } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
+import { overFrameMux, testMux } from '../../support/node/harness.ts';
 import { SteppingClock, settle } from '../../support/node/stepping-clock.ts';
-import { toyMux } from '../../support/node/toy-mux.ts';
 
 /**
  * Keep-alive off so that the clock only sees the timers under test, and a
@@ -99,11 +101,17 @@ class FakeEndpoint {
 
   accept(): FrameTransport {
     const [client, server] = memoryTransportPair();
-    const connection = toyMux(server, this.options, false);
+    const connection = testMux()(server, this.options, false);
     this.connections.push(connection);
     void (async () => {
       for await (const channel of connection.incoming) {
         const incoming = new IncomingChannel(channel);
+        if (TalkBulkOpen.isBulk(incoming.address)) {
+          // As a Switchboard routes them (before a Talk channel installed
+          // bulk routing on the connection).
+          TalkChannel.adoptBulk(channel);
+          continue;
+        }
         this.channels.push(incoming);
         this.onChannel?.(incoming);
       }
@@ -119,6 +127,21 @@ class FakeEndpoint {
   on(connection: MuxConnection): IncomingChannel[] {
     return this.channels.filter((channel) => channel.connection === connection);
   }
+}
+
+/** Serves the `feed` channels the client opens on [endpoint] with Talk, counting the `SUB` requests. */
+function subscriptionsAt(endpoint: FakeEndpoint): { count: number } {
+  const subscriptions = { count: 0 };
+  endpoint.onChannel = (incoming) => {
+    if (!incoming.address.type?.equals(Name.of('feed'))) {
+      return;
+    }
+    void incoming.talk().serve((message) => {
+      subscriptions.count++;
+      void message.reply();
+    });
+  };
+  return subscriptions;
 }
 
 const clients: ReconnectingClient[] = [];
@@ -138,7 +161,7 @@ function clientFor(
     muxOptions: quiet,
     jitter: 0,
     clock: endpoint.clock,
-    mux: toyMux,
+    mux: testMux(),
     ...options,
   });
   clients.push(client);
@@ -334,7 +357,7 @@ describe('connecting', () => {
           if (calls === 1) {
             return hanging.promise;
           }
-          return Promise.resolve(toyMux(endpoint.accept(), options, true));
+          return Promise.resolve(testMux()(endpoint.accept(), muxOptions(options), true));
         },
       },
       { muxOptions: quiet, jitter: 0, clock, connectTimeout: 1000 },
@@ -350,7 +373,7 @@ describe('connecting', () => {
     expect(client.state.phase).toBe(ClientPhase.connected);
     expect(signals[1]?.aborted).toBe(false);
     // The connection of the abandoned attempt arrives late: closed.
-    const stray = toyMux(endpoint.accept(), muxOptions({ ...quiet, clock }), true);
+    const stray = testMux()(endpoint.accept(), muxOptions({ ...quiet, clock }), true);
     hanging.resolve(stray);
     await settle();
     expect(stray.isOpen).toBe(false);
@@ -558,20 +581,63 @@ describe('openChannel', () => {
     await closeAndCheck(clock, client);
   });
 
-  test('openTalk fails until the Talk layer lands, and closes its channel', async () => {
+  test('a Talk request through openTalk', async () => {
     const clock = new SteppingClock();
     const endpoint = new FakeEndpoint(clock);
+    endpoint.onChannel = (incoming) => {
+      void incoming.talk().serve((message) => {
+        void message.reply(bytes(...message.payload, 2), { procedure: 'PONG' });
+      });
+    };
     const client = clientFor(endpoint);
-    const talk = new Outcome(client.openTalk(events));
-    await settle();
-    expect(errorCode(talk.error)).toBe('unimplemented');
-    expect(endpoint.channels).toHaveLength(1);
-    expect(codeOf(await (endpoint.channels[0] as IncomingChannel).channel.done)).toBe(
-      'unimplemented',
+    const reply = new Outcome(
+      client.openTalk(events).then((talk) => talk.request('PING', bytes(1))),
     );
-    await closeAndCheck(clock, client);
+    await settle();
+    expect(reply.value?.procedureName).toBe('PONG');
+    expect([...(reply.value?.payload ?? [])]).toEqual([1, 2]);
+    await closeAndCheck(clock, client, true);
+  });
+
+  test("openTalk merges its Talk options over the client's", async () => {
+    const clock = new SteppingClock();
+    const endpoint = new FakeEndpoint(clock);
+    const client = clientFor(endpoint, { talkOptions: { requestTimeout: 1234, replyTimeout: 99 } });
+    const talk = new Outcome(client.openTalk(events, { talkOptions: { replyTimeout: 55 } }));
+    await settle();
+    expect(talk.value).toBeInstanceOf(TalkChannel);
+    expect(talk.value?.options.requestTimeout).toBe(1234);
+    expect(talk.value?.options.replyTimeout).toBe(55);
+    expect(talk.value?.raw?.connection).toBe(client.connection);
+    await closeAndCheck(clock, client, true);
   });
 });
+
+if (overFrameMux()) {
+  describe('bulk payloads', () => {
+    test('both ways through openTalk', async () => {
+      const clock = new SteppingClock();
+      const endpoint = new FakeEndpoint(clock);
+      endpoint.onChannel = (incoming) => {
+        void incoming.talk().serve((message) => {
+          void message.reply(Uint8Array.from([...message.payload, ...message.payload]));
+        });
+      };
+      const client = clientFor(endpoint);
+      const big = Uint8Array.from({ length: 70_000 }, (_, i) => i % 251);
+      const reply = new Outcome(client.openTalk(events).then((talk) => talk.request('PUT', big)));
+      await settle();
+      await clock.elapse(10);
+      expect(reply.error).toBeUndefined();
+      expect(reply.value?.isBulk).toBe(true);
+      const doubled = Uint8Array.from([...big, ...big]);
+      expect(bytesEqual(reply.value?.payload ?? new Uint8Array(0), doubled)).toBe(true);
+      // The endpoint's bulk channel never reached the application.
+      expect(endpoint.channels).toHaveLength(1);
+      await closeAndCheck(clock, client, true);
+    });
+  });
+}
 
 describe('persistent channels', () => {
   test('re-opened after the endpoint drops the connection', async () => {
@@ -759,25 +825,57 @@ describe('persistent channels', () => {
     await closeAndCheck(clock, client);
   });
 
-  test('openPersistentTalk ends with UNIMPLEMENTED until the Talk layer lands', async () => {
+  test('PersistentTalk re-sends its subscription on every connection', async () => {
     const clock = new SteppingClock();
     const endpoint = new FakeEndpoint(clock);
+    let subscriptions = 0;
+    endpoint.onChannel = (incoming) => {
+      const talk = incoming.talk();
+      void talk.serve((message) => {
+        if (message.procedureName === 'SUB') {
+          subscriptions++;
+          void message.reply();
+          void talk.send('EVENT', bytes(subscriptions));
+        }
+      });
+    };
     const client = clientFor(endpoint);
+    const received: number[] = [];
+    const replies: string[] = [];
     const closed: Status[] = [];
-    let calls = 0;
     const persistent = client.openPersistentTalk(
       feed,
-      () => {
-        calls++;
+      async (talk) => {
+        void talk.serve((m) => {
+          received.push(m.payload[0] as number);
+        });
+        const reply = await talk.request('SUB', bytes(1));
+        replies.push(`subscribed ${reply.payload.length}`);
       },
       { onClosed: (status) => closed.push(status) },
     );
     await settle();
-    expect(calls).toBe(0);
-    expect(closed.map(codeOf)).toEqual(['unimplemented']);
+    expect(subscriptions).toBe(1);
+    expect(replies).toEqual(['subscribed 0']);
+    expect(received).toEqual([1]);
+    expect(persistent.current).toBeInstanceOf(TalkChannel);
+
+    void endpoint.last.close();
+    await settle();
+    expect(closed.map(codeOf)).toEqual(['connectionLost']);
+    await clock.elapse(500);
+    expect(subscriptions).toBe(2);
+    expect(replies).toEqual(['subscribed 0', 'subscribed 0']);
+    expect(received).toEqual([1, 2]);
+
+    // A channel abort with a terminal status ends it.
+    (endpoint.channels.at(-1) as IncomingChannel)
+      .talk()
+      .abort(Status.of(StatusCode.permissionDenied));
+    await clock.elapse(10_000);
     expect(persistent.isClosed).toBe(true);
-    expect(codeOf(await persistent.done)).toBe('unimplemented');
-    expect(endpoint.channels[0]?.channel.state).toBe('closed');
+    expect(codeOf(closed.at(-1))).toBe('permissionDenied');
+    expect(subscriptions).toBe(2);
     await closeAndCheck(clock, client);
   });
 
@@ -940,13 +1038,19 @@ describe('GOAWAY from the endpoint', () => {
   test('persistent channels move to a new connection at once', async () => {
     const clock = new SteppingClock();
     const endpoint = new FakeEndpoint(clock);
+    const subscriptions = subscriptionsAt(endpoint);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     const closed: Status[] = [];
     const persistent = client.openPersistent(events, (channel) => opened.push(channel), {
       onClosed: (status) => closed.push(status),
     });
+    const talkClosed: Status[] = [];
+    const talk = client.openPersistentTalk(feed, (talk) => talk.request('SUB'), {
+      onClosed: (status) => talkClosed.push(status),
+    });
     await clock.elapse(1000);
+    expect(subscriptions.count).toBe(1);
     const firstConnection = client.connection as MuxConnection;
     const server = endpoint.last;
     const states = changes(client);
@@ -971,9 +1075,10 @@ describe('GOAWAY from the endpoint', () => {
     expect(states.map((s) => s.attempt)).toEqual([1, 1]);
     const second = client.connection as MuxConnection;
     expect(second).not.toBe(firstConnection);
-    // The persistent channel was closed with GOING_AWAY, so the old
+    // The persistent channels were closed with GOING_AWAY, so the old
     // connection went idle and ended, after the new one was up.
     expect(closed.map(codeOf)).toEqual(['goingAway']);
+    expect(talkClosed.map(codeOf)).toEqual(['goingAway']);
     expect(endpoint.on(server).every((c) => c.channel.state === 'closed')).toBe(true);
     expect(codeOf(firstDone.value)).toBe('goingAway');
     expect(stateAtOldEnd?.phase).toBe(ClientPhase.connected);
@@ -983,7 +1088,14 @@ describe('GOAWAY from the endpoint', () => {
     expect(opened).toHaveLength(2);
     expect(opened[1]?.connection).toBe(second);
     expect(persistent.current).toBe(opened[1]);
-    expect(endpoint.on(endpoint.last).map((c) => c.address.type?.toString())).toEqual(['events']);
+    expect(talk.current?.isOpen).toBe(true);
+    expect(subscriptions.count).toBe(2);
+    expect(
+      endpoint
+        .on(endpoint.last)
+        .map((c) => c.address.type?.toString())
+        .sort(),
+    ).toEqual(['events', 'feed']);
 
     // The end of the old connection causes no second reconnect.
     await clock.elapse(5 * 60_000);
@@ -1388,14 +1500,20 @@ describe('reconnectNow', () => {
   test('force while connected: moves to a new connection', async () => {
     const clock = new SteppingClock();
     const endpoint = new FakeEndpoint(clock);
+    const subscriptions = subscriptionsAt(endpoint);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     const closed: Status[] = [];
     const persistent = client.openPersistent(events, (channel) => opened.push(channel), {
       onClosed: (status) => closed.push(status),
     });
+    const talkClosed: Status[] = [];
+    const talk = client.openPersistentTalk(feed, (talk) => talk.request('SUB'), {
+      onClosed: (status) => talkClosed.push(status),
+    });
     const own = new Outcome(client.openChannel(events));
     await clock.elapse(1000);
+    expect(subscriptions.count).toBe(1);
     const firstConnection = client.connection as MuxConnection;
     const firstConnected = client.connected;
     const server = endpoint.last;
@@ -1417,14 +1535,22 @@ describe('reconnectNow', () => {
     const second = client.connection as MuxConnection;
     expect(second).not.toBe(firstConnection);
     expect(client.connected).not.toBe(firstConnected);
-    // The old connection got GOAWAY; the persistent channel on it was
+    // The old connection got GOAWAY; the persistent channels on it were
     // closed with GOING_AWAY and opened again on the new one.
     expect(server.peerGoingAway).toBe(true);
     expect(closed.map(codeOf)).toEqual(['goingAway']);
+    expect(talkClosed.map(codeOf)).toEqual(['goingAway']);
     expect(opened).toHaveLength(2);
     expect(opened[1]?.connection).toBe(second);
     expect(persistent.current).toBe(opened[1]);
-    expect(endpoint.on(endpoint.last).map((c) => c.address.type?.toString())).toEqual(['events']);
+    expect(talk.current?.isOpen).toBe(true);
+    expect(subscriptions.count).toBe(2);
+    expect(
+      endpoint
+        .on(endpoint.last)
+        .map((c) => c.address.type?.toString())
+        .sort(),
+    ).toEqual(['events', 'feed']);
 
     // The application channel carries on over the old connection.
     expect(firstDone.isDone).toBe(false);
@@ -1515,7 +1641,12 @@ describe('the endpoint', () => {
     const client = clientFor(endpoint);
     const pushed: IncomingChannel[] = [];
     void (async () => {
-      for await (const incoming of client.incoming) pushed.push(incoming);
+      for await (const incoming of client.incoming) {
+        pushed.push(incoming);
+        if (incoming.address.type === undefined) {
+          void incoming.talk().serve((m) => void m.reply(bytes(3)));
+        }
+      }
     })();
     await settle();
     const push = new ChannelAddress({ type: 'notify', payload: bytes(1) });
@@ -1536,9 +1667,7 @@ describe('the endpoint', () => {
     expect(codeOf(badDone.value)).toBe('protocolError');
     expect(pushed).toHaveLength(1);
     // So is a bulk payload with no Talk channel to take it.
-    const bulk = endpoint.last.open(
-      new ChannelAddress({ type: '_bulk', payload: bytes(0, 0) }).encode(),
-    );
+    const bulk = endpoint.last.open(new TalkBulkOpen(4242, 1).encode());
     const bulkDone = new Outcome(bulk.done);
     await settle();
     expect(codeOf(bulkDone.value)).toBe('failedPrecondition');
@@ -1551,12 +1680,14 @@ describe('the endpoint', () => {
     expect(pushed).toHaveLength(2);
     expect(pushed[1]?.connection).toBe(client.connection);
 
-    // The default address.
-    endpoint.last.open(new Uint8Array(0));
+    // A Talk exchange the endpoint starts, on the default address.
+    const talk = new TalkChannel(endpoint.last.open(new Uint8Array(0)));
+    const reply = new Outcome(talk.request('ASK'));
     await settle();
     expect(pushed).toHaveLength(3);
     expect(pushed[2]?.address.type).toBeUndefined();
     expect(pushed[2]?.remote).toBeUndefined();
+    expect([...(reply.value?.payload ?? [])]).toEqual([3]);
     await closeAndCheck(clock, client, true);
   });
 

@@ -297,11 +297,11 @@ const routed = new WeakSet<MuxConnection>();
  * Installs bulk routing on [connection], once: a filter adopting every
  * channel the peer opens with an open payload of the reserved type `_bulk`
  * (routed to its parent's Talk layer, never reaching `incoming` nor a
- * listener policy), and the rule admitting such a channel after this
- * side's GOAWAY for an open parent, or for one whose Talk layer still
- * waits for its bulk channels after it ended ({@link lingerBulkTarget}):
- * it continues work the connection admitted already. A `TalkChannel`
- * installs it on its connection; a node installs it on every connection.
+ * listener policy), and the rule admitting such a channel for an open
+ * parent, or for one a binding connection retains for the drain, after
+ * this side's GOAWAY (it continues work the connection admitted already).
+ * A `TalkChannel` installs it on its connection; a node installs it on
+ * every connection.
  *
  * @internal
  */
@@ -329,12 +329,10 @@ export function installBulkRouting(connection: MuxConnection): void {
 
 /**
  * Whether [openPayload] opens a bulk channel for a channel open on
- * [connection], or for one that ended and whose target still waits for
- * its bulk channels (a connection whose channels are not ordered, where
- * the bulk stream may come after its parent's close): it carries the
- * payload of a message of that channel, work admitted before the GOAWAY.
- * The Dart QUIC binding admits the same, a parent open or retained for
- * its drain.
+ * [connection], or for one that ended while its reader still waits for its
+ * bulk channels (a binding connection retains it for the drain:
+ * {@link lingerBulkTarget}): it carries the payload of a message of that
+ * channel, work admitted before the GOAWAY.
  */
 function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array): boolean {
   let address: ChannelAddress;
@@ -351,7 +349,11 @@ function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array
   if (parent !== undefined && parent.state !== 'closed') {
     return true;
   }
-  return endedParents.get(connection)?.targetOf(parentId) !== undefined;
+  const retained = (connection as { retainedForDrain?: unknown }).retainedForDrain;
+  return (
+    typeof retained === 'function' &&
+    (retained as (id: number) => boolean).call(connection, parentId) === true
+  );
 }
 
 function refuse(bulk: MuxChannel, status: Status): void {

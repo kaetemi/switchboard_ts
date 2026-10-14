@@ -176,3 +176,35 @@ jobs:
       - run: npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts
         env:
           SWITCHBOARD_NATIVE: required
+
+  # The web provider in a browser: Playwright's Chromium against native
+  # WebTransport listeners in the test process (the addon built as in the
+  # native job), the page served by Vite (test/browser).
+  browser:
+    name: Browser (WebTransport in Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The commit native/sbq-vendor.commit pins: the vendored shim must match it.
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard_quic
+          ref: c5b32652cdcfe91e496fe853b7dcb3a354325bbe
+          path: switchboard_quic
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node tool/sync-sbq.mjs --check switchboard_quic
+      - run: npm run build:native
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+        env:
+          SWITCHBOARD_BROWSER: required

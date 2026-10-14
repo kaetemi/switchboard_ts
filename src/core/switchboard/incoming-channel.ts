@@ -8,7 +8,8 @@ import { ChannelAddress } from '../address/index.ts';
 import type { PeerIdentity } from '../identity/contract.ts';
 import type { MuxChannel, MuxConnection } from '../mux/contract.ts';
 import { Status, StatusCode } from '../status.ts';
-import { type TalkChannel, type TalkOptions, talkOptions } from '../talk/contract.ts';
+import { type TalkOptions, talkOptions } from '../talk/contract.ts';
+import type { TalkChannel } from '../talk/talk-channel.ts';
 import type { IncomingChannel as IncomingChannelContract } from './contract.ts';
 import { talkOver } from './talk-layer.ts';
 
