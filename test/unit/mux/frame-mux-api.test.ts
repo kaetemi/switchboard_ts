@@ -16,6 +16,7 @@ import {
   creditHex,
   empty,
   expectCode,
+  expectRejectsStatus,
   expectStatus,
   firstIncoming,
   Incoming,
@@ -215,6 +216,18 @@ describe('signals and disposal', () => {
     expect(await rejection(identifying)).toBe(reason);
     expect(await rejection(mux.identify(credential, { signal: controller.signal }))).toBe(reason);
     await mux.close();
+  });
+
+  test('a dropped identify reports nothing when the connection ends', async () => {
+    // Every promise the library hands out is safe to drop (design section
+    // 7); one awaited still rejects.
+    const [client, server] = muxPair();
+    const credential = stubCredential({ identity: 'n', bytes: hexBytes('01') });
+    void client.identify(credential);
+    const awaited = client.identify(credential);
+    await server.close();
+    await expectRejectsStatus(awaited, StatusCode.connectionLost);
+    await settle();
   });
 
   test('await using closes the connection and the channel', async () => {

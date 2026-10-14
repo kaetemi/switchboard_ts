@@ -566,9 +566,16 @@ export class FrameMuxConnection implements MuxConnection {
    * connection is closed, the connection's end status when it ends
    * meanwhile; with a {@link RangeError} when the credential names a holder
    * key and `holderKey` is missing or another, and when the intent, the
-   * receiver or the IDENT is too long.
+   * receiver or the IDENT is too long. The promise is safe to drop: a
+   * rejection nobody awaits is not reported as unhandled.
    */
-  async identify(credential: Credential, options: IdentifyOptions = {}): Promise<void> {
+  identify(credential: Credential, options: IdentifyOptions = {}): Promise<void> {
+    const identifying = this.#identify(credential, options);
+    identifying.catch(() => {});
+    return identifying;
+  }
+
+  async #identify(credential: Credential, options: IdentifyOptions): Promise<void> {
     const holder = credential.holderKey;
     const holderKey = options.holderKey;
     if (holder !== undefined) {
