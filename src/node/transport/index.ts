@@ -29,7 +29,6 @@ export {
   tcpTransport,
 } from './tcp.ts';
 export { connectWebSocket, connectWsWebSocket } from './ws-client.ts';
-export { loadWs } from './ws-common.ts';
 export {
   type AcceptedWebSocket,
   acceptWebSocket,

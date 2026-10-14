@@ -15,3 +15,5 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  */
 
 export * from '../core/index.ts';
+// The browser node and its options replace the core's of the same names.
+export { Switchboard, type SwitchboardOptions } from './switchboard.ts';
