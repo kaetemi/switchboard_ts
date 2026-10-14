@@ -1,167 +1,116 @@
 # Hand-off: the Switchboard TypeScript port
 
-_Written by the lead session on 2026-10-14 for the session that continues the port. Everything below is the state at hand-off; the per-thread hand-off notes under `docs/handoff-notes/` and the running notes under `docs/notes/` carry the detail. The design is `docs/design.md`; the original split of work is `docs/work-split.md`; the user-facing pages are `docs/wiki/`._
-
-## 0. State on 2026-10-14, second lead session (read this first)
-
-_Written by the lead session that continued the port after the hand-off below. The sections after this one describe the state at the first hand-off and are being rewritten on the `claude/docs` branch; until that lands, this section is current and they are historical._
-
-**Main** (`b37dbf4` at the time of writing, pushed; `claude/sharding` merged after it, bringing the sharded half of `MeshNode` and `test/integration/sharding/`, 3163 passed) carries every wave of the continuation, merged with merge commits from topic branches `claude/<topic>` that were worked in git worktrees under `/home/user/wt/<topic>` by parallel agents. On it `npm run check` reports 3125 passed, 1 expected fail, 3 skipped, 7 todo (with the native addon built; `SWITCHBOARD_QUIC_ADDON` or `npm run build:native`), `npx tsc -p tsconfig.test.json --noEmit` is clean, `npm run build` succeeds, the browser test passes 34 (`SWITCHBOARD_BROWSER=required npm run test:browser`, Playwright 1.56.1 Chromium 141 at `/opt/pw-browsers`), and the interop project passes the 241 Dart cells. Round trips over TCP, WebSocket and native QUIC with the built package were checked by hand on Node 22, Bun and Deno 2.9 (Deno: `--allow-net --allow-read --allow-env --allow-ffi`, plus a `node_modules` holding `ws` for the WebSocket server).
-
-**Merged since the first hand-off** (branch, content):
-- `claude/identity`: `Credential`, `Scope`, `CredentialIssuer`, `CredentialVerifier`, `Ed25519HolderKey`, vectors, `identity_test.dart` ported, `NamingClient.renew()`.
-- `claude/webtransport`: `src/web/quic/webtransport-provider.ts` (`webTransport()`, `webTransportConnector`), browser tests under `test/browser/` with their own vitest config, the `browser` CI job, the QUIC man-in-the-middle tests.
-- `claude/node-talk`: `talk-layer.ts` wired to `TalkChannel`; every node suite runs over the toy mux and the frame mux (`test/unit/switchboard/over-frame-mux/`); the proxy, relay, PeerSet, client and QUIC node todos ported.
-- `claude/transports`: `websocket-transport.ts`, `src/node/transport/` (TCP, `ws` server and client, `connectTransport`), `src/node/switchboard.ts` (`listenTcp`, `listenWebSocket`, `acceptWebSocket`, `listenQuic`, `listenWebTransport`), `src/web/switchboard.ts`, integration tests over the loopback.
-- `claude/talk-integration`: Talk over the frame mux, TCP and the QUIC binding (211 integration tests), the bulk admission fix, vectors by id, `ManualClock.elapseAsync`.
-- `claude/mux-tests`: every Dart mux suite ported (`test/unit/mux/`), two performance fixes (lazy channel streams, bounded writes in flight), `MuxChannel[Symbol.asyncIterator]`, `identify()` pre-caught, transport writable settles.
-- `claude/mesh`: `MeshNode` (`src/core/switchboard/mesh-node.ts`, without the sharded half), the Dart `test/integration` node-level suites, the Talk cases of the node integration tests.
-- `claude/quic-identity`: `test/integration/quic-node-native.test.ts`, `identity.test.ts`, real credentials in the test fixtures, prebuilt addon manifests under `native/npm/`, `optionalDependencies`, `.github/workflows/release.yml` (manual dispatch draft), the QUIC vectors by id.
-- `claude/slot-routing`: `openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, `isSlotResolver` in `switchboard/resolver.ts`, the proxy slot groups, `SlotGate`/`SlotLifecycle`/`SlotGates` (`src/core/naming/slot-gate.ts`), the naming suites over real Talk, the proxy flake fixed.
-
-**In flight when this was written** (each agent pushes its branch on every commit; if the session dropped, check `git log main..origin/claude/<topic>` and continue from the branch):
-- `claude/ts-peer` (`/home/user/wt/ts-peer`): the TS interop peer `test/interop/ts_peer/main.ts`, clearing `tsTransportGaps` in `test/interop/matrix.ts`, the scenario matrix, more oracle kinds, identity/naming/relay scenarios, a Dart driver, the `interop` CI job. Acceptance: every scenario passes in all four pairings over tcp, ws, quic and webtransport.
-- `claude/docs` (`/home/user/wt/docs`): the rewrite of `docs/design.md`, `docs/work-split.md`, `docs/wiki/` (plus new pages Channels-and-Talk, Identity, Naming-and-Sharding, Proxy-and-Relay, Clients), `README.md`, `CHANGELOG.md`, this document and the thread notes.
-
-**Merge procedure the lead used:** `git merge --no-ff claude/<topic>` into `main`, resolve conflicts, `npm run check`, `npx tsc -p tsconfig.test.json --noEmit`, push. Commit trailers: `Co-Authored-By: Claude <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01B2KoRQTAdtpnxcxjhmD2ey`; no model names in commits or code.
-
-**Known open items** (also to be listed by the docs rewrite): musl prebuilds; publishing (`release.yml` is a draft; the lock must be regenerated after the first publish); the GitHub wiki push; Deno in CI; Firefox's exporter path; `protocols` needs Chromium 143+ (newer Playwright); a QUIC gap shared with Dart (a burst of more than 16 bulk messages fails when an early bulk stream lags, `test.fails` in `test/integration/talk-quic.test.ts`); `TcpTransport.bufferedOutputBytes` reports a turn late after abort; the memory pair's writable `closed` does not settle when the other side closes; `test/support/identity/mux-harness.ts` duplicates `test/unit/mux/support.ts`; `SteppingClock`/`TestClock` could merge into `ManualClock.elapseAsync`; the unit "forged IDENT" case uses the rogue credential where Dart flips a byte; Node 22's type stripping cannot parse `await using` (Node 24+ or tsc); design section 2's identity example uses a non-existent `issueNode` (use `issuer.issue({...})`).
+_The state of the port on 2026-10-14, after the second lead session's merges, for a session starting fresh. The design is `docs/design.md` (with the decisions in section 11, the deviations from Dart in section 12 and the open questions in section 13); the original assignment is `docs/work-split.md`, marked with what is done; the user guide is `docs/wiki/`; the per-thread detail is in `docs/handoff-notes/` and the running notes in `docs/notes/`._
 
 ## 1. Where things are
 
-- **Repository:** `kaetemi/switchboard_ts`, package `@kaetemi/switchboard` 3.0.0-dev.1, ESM only, TypeScript 7 strict, Vitest 5, Biome 2, Node 22 or later, Bun and Deno for the Node entry.
-- **Branches:** `main` is initialised from the integration branch `claude/switchboard-ts-design-s5r9na` at hand-off; both point at the same commit (see section 7 for the hashes). The six thread branches hold nothing the integration branch lacks.
-- **Reference implementation:** `kaetemi/switchboard` (Dart core) and `kaetemi/switchboard_quic` (Dart QUIC binding and the Rust `sbq` shim), read only. The wiki is `kaetemi/sway` under `wiki/switchboard/`. The TS test peer pins the Dart repositories in `test/interop/dart_peer/dart_commits.txt` (core `3816e6f`, QUIC `c5b3265`); the vendored shim pin is `native/sbq-vendor.commit` (`c5b3265`).
-- **Shared folder:** `docs/` holds copies of `design.md`, `work-split.md`, the wiki pages, this document, `notes/` (one file per thread plus `lead.md`) and `handoff-notes/`.
+- **Repository:** `kaetemi/switchboard_ts`, package `@kaetemi/switchboard` 3.0.0-dev.1 (not published), ESM only, TypeScript 7 strict, Vitest 5, Biome 2; Node 22 or later, Bun and Deno for the Node entry, evergreen browsers for the web entry. Entries `.` (`src/core`), `./node` (`src/node`), `./web` (`src/web`), `./testing` (`src/testing`).
+- **Branches:** `main` is the integration branch. Work happens on topic branches `claude/<topic>`, each in its own git worktree under `/home/user/wt/<topic>` (with `node_modules` a symlink to the main checkout's), merged into `main` by the lead with merge commits. The main checkout is `/home/user/switchboard_ts`. The first phase's integration branch `claude/switchboard-ts-design-s5r9na` and its thread branches hold nothing `main` lacks.
+- **Reference implementation:** `kaetemi/switchboard` (Dart core) and `kaetemi/switchboard_quic` (Dart QUIC binding and the Rust `sbq` shim), read only, checked out as siblings in `/home/user/switchboard` and `/home/user/switchboard_quic`; `switchboard/doc/dart-design.md` records every layer's contract. The protocol wiki is `kaetemi/sway` under `wiki/switchboard/` (private; its vectors are committed as `test/vectors/wiki-vectors.json`). Pins: `test/interop/dart_peer/dart_commits.txt` (core `3816e6f`, QUIC `c5b3265`) and `native/sbq-vendor.commit` (`c5b3265`).
+- **The container used for this work:** Node 22, Bun (`/root/.bun/bin/bun`), Rust and cargo (`/root/.cargo/bin`), the Dart SDK 3.13.5 at `/root/.cache/switchboard_ts/dart-sdk-3.13.5-linux-x64/dart-sdk/bin`, Playwright 1.56.1 with Chromium 141 in `/opt/pw-browsers` (`PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`, `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`; never `playwright install` there). The native addon is built in the main checkout (`native/sbq-node.node`; point a worktree at it with `SWITCHBOARD_QUIC_ADDON`) and the Dart peer too (`test/interop/dart_peer/build/peer/bundle/bin/dart_peer`; `SWITCHBOARD_DART_PEER`). Deno 2.9 was run from an npm-installed copy (`npm install deno` in a scratch directory). No GitHub CLI; pushing works through the configured remote.
+- **Docs:** `docs/design.md`, `docs/work-split.md`, this document, `docs/wiki/*.md` (wiki-ready pages: Home, Getting-Started, API-Overview, Channels-and-Talk, Identity, Naming-and-Sharding, Proxy-and-Relay, Clients, Runtimes-and-QUIC, Testing-and-Interop, Contributing, `_Sidebar`), `docs/handoff-notes/<thread>.md`, `docs/notes/<thread>.md` (with `interop-dart-suites.md`, the Dart test inventory), `native/README.md`, `test/interop/README.md` (the peer protocol), `CHANGELOG.md`.
 
-## 2. What is merged
+## 2. What is complete, by layer
 
-Every pull request went in with a merge commit, in dependency order, after the lead ran `biome check`, `tsc -p tsconfig.json`, `tsc -p tsconfig.test.json` and the unit and integration projects on a test-merge, and CI was green on the head.
+Every layer is ported and exported. The Dart behaviour is the contract and the Dart tests the checklist; each TS test file is named after the Dart file it ports, and a Dart test that is not ported carries `// Not ported: <reason>` or a `test.todo` with the reason.
 
-| PR | Thread | Content | Merge |
-|---|---|---|---|
-| #1 | Talk | Talk frame codec with the wiki and Dart vectors | 04362ea |
-| #2 | QUIC | QUIC records, HELLO, exporter helpers, the fake QUIC provider (`@kaetemi/switchboard/testing`) | e7c04da |
-| #3 | Naming | Naming and sharding codecs, slot keys, slot tables | 47fb444 |
-| #4 | Talk | Talk contract: item windows, the credit bound, slot carriers | f378d19 |
-| #5 | Core | Stream framing, stream transport, memory pair, endpoints | f0e7263 |
-| #6 | Node | The core Switchboard node: dispatch, pool, identity, brokering | 0c88ec6 |
-| #7 | Interop | Dart interop harness: Dart test peer, wiki vectors JSON, oracle, raw probes, `interop` CI job | ecf4f54 |
-| #9 | Core | Mux frame and control codecs, IDENT verification, Ed25519, the `BindingConnection` base | 1ba6818 |
-| #10 | Node | `ReconnectingClient`, backoff, persistent channels | 0a96930 |
-| #8 | QUIC | QUIC binding (`QuicBindingConnection`, `QuicBindingChannel`, `connectQuic`, `listenQuic`), the N-API addon over the vendored `sbq`, `nativeQuic()`, the `native` CI job | 63aeabb |
-| #12 | Interop | Oracle: TS mux frame and control codecs against the Dart reference | 034ab8b |
-| #11 | Talk | `TalkChannel` runtime: requests, streams, item windows, bulk transfers, `forwardMessage` (328 tests over a fake mux pair) | cd08e02 |
-| #13 | Naming | `NamingClient`, `NamingResolver`, `NamingService` with slot spaces, `SlotChannel`, `reopenAtSlotOwner`, the `SlotResolver` contract | dd8c205 |
-| #14 | Core | `FrameMuxConnection`, `FrameMuxChannel`, the output scheduler (4 smoke tests; the Dart test ports are the first remaining item) | 1ba6e94 |
-| #15 | QUIC | `QuicSwitchboardBinding`, `QuicSwitchboardListener`, `quicConnector`, the WebTransport API surface (not exported) | 6cf6beb |
-| #16 | Node | `pipeChannels`, `proxyHandler`, `RelayService`, forwarding, `PeerSet` | 1a608ed |
-| #17 | Node | The core runtime's nodes run over `FrameMuxConnection` | 7975285 |
-| #18 | Node | Branch sync after #17, no file changes | 0c0f92e |
+| Layer | Source | Dart suites covered (TS files) |
+| --- | --- | --- |
+| Primitives, addressing | `core/bytes.ts`, `name.ts`, `status.ts`, `address/` | the vectors (`test/vectors/{names,status,address}.test.ts`) |
+| Transports | `core/transport/` (stream framing and transport, memory pair, `MemoryEndpoints`, `parseEndpoint`, WebSocket client), `node/transport/` (TCP, `ws` server and client, `connectTransport`) | `transport_test`, `transport_vectors_test`, `memory_endpoint_test`, `web_socket_server_test` (`test/unit/transport/`, `test/vectors/transport.test.ts`), `mux_test`'s TCP and WebSocket groups (`test/integration/mux-{tcp,websocket}.test.ts`) |
+| Frame mux | `core/mux/` (`FrameMuxConnection`, `FrameMuxChannel`, the output scheduler, the codecs, `verifyIdent`, `BindingConnection`) | `mux_test`, `mux_flow_test`, `mux_limits_test`, `mux_schedule_test`, `binding_drain_test`, `binding_protocol_test`, `mux_vectors_test` (`test/unit/mux/`, `test/vectors/{mux,binding-protocol}.test.ts`; harness `test/unit/mux/support.ts`, the port of `mux_harness.dart`) |
+| Identity | `core/identity/` (`Credential`, `Scope`, `CredentialIssuer`, `CredentialVerifier`, `Ed25519HolderKey`, `PeerIdentity`) | `identity_test`, `identity_vectors_test`, `exporter_identity_vectors_test` (`test/unit/identity/`, `test/vectors/{credential,identity,exporter-identity}.test.ts`), `identity_node_test` (`test/unit/switchboard/identity-node.test.ts`, `test/integration/identity.test.ts` over TCP and QUIC) |
+| Talk | `core/talk/` | `talk_test`, `talk_window_test`, `talk_credit_test`, `talk_bulk_test`, `talk_forward_test`, `mux_talk_test`, `talk_vectors_test` (`test/unit/talk/` over the fake mux pair; `test/integration/talk-*.test.ts` over the frame mux, TCP and the QUIC binding) |
+| Node | `core/switchboard/` (the core `Switchboard`, policies, resolvers, proxy, relay, `PeerSet`, `MeshNode`), `node/switchboard.ts`, `web/switchboard.ts` | `switchboard_test`, `selection_test`, `resolver_test`, `local_connections_test`, `memory_endpoint_test`, `proxy_test`, `relay_test`, `peer_set_test`, the node half of `naming_identity_test` (`test/unit/switchboard/`, each also under `over-frame-mux/`), and the node-level `test/integration` suites: `mesh_test`, `embedded_test`, `brokered_workers_test`, `cohosted_mesh_test`, `fleet_consumer_test`, `relayed_workers_test`, `naming_mesh_test` (`test/integration/node-*.test.ts` over TCP, WebSocket, QUIC and WebTransport) |
+| Clients | `core/client/` (`ReconnectingClient`, `PersistentChannel`, `PersistentTalk`, `Backoff`) | `reconnecting_client_test` (`test/unit/client/`, also over the frame mux) |
+| Naming and sharding | `core/naming/` (codecs, `NamingClient`, `NamingService`, `NamingResolver`, slot keys and tables, `SlotChannel`, `reopenAtSlotOwner`, `SlotGate`, `SlotLifecycle`, `SlotGates`) and `MeshNode`'s sharded half | `naming_test`, `naming_protocol_test`, `naming_resolver_test`, `naming_identity_test`, `naming_bulk_test`, `sharding_test`, `sharding_client_test`, `slot_gate_test`, `slot_gate_credential_test`, `slot_routing_test`, the naming, sharding and slot-key vectors (`test/unit/naming/`, also over the frame mux), and the whole Dart sharding integration suite (`test/integration/sharding/`, with `cluster.ts`) |
+| QUIC and WebTransport | `core/quic/` (the binding, `connectQuic`, `listenQuic`, `quicConnector`, `QuicSwitchboardBinding`, `QuicSwitchboardListener`), `node/quic/` (the native provider), `web/quic/` (the WebTransport provider), `testing/fake-quic-provider.ts`, `native/` (the N-API addon over the vendored `sbq`) | `binding_test`, `review_cases`, `review_switchboard_test`, `switchboard_test` (including the man-in-the-middle group), `vectors_test`, `native_provider_test`, `native_integration_test` (`test/unit/quic/`, `test/integration/quic-*.test.ts`, `node-quic`, `node-webtransport`), `web_provider_test` and `web_binding_test` (`test/browser/webtransport.test.ts`, 34 tests in Chromium 141; also `test/unit/quic/webtransport-provider.test.ts` over an injected API); `build_hook_test` has a written reason (`test/unit/quic/not-ported.test.ts`: Dart's native-assets hook, which `native/build.mjs` stands in for) |
+| Interop | `test/interop/` (the Dart peer, launcher, matrix, scenarios, oracle, probes) | the Dart cells of every scenario and the codec oracle; the TS peer and its cells are being added (section 4) |
 
-Lead commits between them: the contract placements (`BrokeringResolver` in the switchboard contract, `ServiceAddressLike` in the address layer, injectable `Clock` and `Logger` in every options object), the package rename, the design and work-split updates, and the Biome rule change (`useLiteralKeys` off, because the TS config requires bracket access to index-signature keys).
+Test counts on `main` (after the sharding merge) with the native addon built: the unit and integration projects report 3163 passed, 1 expected fail (the QUIC bulk-burst gap, section 7), 2 skipped (environment-dependent cases, such as the IPv6 loopback case in a container without one) and 3 todo (two `ws` fragment cases that need Dart's fragment cap, and `build_hook_test`); without the addon the native QUIC files skip with their reason. Every wiki vector table is named by a test (`SWITCHBOARD_VECTORS_STRICT=1` passes). On Bun, a few WebSocket fragment cases that Bun's `ws` cannot express are skipped. The browser test passes 34. The prebuilt addon packages (`native/npm/<target>/`, five targets) and `.github/workflows/release.yml` (manual dispatch: build, test and pack per target; publish only when asked) exist; only Linux x64 is built in CI.
 
-What this gives you, by layer (file paths under `src/`):
+## 3. How to run everything
 
-- `core/bytes.ts`, `core/name.ts`, `core/status.ts`, `core/address/`, `core/util/` (clock, logger, emitter, deferred, async queue): the lead's foundations.
-- `core/transport/`: `StreamFraming`, `StreamFrameDecoder`, the Web Streams encoder and decoder, `streamTransport` over byte I/O, the memory pair and `MemoryEndpoints`, `parseEndpoint`.
-- `core/mux/`: the contract, `MuxFrame`, `MuxControlMessage`, `MuxLimits`, `MuxCredit`, `MuxIdent`, `verifyIdent`, the CLOSE and GOAWAY status rules, `BindingConnection`. **No `FrameMuxConnection` yet** (section 4).
-- `core/identity/`: the contract, Ed25519 over WebCrypto, `secureRandomBytes`, `PeerIdentity`. **No credential codec, verifier or issuer yet.**
-- `core/talk/`: the contract, `TalkFrame`, `TalkBulkOpen`, `TalkBulkReference`, and the Talk runtime from PR #11 (section 3 says how far its tests got).
-- `core/naming/`: the `_ns` codecs, slot keys and tables, and the naming client, resolver and service from the naming PR (section 3).
-- `core/switchboard/`: the runtime-neutral `Switchboard` node (dispatch, pool, policies, identity waits, brokering resolvers, proxy, relay, `PeerSet`), whose core runtime opens `FrameMuxConnection`s since #17; its Talk seam (`talk-layer.ts`) still throws `UNIMPLEMENTED` and is the first thing to wire (section 4).
-- `core/client/`: `ReconnectingClient`, `PersistentChannel`, `PersistentTalk`, `Backoff` (internal).
-- `core/quic/`: the provider contract, records, HELLO, exporter helpers, the binding, `QuicIdentityRules`, `connectQuic`, `listenQuic`.
-- `node/quic/`: `nativeQuic()`, the lazily loaded N-API addon (`$SWITCHBOARD_QUIC_ADDON`, then the local build, then `@kaetemi/switchboard-quic-<target>`), `selfSignedCertificate`.
-- `testing/`: `ManualClock`, the fake QUIC provider.
-- `native/`: the N-API crate (`src/lib.rs`, `Cargo.toml`, `build.mjs`), `sbq-vendor/` (the shim at the pin with `"rlib"` added), `sbq-vendor.commit`, `tool/sync-sbq.mjs` (`--check` verifies the copy against a `switchboard_quic` checkout).
-- `test/`: `unit/`, `integration/`, `vectors/` (wiki vectors JSON, coverage test, per-layer vector tests), `interop/` (Dart peer, launcher, matrix, scenarios, oracle, probes), `support/` (fixtures the threads share: toy mux, fake Talk pair, fake mux pair, stepping and fake clocks, identity stubs).
+```sh
+npm ci                                    # in a worktree: node_modules is a symlink to the main checkout's; do not install there
+npm run check                             # biome, tsc (src), unit + integration projects
+npx tsc -p tsconfig.test.json --noEmit    # type-checks test/** too; CI does not run it
+npm run build                             # dist/ for the four entry points
+npx vitest run --project unit test/unit/mux   # one directory, fast
+```
 
-## 3. What landed at the end, with gaps marked
+**Native QUIC.** `npm run build:native` builds the addon with cargo into `native/sbq-node.node` (about three minutes cold; Rust 1.99.0 in CI, 1.88 or later needed); or set `SWITCHBOARD_QUIC_ADDON=<file>` to one already built. The native files then run with the others; on their own: `npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts test/integration/quic-node-native.test.ts test/integration/node-quic.test.ts test/integration/node-webtransport.test.ts test/integration/identity.test.ts`. Without the addon they skip with a reason; `SWITCHBOARD_NATIVE=required` fails instead (CI). `node tool/sync-sbq.mjs --check <switchboard_quic checkout>` verifies the vendored shim against the pin.
 
-The user asked for everything to be merged and pushed at hand-off, so the last four PRs went in with their gaps marked rather than staying on thread branches. What they leave open, from their PR bodies and the threads' notes:
+**Browser.** `SWITCHBOARD_BROWSER=required npm run test:browser` (its own config, `test/browser/vitest.config.ts`): the addon for the native WebTransport listeners, the `playwright` dev dependency (1.56.1) and its Chromium (`PLAYWRIGHT_BROWSERS_PATH`); Vite serves the page from the sources. `SWITCHBOARD_BROWSER_LOG=1` prints the page's log.
 
-- **Frame mux (#14).** The implementation is complete and exported; only four smoke tests cover it. Keep-alive, the LIMITS wait, the output scheduler and bulk zipper, the open-payload budget and pending-rejection cap, the receive high-water pause and the IDENT exchange were compared with Dart by reading only. Porting `mux_test`, `mux_flow_test`, `mux_schedule_test`, the connection groups of `mux_limits_test`, the connection group of `mux_vectors_test` and the IDENT gating tests of `binding_protocol_test` (with `mux_harness.dart` as `test/unit/mux/support.ts`) is the first job, and it will find bugs.
-- **Talk (#11).** Complete against the Dart tests except the groups its tests mark `// Not ported` (the bulk "over TCP" variant needs the frame mux over TCP; the forwarding "synchronous transport" variants have no TS counterpart; `onError(null)`). Its tests run over `test/support/talk/fake-channel.ts`; the integration tests over the real frame mux and over `QuicBindingConnection` are not written. A known gap in bulk admission: a frame delivered to Talk's reader but not yet processed is not counted, so a peer exactly at `maxUnclaimedBulk` can get a spurious RESOURCE_EXHAUSTED.
-- **Naming (#13).** `SlotGate` and `SlotLifecycle` are not ported (they need the real Talk channel and the node's proxy forwarding); `NamingClient.renew()` is unimplemented (needs `Credential.decode`); the node-side identity and brokering tests are marked `// Not ported` for the node; the routing group of `slot-routing.test.ts` is `test.todo` until the node routes by slot; the tests run over `test/support/naming/fake-talk.ts`, which has no item windows; nothing is checked against the Dart naming service yet.
-- **Node (#6, #10, #16, #17).** The core runtime opens `FrameMuxConnection`s (#17, one smoke test); the node test suites still run over the toy mux (`test/support/node/toy-mux.ts`) and should run over the frame mux too, which enables the todos needing real LIMITS and flow control; `talk-layer.ts` still throws `UNIMPLEMENTED` for `talkOver` and must import `TalkChannel` and `installBulkRouting` from `src/core/talk`; `slot-layer.ts` returns no carrier, so the proxy's slot-routing groups (about 20 Dart tests) are unported; `MeshNode` is not started; the Talk and bulk cases of the proxy and relay tests are `it.todo` (16 and 2). `src/node/switchboard.ts` and `src/web/switchboard.ts` (listeners and schemes) do not exist yet.
-- **QUIC (#8, #15).** Node integration is in (`QuicSwitchboardBinding`, `QuicSwitchboardListener`, `quicConnector`); its node-level tests still have the Talk bulk case, the two proxy cases, `SlotChannel` at record cost and the man-in-the-middle group as todo. The browser WebTransport provider exists only as the API surface (`src/web/quic/webtransport-api.ts`, unexported); the provider, its Playwright test and the `browser` CI job remain. Prebuilt packages and the release workflow are not started; only Linux x64 has been built. A raw QUIC listener needs `alpn: [switchboardAlpn]` in its config and nothing fills it in for the caller yet.
-- **Interop (#7, #12).** No TS peer yet, so every TS cell of the matrix skips with the reason in its name; the oracle covers names, status, addresses, mux frames and control messages.
-- **Identity.** No credential codec, verifier or issuer; every layer that needs one uses a stub (`test/support/identity/stub-verifier.ts`, `test/support/node/fake-identity.ts`, `test/unit/quic/identity-fixtures.ts` with real Ed25519 holder keys).
+**Interop.** `npm run test:interop` needs a Dart SDK 3.13.5 (`dart` on PATH, `SWITCHBOARD_DART_SDK`, or `node tool/dart-peer.mjs build --download-sdk`), a Rust toolchain (the Dart QUIC package's build hook runs cargo) and the two Dart repositories (sibling checkouts, `SWITCHBOARD_DART_CORE` and `SWITCHBOARD_DART_QUIC`, or `node tool/dart-peer.mjs fetch`). The global setup builds the AOT peer once and caches it on a stamp (`node tool/dart-peer.mjs status`); `SWITCHBOARD_DART_PEER=<exe>` uses a prebuilt peer (from a worktree, the main checkout's), `SWITCHBOARD_INTEROP=required` fails without a peer (CI), `SWITCHBOARD_INTEROP=skip` skips without looking, `SWITCHBOARD_FUZZ_SEED` and `SWITCHBOARD_FUZZ_COUNT` replay or widen the oracle.
 
-## 4. Remaining work, by area
+**Bun and Deno**, with the built package (a consumer project whose `node_modules/@kaetemi/switchboard` points at the repository, `ws` installed beside it):
 
-The work split (`docs/work-split.md`) lists each thread's deliverables; this is what is left of them. A sensible order for the first days: (1) wire the node to what has landed, that is `talk-layer.ts` to `TalkChannel` and `installBulkRouting` (the mux factory already opens `FrameMuxConnection`s since #17), which flips dozens of `todo` tests across the node, proxy, relay, PeerSet and QUIC suites; (2) port the Dart frame mux tests and fix what they find; (3) the TS interop peer, so the Dart matrix starts exercising the port over TCP and WebSocket; (4) identity codecs; (5) the Node and web entry points with the TCP and WebSocket transports; then the rest below.
+```sh
+bun run test:unit                         # what CI runs on Bun
+bun app.ts                                # a script importing @kaetemi/switchboard/node
+deno run --allow-net --allow-read --allow-env --allow-ffi app.js
+```
 
-**Core (thread 1)**
-1. `frame-mux-connection.ts`, `frame-mux-channel.ts`, `output-scheduler.ts`: the full `MuxConnection` and `MuxChannel` over a `FrameTransport`, with the identity exchange (held frames while verifying), keep-alive, GOAWAY, credit, limits, the output scheduler. Port `mux_connection_test.dart`, `mux_channel_test.dart`, the `frame_mux_*` tests. This unblocks the node's mux factory (`core-runtime.ts`), the Talk integration tests over the memory pair, the TS interop peer and the naming integration tests.
-2. Identity: `credential.ts` (codec with vectors), `scope.ts`, `holder-key.ts`, `credential-verifier.ts` (HMAC-SHA256 and Ed25519), `credential-issuer.ts`; replace `test/support/identity/stub-verifier.ts` and the node's `fake-identity.ts` where they stand in; `NamingClient.renew()` needs `Credential.decode`.
-3. `websocket-transport.ts` (global `WebSocket`), `src/node/transport/` (`connectTcp`, `listenTcp`, `ws` server and client, `connectTransport`), the loopback integration tests, the Dart `web_socket_*` and `stream_transport_*` test ports.
+Deno needs `--allow-ffi` for the addon (and `--allow-read --allow-env` for its loader), and `ws` in a `node_modules` directory for the WebSocket server (`--node-modules-dir=manual` for a lone script). Node 22 runs compiled JavaScript; its type stripping cannot parse `await using`, so TypeScript using it runs on Node 24+ or after `tsc`.
 
-**Talk (thread 2)**
-- Whatever PR #11's description and `handoff-notes/talk.md` mark as not yet ported (ordered answers, bulk transfers, forwarding tests were the last groups); the integration tests over the real frame mux once it lands; `ManualClock.elapseAsync` so `FakeClock`, `SteppingClock` and `TestClock` can merge.
+**CI** (`.github/workflows/ci.yml`): lint and typecheck; unit and integration on Node 22, 24 and 26; the unit project on Bun; build (and an import of `dist/`); `interop` (Dart peer, required mode); `native` (addon build after `sync-sbq --check`, the native QUIC files); `browser` (addon build, Playwright's Chromium, `npm run test:browser` in required mode). Deno is not in CI.
 
-**Node and client (thread 3)**
-- Deliverable 4: proxy (`pipeChannels`, `proxyHandler`), relay, forwarding, `PeerSet`, `MeshNode`, with `switchboard_test.dart`'s proxy and relay groups, `peer_set_test.dart`, `mesh_test.dart`.
-- Deliverable 5: `src/node/switchboard.ts` (listeners for `tcp`, `ws`, `wss`, `mem`; `quic` and `https` delegated to `connectQuic` and `listenQuic` through the `quic` option), `src/web/switchboard.ts`, the entry points' exports, slot-routed opens (`openChannelToSlot`, `selectAndConnect` with a `SlotResolver`) using the naming layer's `reopenAtSlotOwner`.
-- Run the node suites over `FrameMuxConnection` as well as the toy mux (`core-runtime.ts` already opens the frame mux since #17).
+## 4. Interop status
 
-**Naming and sharding (thread 4)**
-- `SlotGate` and the proxy half of slot routing (need the real Talk channel and the node's proxy forwarding); the integration tests over the memory transport; the `test.todo` routing group in `slot-routing.test.ts` once the node routes by slot; `NamingClient.renew()`.
+_To be filled in by the lead once the `claude/ts-peer` branch is merged: which cells of the matrix pass in each pairing (Dart and Dart, Dart and TS, TS and Dart, TS and TS) over each transport (tcp, ws, quic, webtransport), which scenarios exist, the oracle kinds checked, and what is still skipped and why._
 
-**QUIC (thread 5)**
-- Node integration: Dart's `QuicSwitchboardBinding` and `QuicSwitchboardListener` over the node's `registerBinding`, `adopt` and identifying in return (touches the node thread's files; coordinate on `src/node/switchboard.ts`).
-- The WebTransport provider for browsers (`src/web/quic/webtransport-provider.ts`, `webTransport()`), the Playwright Chromium test and the `browser` CI job.
-- Dart interop over raw QUIC and WebTransport once the TS peer exists.
-- Prebuilt packaging: `@kaetemi/switchboard-quic-<target>` optional dependencies for the `switchboard_quic` release targets (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64) and a `release` workflow; publishing is the user's call.
+## 5. Decisions
 
-**Interop (thread 6)**
-- The TS peer (`test/interop/ts_peer/main.ts`, public API only, same JSON-lines protocol as `test/interop/README.md`), then the mux and Talk scenario matrix; clear `tsTransportGaps` in `matrix.ts` as transports become servable.
-- More oracle kinds (talk frame, stream framing now; naming, sharding, credential and QUIC records after the Dart peer's oracle grows).
-- Identity, naming, relay and proxy scenarios; mixed-language meshes; the Dart driver under `test/interop/dart_driver/`.
-- Register the inline-hex vector tests through `test/support/vectors.ts` so the coverage test's `todo` tables go live (`SWITCHBOARD_VECTORS_STRICT=1` makes every table required).
+The design's section 11 is the list; the ones a session meets first:
 
-**Lead**
-- Keep `docs/design.md`, `docs/work-split.md` and `docs/wiki/` in step; the GitHub wiki repository could not be pushed from the cloud environment, so the pages stay under `docs/wiki/` until someone pushes them.
-- Deno in CI once the suite passes there by hand; `CHANGELOG.md` before any publish.
-
-## 5. Decisions already taken
-
-- **Package name** `@kaetemi/switchboard` (the user's npm scope); prebuilt addons as `@kaetemi/switchboard-quic-<target>`.
-- **QUIC provision:** an N-API addon over a vendored copy of `switchboard_quic/native/sbq` with one change (`"rlib"` in the crate types). No upstream change. The copy stays byte-identical to upstream otherwise and separable; a dedicated shim repository shared by the Dart and TS packages is the intended later direction. The pin lives outside the copy in `native/sbq-vendor.commit`.
-- **Binding base keeps Dart's scope:** `BindingConnection` has drain holds and neutral diagnostics only; the identity exchange, `adoptIncoming` and `admitAfterGoAway` are each binding's own.
-- **Idioms** (design section 5): `Uint8Array` bytes, numbers for u48 ids, ms durations, const objects not enums, pull-based `AsyncIterable` delivery (credit returned on delivery) plus Web Streams, typed `Emitter`, `AbortSignal`, `Symbol.asyncDispose`, injectable `Clock` and `Logger` in every options object, WebCrypto, `SwitchboardError` and `ProtocolError` (only PROTOCOL_ERROR is a `ProtocolError`; FRAME_TOO_LARGE is a `SwitchboardError`), `RangeError`/`TypeError` for Dart's `ArgumentError`, plain `Error` for `StateError`.
-- **`_bulk` routing** is installed by the Talk layer through the mux contract's `adoptIncoming(filter)` and `admitAfterGoAway(predicate)`; raw `incoming` consumers never see `_bulk` channels.
-- **`ReconnectingClient`** takes a `TransportConnector` function or a `ConnectionConnector` object `{ connect(options, { signal }) }`; QUIC and WebTransport plug in through the latter.
-- **`verifyIdent` takes wall time** (`now`, ms since the epoch) because the injected `Clock` is monotonic.
-- **Contract files** (`src/core/*/contract.ts`) and the barrels outside a thread's directories are the lead's; contract changes go in their own commit with a rationale.
-
-Open: the GitHub wiki push; Deno in CI; whether a web entry-point helper should return a `ConnectionConnector` for WebTransport; `isSlotResolver` may move from `naming/slot-reopen.ts` next to the switchboard contract when the node wires slot routing.
+- **Package** `@kaetemi/switchboard`; prebuilt addons `@kaetemi/switchboard-quic-<target>` as optional dependencies (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64).
+- **QUIC provision:** an N-API addon over a vendored copy of `switchboard_quic/native/sbq` with one change (`"rlib"` in the crate types), byte-identical otherwise and separable; the pin outside the copy (`native/sbq-vendor.commit`); a shared shim repository is the intended later direction. No upstream change.
+- **Browsers:** `webTransport(init?)` returns the provider (a `QuicConnector`); `webTransportConnector(url, init)` returns a `ReconnectingClient`'s connector.
+- **Placement:** `MeshNode` and `PeerSet` in `core/switchboard/`; `SlotGate`, `SlotLifecycle` and `SlotGates` in `core/naming/slot-gate.ts`; `isSlotResolver` in `core/switchboard/resolver.ts`; `StaticResolver` is a `SlotResolver`.
+- **Binding base** keeps Dart's scope (drain holds, neutral diagnostics); the identity exchange and the two hooks are each binding's own. `_bulk` routing is installed by Talk through `adoptIncoming` and `admitAfterGoAway`.
+- **Idioms** (design section 5): `Uint8Array` bytes, numbers for u48 ids, ms durations, const objects, pull-based `AsyncIterable` delivery with credit on delivery, Web Streams, typed `Emitter`, `AbortSignal`, `Symbol.asyncDispose`, injectable `Clock` and `Logger`, WebCrypto, `SwitchboardError` and `ProtocolError`, `RangeError`/`TypeError` for misuse, plain `Error` for `StateError`; wall time in ms for credentials and `verifyIdent`.
+- **Branches:** `main` is the integration branch (the first hand-off's open question is closed).
 
 ## 6. Conventions
 
-- **Merges:** real merge commits only (`merge_method: merge`), never squash or rebase; keep branch history granular; after a PR merges, continue the branch from the integration branch with a merge, not a rebase.
-- **Commits:** one per milestone, descriptive subject, `Co-Authored-By: Claude <noreply@anthropic.com>` and a `Claude-Session:` line; no model identifiers in commits, PR text or code comments; operational security in commit messages.
-- **PR bodies:** Before, After, How, notes for the lead; the project attribution footer.
-- **Before every push:** `npm run check` (lint, typecheck, unit and integration) and `npx tsc -p tsconfig.test.json --noEmit`; CI does not run the second one, the lead did.
-- **Style:** Biome (single quotes, 100 columns), `.ts` import extensions, `type` imports, no `any`, no TS `enum`, file header comment as in the sources, JSDoc on every export, `process.env['X']` (index signatures need bracket access).
-- **Ownership:** as in `docs/work-split.md`; shared helpers under `test/support/<thread>/`.
-- **Dart repositories are read-only.** Findings about them go in PR descriptions and notes.
-- **Wiki pages** live in `docs/wiki/` in wiki-ready Markdown.
+- **Worktrees and branches:** one topic per branch `claude/<topic>`, in a worktree `/home/user/wt/<topic>` branched from `main`; never edit the main checkout or commit on `main` from a worktree. Push only your own branch (`git push -u origin claude/<topic>`, retrying with backoff on network errors); the lead merges into `main` and pushes it.
+- **Merges:** real merge commits only (`git merge --no-ff claude/<topic>`), never squash or rebase; keep branch history granular; continue a merged branch from `main` with a merge. The lead's procedure: merge, resolve conflicts, `npm run check`, `npx tsc -p tsconfig.test.json --noEmit`, push.
+- **Commits:** one per milestone, a descriptive subject, a body saying what and why, and the two trailer lines `Co-Authored-By: Claude <noreply@anthropic.com>` and `Claude-Session: https://claude.ai/code/session_01B2KoRQTAdtpnxcxjhmD2ey`; no model names or identifiers anywhere (commits, code, comments, docs); nothing about hosts, credentials or internal paths in commit messages.
+- **Before handing a branch over:** `npm run check` and `npx tsc -p tsconfig.test.json --noEmit` clean; the projects relevant to the change run often while working.
+- **Style:** Biome (single quotes, 100 columns), `.ts` import extensions, `type` imports, no `any`, no TS `enum`, no `biome-ignore` without a reason, the file header comment as in the sources, JSDoc on every export, `process.env['X']`.
+- **Ownership:** contract files (`src/core/*/contract.ts`) and the barrels outside a topic's directories are the lead's; a contract change goes in its own commit with a rationale. Stay inside the files a task names; shared test helpers go under `test/support/<area>/`.
+- **Tests:** never skip, disable or weaken a test to get green; name TS test files after the Dart files; register wiki vector ids through `test/support/vectors.ts`.
+- **Dart repositories are read-only.** Findings about them are reported (in notes and to the lead), never patched here.
+- **Docs:** keep `docs/design.md`, `docs/work-split.md`, this document and `docs/wiki/` in step; wiki pages are GitHub wiki Markdown with relative page links (`[Identity](Identity)`), and every code block in them type-checks against the built package.
 
-## 7. How to run everything
+## 7. What remains
 
-```sh
-npm ci
-npm run check                 # biome, tsc (src), unit + integration projects
-npx tsc -p tsconfig.test.json --noEmit    # type-checks test/** too
-npm run build                 # dist/ for the four entry points
-```
+- **Interop:** the TS peer and its cells (in flight on `claude/ts-peer`, section 4).
+- **Packaging and publishing:** musl Linux prebuilds (the loader looks for `-linux-<arch>-musl`); the first publish (the user's call; `release.yml` publishes only when asked, and the lock file needs regenerating after the first publish so that `npm ci` resolves the optional dependencies); only Linux x64 is built in CI.
+- **The GitHub wiki push:** the wiki repository could not be written from this environment; `docs/wiki/` is ready to push as it is.
+- **Deno in CI:** checked by hand on Deno 2.9 (TCP, WebSocket and native QUIC round trips with the built package); add a job once the suite is known to pass there.
+- **Browsers:** Firefox's exporter path (Firefox 155+ has `exportKeyingMaterial`) is untested; the `protocols` negotiation needs Chromium 143+, which needs a Playwright newer than 1.56.1.
+- **The QUIC bulk-burst gap**, shared with Dart: over the QUIC binding, which reads a channel's next record only after the previous one was consumed, a burst of more than 16 (`maxUnclaimedBulk`) bulk messages fails when an early bulk stream lags; recorded as `test.fails` in `test/integration/talk-quic.test.ts`. Options: the binding reads ahead for Talk, or Talk grants the parent a window ahead on unordered connections (design section 13, item 6).
+- **Transport details:** `TcpTransport.bufferedOutputBytes` reports a turn late after an abort; the memory pair's writable `closed` does not settle when the other side closes.
+- **Test fixtures:** `test/support/identity/mux-harness.ts` duplicates `test/unit/mux/support.ts`; the node's `SteppingClock` (`test/support/node/stepping-clock.ts`) and the naming tests' `TestClock` (`test/support/naming/test-clock.ts`) could merge into `ManualClock.elapseAsync`; the unit case "a forged IDENT gets GOAWAY UNAUTHENTICATED" (`test/unit/switchboard/identity-node.test.ts`) uses the rogue authority's credential where Dart flips a byte of a valid one (the integration port in `test/integration/identity.test.ts` flips the byte); `test/support/identity/stub-verifier.ts` stays for the mux IDENT tests.
+- **Small doc and config leftovers** found by the docs pass (none changes behaviour): the root `vitest.config.ts` comment says "Four projects" but defines three (the browser tests have their own config); the `RelayService` doc example in `src/core/switchboard/relay.ts` calls `node.listenTcp({ host, port, policy })`, where the signature is `listenTcp(address, port, { policy })`; `test/integration/identity.test.ts` copies design section 2's identity example with the old `issuer.issueNode` and an awaited `selfSignedCertificate`, which the design now writes as `issuer.issue({...})` and a synchronous call.
 
-**Dart interop** (`npm run test:interop`): needs a Dart SDK 3.13.5 (`dart` on PATH, or `SWITCHBOARD_DART_SDK`, or `node tool/dart-peer.mjs build --download-sdk`), a Rust toolchain (the Dart QUIC package's build hook runs cargo), and the two Dart repositories as sibling checkouts of this one, or `SWITCHBOARD_DART_CORE` and `SWITCHBOARD_DART_QUIC`, or `node tool/dart-peer.mjs fetch` (clones the pins into `test/interop/dart_peer/.deps/`). The global setup builds the AOT peer once and caches it on a stamp; `node tool/dart-peer.mjs status` says what it would use. Without Dart the interop files skip with one line saying why; `SWITCHBOARD_INTEROP=required` turns that into a failure (CI), `SWITCHBOARD_INTEROP=skip` skips without looking, `SWITCHBOARD_DART_PEER=<exe>` uses a prebuilt peer, `SWITCHBOARD_FUZZ_SEED` and `SWITCHBOARD_FUZZ_COUNT` replay or widen the oracle. In the cloud container used for this work Dart was at `/opt/dart-sdk/bin` and the Dart repositories were sibling checkouts in `/home/user`.
+## 8. History
 
-**Native QUIC:** `npm run build:native` builds the addon with cargo (Rust 1.99.0 in CI) into `native/`; `npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts` runs the provider and the binding end to end over the loopback. Without the addon those files skip with a reason; `SWITCHBOARD_NATIVE=required` fails instead (CI). `node tool/sync-sbq.mjs --check <switchboard_quic checkout>` verifies the vendored shim against the pin.
+**First phase** (pull requests into `claude/switchboard-ts-design-s5r9na`, merged with merge commits; `main` was initialised from it at the first hand-off): #1 Talk frame codec (04362ea), #2 QUIC records and the fake provider (e7c04da), #3 naming codecs and slot tables (47fb444), #4 Talk contract (f378d19), #5 stream framing, memory pair, endpoints (f0e7263), #6 the core node (0c88ec6), #7 the interop harness (ecf4f54), #9 mux codecs, IDENT, the binding base (1ba6818), #10 the reconnecting client (0a96930), #8 the QUIC binding and the native addon (63aeabb), #12 the oracle for mux codecs (034ab8b), #11 the Talk runtime (cd08e02), #13 the naming client, service and resolver (dd8c205), #14 the frame mux (1ba6e94), #15 the QUIC node binding (6cf6beb), #16 proxy, relay, `PeerSet` (1a608ed), #17 the frame mux in the core runtime (7975285), #18 a branch sync (0c0f92e).
 
-**CI** (`.github/workflows/ci.yml`): lint and typecheck, Node 22, 24 and 26, Bun, build, `interop` (Dart peer, required mode), `native` (addon build and loopback tests). The `browser` job is still to be added by the QUIC thread.
+**Continuation** (topic branches merged into `main`):
 
-**State at hand-off:** the last content merge is 7975285 (PR #17; PR #18, 0c0f92e, is a branch sync with no file changes); `main` and `claude/switchboard-ts-design-s5r9na` point at the same head, the commit that last touched this document. On it, `npm run check` and the test typecheck are clean and `npm test` reports 1517 passed, 125 skipped (the native QUIC files without the addon, 9 naming cases with their reasons) and 50 todo; the interop project passes 241 Dart cells in CI and skips every TS cell. No pull request is open and no thread branch holds a commit the integration branch lacks.
+- `claude/mux-tests`: every Dart mux suite (`test/unit/mux/`), two performance fixes (channel streams made on first use; at most 1024 writes in flight to a transport), `MuxChannel[Symbol.asyncIterator]`, `identify()` pre-caught, a transport's writable that errors once its output ended.
+- `claude/identity`: `Credential`, `Scope`, `CredentialIssuer`, `CredentialVerifier`, `Ed25519HolderKey`, the credential vectors, `identity_test.dart`, `NamingClient.renew()`.
+- `claude/transports`: `websocket-transport.ts`, `src/node/transport/` (TCP, the `ws` server and client, `connectTransport`), `src/node/switchboard.ts` (`listenTcp`, `listenWebSocket`, `acceptWebSocket`, `listenQuic`, `listenWebTransport`), `src/web/switchboard.ts`, the loopback integration tests.
+- `claude/talk-integration`: Talk over the frame mux, TCP and the QUIC binding (the integration tests), the bulk admission fix, vectors by id, `ManualClock.elapseAsync`.
+- `claude/node-talk`: the node's Talk seam wired to `TalkChannel`; every node suite over the toy mux and the frame mux; the proxy, relay, `PeerSet`, client and QUIC node todos ported.
+- `claude/webtransport`: the WebTransport provider (`webTransport()`, `webTransportConnector`), `test/browser/` with its own config, the `browser` CI job, the QUIC man-in-the-middle tests.
+- `claude/mesh`: `MeshNode` (`src/core/switchboard/mesh-node.ts`) and the Dart node-level integration suites.
+- `claude/quic-identity`: the node-level native QUIC tests, real credentials in the fixtures, the prebuilt addon manifests, `optionalDependencies`, `release.yml`, the QUIC vectors by id.
+- `claude/slot-routing`: `openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups, `SlotGate`, `SlotLifecycle` and `SlotGates`, the naming suites over real Talk.
+- `claude/sharding`: `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave`, the Dart sharding integration suite (`test/integration/sharding/`).
+- `claude/docs`: this document, the design, the work split, the wiki pages (five new), the README and the CHANGELOG brought in step with the code.
