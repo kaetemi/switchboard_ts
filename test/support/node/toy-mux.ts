@@ -477,8 +477,12 @@ export class ToyMuxConnection implements MuxConnection {
     void this.#shutdown(status, this.#lostStatus());
   }
 
+  /** GOING_AWAY after the peer's GOAWAY, the GOAWAY this side sent, else CONNECTION_LOST. */
   #lostStatus(reason = ''): Status {
-    return this.#peerGoAway ?? this.#ownGoAway ?? Status.of(StatusCode.connectionLost, reason);
+    if (this.#peerGoAway !== undefined) {
+      return Status.of(StatusCode.goingAway, this.#peerGoAway.reason);
+    }
+    return this.#ownGoAway ?? Status.of(StatusCode.connectionLost, reason);
   }
 
   #shutdown(status: Status, channelStatus: Status | undefined): Promise<void> {
