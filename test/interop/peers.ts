@@ -50,8 +50,8 @@ function locateTs(): Availability {
     ? { path: tsPeerMain }
     : {
         reason:
-          'no TS peer yet (test/interop/ts_peer/ lands once the node and Talk are ported, ' +
-          'threads 2 and 3)',
+          'no TS peer yet (test/interop/ts_peer/ lands once the mux and Talk are ported, ' +
+          'threads 1 and 2)',
       };
 }
 

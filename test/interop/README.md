@@ -6,7 +6,7 @@ The Dart implementation (`kaetemi/switchboard` and `kaetemi/switchboard_quic`) r
 test/interop/
   dart_peer/          the Dart peer: a package depending on the Dart repositories by path,
                       built with `dart build cli` to an AOT executable; dart_commits.txt pins them
-  ts_peer/            the TS peer (not yet: it needs the node and Talk ports)
+  ts_peer/            the TS peer (not yet: it needs the mux and Talk ports)
   protocol.ts         the protocol's messages as types
   launcher.ts         spawns a peer, waits for READY, speaks JSON lines, logs events
   peers.ts            which peers this run has (the Dart peer from the global setup)
