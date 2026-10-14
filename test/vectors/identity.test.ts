@@ -1,6 +1,7 @@
 // Connection identity: the NONCE and IDENT rows of the wiki page
 // "Polyverse Switchboard Test Vectors", section "Mux frames", with the
-// proof P. Ports the "connection identity control messages" group of
+// proof P, and the IDENT payloads that section lists as protocol errors.
+// Ports the "connection identity control messages" group of
 // `test/vectors/identity_vectors_test.dart`; its credential groups come
 // with the credential codec.
 import { describe, expect, test } from 'vitest';
@@ -20,19 +21,32 @@ import {
   receiverNonce,
   senderNonce,
 } from '../support/identity/identity-vectors.ts';
+import { wikiBlob, wikiBytes } from '../support/vectors.ts';
 
 describe('connection identity control messages', () => {
+  test('the shared inputs are the wiki blobs C1, C2 and P', () => {
+    expect(hexString(wikiBlob('C1'))).toBe(hmacCredential);
+    expect(hexString(wikiBlob('C2'))).toBe(ed25519Credential);
+    expect(hexString(wikiBlob('C2.holder-seed'))).toBe(hexString(holderSeed));
+    expect(hexString(wikiBlob('C2.holder-key'))).toBe(holderPublic);
+    expect(hexString(wikiBlob('P'))).toBe(proof);
+  });
+
   test('NONCE', () => {
+    const frame = wikiBytes('test-vectors/mux-frames/control-nonce-32-bytes-of-11');
+    expect(hexString(frame)).toBe(`02 00 00 05 ${hexString(senderNonce)}`);
     expect(hexString(MuxControlMessage.nonce(senderNonce).toFrame().encode())).toBe(
-      `02 00 00 05 ${hexString(senderNonce)}`,
+      hexString(frame),
     );
   });
 
   test('IDENT, bearer credential, no intent, no receiver, no proof', () => {
     const ident = new MuxIdent({ credential: hexBytes(hmacCredential) });
-    expect(hexString(MuxControlMessage.ident(ident).toFrame().encode())).toBe(
-      `02 00 00 06 56 00 ${hmacCredential} 00 00`,
+    const wiki = wikiBytes(
+      'test-vectors/mux-frames/control-ident-credential-c1-below-no-intent-no-receiver-no-proof',
     );
+    expect(hexString(wiki)).toBe(`02 00 00 06 56 00 ${hmacCredential} 00 00`);
+    expect(hexString(MuxControlMessage.ident(ident).toFrame().encode())).toBe(hexString(wiki));
     const decoded = MuxIdent.decode(hexBytes(`56 00 ${hmacCredential} 00 00`));
     expect(hexString(decoded.credential)).toBe(hmacCredential);
     expect(decoded.intent).toHaveLength(0);
@@ -57,9 +71,15 @@ describe('connection identity control messages', () => {
       receiver,
       proof: hexBytes(proof),
     });
-    const frame =
+    const frame = hexString(
+      wikiBytes(
+        'test-vectors/mux-frames/control-ident-credential-c2-below-intent-01-02-03-04-receiver-consumer-proof-p',
+      ),
+    );
+    expect(frame).toBe(
       `02 00 00 06 88 00 ${ed25519Credential} 04 01 02 03 04 ` +
-      `08 63 6F 6E 73 75 6D 65 72 ${proof}`;
+        `08 63 6F 6E 73 75 6D 65 72 ${proof}`,
+    );
     expect(hexString(MuxControlMessage.ident(ident).toFrame().encode())).toBe(frame);
     const decoded = MuxIdent.decode(
       MuxControlMessage.decode(MuxFrame.decode(hexBytes(frame)).payload).payload,
@@ -87,17 +107,28 @@ describe('connection identity control messages', () => {
   });
 
   describe('negative (protocol error)', () => {
-    for (const [name, hex] of [
-      ['truncated credential length', '56'],
-      ['credential longer than the payload', '56 00 01 01'],
-      ['missing intent length', '02 00 AA BB'],
-      ['intent longer than the payload', '00 00 05 01 02'],
-      ['intent of 65 bytes', `00 00 41 ${Array(65).fill('00').join(' ')}`],
-      ['missing receiver length', '00 00 01 AA'],
-      ['receiver longer than the payload', '00 00 00 04 61 62'],
+    // The wiki's IDENT payloads after the type byte; the intent of 65
+    // bytes is its `00 00 41` followed by 65 bytes.
+    for (const [name, bytes] of [
+      ['truncated credential length', wikiBytes('test-vectors/mux-frames/prose-56')],
+      [
+        'credential longer than the payload',
+        wikiBytes('test-vectors/mux-frames/prose-56-00-01-01'),
+      ],
+      ['missing intent length', wikiBytes('test-vectors/mux-frames/prose-02-00-aa-bb')],
+      ['intent longer than the payload', wikiBytes('test-vectors/mux-frames/prose-00-00-05-01-02')],
+      [
+        'intent of 65 bytes',
+        concatBytes(wikiBytes('test-vectors/mux-frames/prose-00-00-41'), new Uint8Array(65)),
+      ],
+      ['missing receiver length', wikiBytes('test-vectors/mux-frames/prose-00-00-01-aa')],
+      [
+        'receiver longer than the payload',
+        wikiBytes('test-vectors/mux-frames/prose-00-00-00-04-61-62'),
+      ],
     ] as const) {
       test(name, () => {
-        expect(() => MuxIdent.decode(hexBytes(hex))).toThrow(ProtocolError);
+        expect(() => MuxIdent.decode(bytes)).toThrow(ProtocolError);
       });
     }
   });
