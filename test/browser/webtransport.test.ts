@@ -558,13 +558,12 @@ describe.skipIf(!availability.available)(
       });
 
       test('a nonce-bound IDENT from the browser, accepted by a listener with QuicIdentityRules.none', async () => {
-        await run(async ({ h, node, fixtures }) => {
+        await run(async ({ sb, h, node }) => {
           const connection = await node.dial();
-          const key = await fixtures.generateHolderKey();
+          const key = await sb.Ed25519HolderKey.generate();
           const issuing = node.talkTo(connection, 'issue');
           const issued = await h.within(issuing.request('ISSUE', key.publicKey));
-          // Stands in for Credential.decode, which the core does not have yet.
-          const credential = await new fixtures.FakeVerifier().verify(issued.payload);
+          const credential = sb.Credential.decode(issued.payload);
           await issuing.close();
           h.eq(credential.identity, 'browser-1', 'the identity issued');
           await h.within(connection.identify(credential, { holderKey: key }));

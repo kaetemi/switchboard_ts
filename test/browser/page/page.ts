@@ -6,11 +6,6 @@
 // `serverRecords` function the harness exposes. Every unhandled promise
 // rejection of the page is kept, for the suite to fail on.
 import * as sb from '../../../src/web/index.ts';
-import {
-  FakeVerifier,
-  fakeCredential,
-  generateHolderKey,
-} from '../../unit/quic/identity-fixtures.ts';
 import type { ServerDescription, ServerRecord } from '../web-server.ts';
 
 /** The longest any one wait of a test takes. */
@@ -262,9 +257,6 @@ const h = {
   },
 };
 
-/** What the tests use of the identity stand-ins (the core has no credential codec yet). */
-const fixtures = { FakeVerifier, fakeCredential, generateHolderKey };
-
 /** The binding tests' helpers, as `web_binding_test.dart` defines them. */
 const node = {
   /** The channel address of [service]. */
@@ -313,7 +305,7 @@ const node = {
   },
 };
 
-const api = { sb, h, fixtures, node };
+const api = { sb, h, node };
 
 /** What a test's body receives in the page. */
 export type PageApi = typeof api;

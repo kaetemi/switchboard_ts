@@ -18,13 +18,13 @@
 //   each, until the node's Talk layer is wired (`talk-layer.ts`);
 // * a UDP port that never answers, for a handshake that times out.
 //
-// Credentials are the stand-ins of `test/unit/quic/identity-fixtures.ts`
-// (the core has no credential codec or issuer yet): `issue` answers the
-// encoding of a fake credential for the holder key it is sent, and the
-// listener's verifier accepts exactly those.
+// The node's credentials come from an Ed25519 authority of its own,
+// `webauth`, whose verifier is the listener's.
 import { createSocket } from 'node:dgram';
 import { ChannelAddress } from '../../src/core/address/index.ts';
 import { hexString } from '../../src/core/bytes.ts';
+import { CredentialKind } from '../../src/core/identity/contract.ts';
+import { CredentialIssuer, CredentialVerifier } from '../../src/core/identity/index.ts';
 import type { MuxChannel } from '../../src/core/mux/contract.ts';
 import { Name } from '../../src/core/name.ts';
 import {
@@ -46,7 +46,6 @@ import {
   nativeQuic,
   selfSignedCertificate,
 } from '../../src/node/quic/index.ts';
-import { FakeVerifier, fakeCredential } from '../unit/quic/identity-fixtures.ts';
 
 /** One thing the server saw, as JSON. */
 export type ServerRecord = Readonly<Record<string, unknown>>;
@@ -154,13 +153,19 @@ export async function startWebServer(): Promise<WebServer> {
     })().catch(() => {});
   }
 
+  const authority = await CredentialIssuer.ed25519FromSeed(
+    'webauth',
+    Uint8Array.from({ length: 32 }, (_, i) => 11 * i + 1),
+  );
+  const verifier = new CredentialVerifier();
+  await verifier.addIssuer(authority);
   const sb = await provider.listenWebTransport('127.0.0.1', 0, config(), { path: '/sb' });
   const node = listenQuic(sb, {
     identityRules: QuicIdentityRules.none,
-    options: { identityVerifier: new FakeVerifier() },
+    options: { identityVerifier: verifier },
   });
   const connections = new Set<QuicBindingConnection>();
-  const services = nodeServices(record);
+  const services = nodeServices(record, authority);
   void (async () => {
     for await (const connection of node.connections) {
       connections.add(connection);
@@ -349,8 +354,8 @@ function messages(talk: TalkChannel, handler: (message: TalkMessage) => unknown)
   })().catch(() => {});
 }
 
-/** The node's Talk services, recording through [record]. */
-function nodeServices(record: Recorder): Map<string, Service> {
+/** The node's Talk services, recording through [record], issuing credentials of [authority]. */
+function nodeServices(record: Recorder, authority: CredentialIssuer): Map<string, Service> {
   const control = (m: TalkMessage, connection: QuicBindingConnection): unknown => {
     const text = decoder.decode(m.payload);
     switch (m.procedureName) {
@@ -384,11 +389,14 @@ function nodeServices(record: Recorder): Map<string, Service> {
     [
       Name.of('issue').key,
       (talk) =>
-        messages(talk, (m) =>
-          m.expectsReply
-            ? m.reply(fakeCredential('browser-1', m.payload.slice()).encode())
-            : undefined,
-        ),
+        messages(talk, async (m) => {
+          const credential = await authority.issue({
+            kind: CredentialKind.node,
+            identity: 'browser-1',
+            holderKey: m.payload.slice(),
+          });
+          if (m.expectsReply) await m.reply(credential.encode());
+        }),
     ],
     [Name.of('control').key, (talk, connection) => messages(talk, (m) => control(m, connection))],
   ]);
