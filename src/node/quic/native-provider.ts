@@ -307,7 +307,9 @@ function load(): Loaded {
     try {
       addon = require(candidate) as SbqAddon;
     } catch (error) {
-      failures.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`);
+      // The first line: the rest of a require error is its require stack.
+      const why = (error instanceof Error ? error.message : String(error)).split('\n')[0];
+      failures.push(`${candidate}: ${why}`);
       continue;
     }
     const version = typeof addon.abiVersion === 'function' ? addon.abiVersion() : undefined;
