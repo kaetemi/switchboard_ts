@@ -18,8 +18,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // connection to each naming service, a valid `IDENT` a new identity on that
 // connection (`updateCredential`, `identify`), and a `MeshNode` its naming
 // client. What only the node does (the `IDENT` exchange itself, brokered
-// connections, MeshNode's credential renewal, PeerSet) is not ported; those
-// tests are skipped with the reason.
+// connections, PeerSet) runs over real nodes in
+// `naming-identity-nodes.test.ts`; MeshNode's credential renewal is skipped
+// with the reason.
 
 import { afterEach, describe, expect, test } from 'vitest';
 import { ServiceAddress } from '../../../src/core/address/index.ts';
@@ -737,11 +738,11 @@ describe('scopes', () => {
     'a node whose IDENT names the naming service is accepted by a host that requires it; ' +
       'MeshNode works under the scopes',
     async () => {
-      // Not ported: the host's `requireNamedIdent`, the worker's
-      // `expectedIdentityFor` naming "ns", and the host refusing a node
-      // whose IDENT names nobody (`connect` failing UNAUTHENTICATED) are the
-      // node's IDENT exchange. The naming half is: a MeshNode under worker
-      // scopes, with and without watching.
+      // The naming half: a MeshNode under worker scopes, with and without
+      // watching. The whole case, with the host's `requireNamedIdent`, the
+      // worker's `expectedIdentityFor` naming "ns" and the host refusing a
+      // node whose IDENT names nobody, runs over real nodes in
+      // `naming-identity-nodes.test.ts`.
       const mesh = Mesh.start({ withIssuer: false });
       const worker = node({ credential: await issue('worker-a1', workerScopes) });
       const joined = join(worker, mesh, { watch: false });
@@ -1237,8 +1238,8 @@ describe('expiry and RENEW', () => {
     expect(await call(c, Procedures.register, registerPayload(workerType))).toBe(ok);
   });
 
-  // Not ported: NamingClient.renew waits for the credential codec; MeshNode's
-  // renewal schedule (`nextRenewalAt`, `Switchboard.credential`) is the node's.
+  // Not ported: MeshNode's renewal schedule (`nextRenewalAt`,
+  // `Switchboard.credential`); `MeshNode` is not in this port yet.
   test.skip(
     'MeshNode renews at two thirds of the lifetime; a credential that is not renewed ends ' +
       'the session at its expiry',
@@ -1271,14 +1272,9 @@ describe('CONNECT', () => {
     return { mesh, worker, workerMesh, id, consumer, consumerMesh };
   }
 
-  // Not ported: the brokered connection (Switchboard.openTalk through the
-  // resolver's CONNECT, MeshNode's dial-back over a real connection, its
-  // pooling and channel policy) is the node's.
-  test.skip('the consumer opens a channel to an outbound-only worker', () => {});
-
-  // Not ported: the dial-back connection and its GOAWAY
-  // (MeshNode.brokeredConnections) are the node's.
-  test.skip('a dial-back already received is closed when CONNECT fails', () => {});
+  // "the consumer opens a channel to an outbound-only worker" and "a
+  // dial-back already received is closed when CONNECT fails" need real
+  // nodes: ported in `naming-identity-nodes.test.ts`.
 
   test('refusals', async () => {
     const { mesh, id } = await setUp();
@@ -1359,18 +1355,9 @@ describe('CONNECT', () => {
     }
   });
 
-  // Not ported: the late dial-back's GOAWAY from the consumer, the
-  // consumer's connectTimeout and the instance's failed dial are the node's.
-  test.skip(
-    "a dial-back that arrives after the consumer gave up is sent GOAWAY, and the instance's " +
-      'dial fails',
-    () => {},
-  );
-
-  // Not ported: Switchboard.broker's preconditions (a brokering resolver, a
-  // listener, an instance, a verifier) are the node's.
-  test.skip('broker refuses without a brokering resolver, a listener, an instance or a verifier', () => {});
-
-  // Not ported: PeerSet is the node's.
-  test.skip('PeerSet brokers, and brokers again after a loss', () => {});
+  // "a dial-back that arrives after the consumer gave up is sent GOAWAY,
+  // and the instance's dial fails", "broker refuses without a brokering
+  // resolver, a listener, an instance or a verifier" and "PeerSet brokers,
+  // and brokers again after a loss" need real nodes: ported in
+  // `naming-identity-nodes.test.ts`.
 });
