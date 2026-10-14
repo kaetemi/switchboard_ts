@@ -1486,7 +1486,7 @@ export class WebTransportStream implements QuicStream {
     if (this.#finishing !== undefined || this.#resetSent) {
       return rejected(new Error('the stream was finished or reset'));
     }
-    const w = new Write(bytes.slice(), false);
+    const w = new Write(new Uint8Array(bytes), false);
     this.#writes.push(w);
     void this.#pump();
     return w.done.promise;
