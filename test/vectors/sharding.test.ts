@@ -1,5 +1,8 @@
 // Vectors from the wiki page "Polyverse Switchboard Test Vectors", section
 // "Sharding payloads", and the Dart `test/vectors/sharding_vectors_test.dart`.
+// The wiki's are read from test/vectors/wiki-vectors.json by id (through
+// test/support/vectors.ts), so test/vectors/coverage.test.ts checks the
+// sharding tables.
 import { describe, expect, test } from 'vitest';
 import { maxInstance, ServiceAddress } from '../../src/core/address/index.ts';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
@@ -31,6 +34,7 @@ import {
   SlotsRequest,
 } from '../../src/core/naming/index.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
+import { type WikiVector, wikiBytes, wikiVector } from '../support/vectors.ts';
 
 const kv = Name.of('kv');
 const userq = Name.of('userq');
@@ -44,24 +48,29 @@ interface Encodable {
 
 interface Vector {
   name: string;
-  hex: string;
+  bytes: Uint8Array;
   decode: (bytes: Uint8Array) => Encodable;
   check: (value: Encodable) => void;
 }
 
+/** Wiki vector [v] (table sharding-payloads#12), its decoder, and what the decoded value must be. */
 function vector<T extends Encodable>(
-  name: string,
-  hex: string,
+  v: WikiVector,
   decode: (bytes: Uint8Array) => T,
   check: (value: T) => void,
 ): Vector {
-  return { name, hex, decode, check: check as (value: Encodable) => void };
+  return {
+    name: v.case,
+    bytes: hexBytes(v.hex ?? ''),
+    decode,
+    check: check as (value: Encodable) => void,
+  };
 }
 
 const vectors: Vector[] = [
   vector(
-    'SLOTS "kv", 1024 slots, managed, holder-only, capacity 1',
-    '6B 76 00 00 00 00 00 00 00 04 00 00 00 00 01 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/slots-kv-1024-slots-managed-holder-only-capacity-1'),
+
     SlotsRequest.decode,
     (r) => {
       expect(r.space.equals(new SlotSpace(kv, { count: 1024 }))).toBe(true);
@@ -69,8 +78,8 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'SLOTS "userq", 65536 slots, managed lazy, capacity 0',
-    '75 73 65 72 71 00 00 00 00 00 01 00 00 01 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/slots-userq-65536-slots-managed-lazy-capacity-0'),
+
     SlotsRequest.decode,
     (r) => {
       expect(r.space.equals(new SlotSpace(userq, { count: 65536, lazy: true }))).toBe(true);
@@ -78,21 +87,21 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'SLOTSPC "room", 256 slots, managed, shared recovery',
-    '72 6F 6F 6D 00 00 00 00 00 01 00 00 00 02',
+    wikiVector('test-vectors/sharding-payloads/slotspc-room-256-slots-managed-shared-recovery'),
+
     SlotSpace.decode,
     (v) => expect(v.equals(new SlotSpace(room, { count: 256, shared: true }))).toBe(true),
   ),
   vector(
-    'SLOTSPC "discord", 16 slots, static',
-    '64 69 73 63 6F 72 64 00 10 00 00 00 01 00',
+    wikiVector('test-vectors/sharding-payloads/slotspc-discord-16-slots-static'),
+
     SlotSpace.decode,
     (v) =>
       expect(v.equals(new SlotSpace(discord, { count: 16, mode: SlotMode.static }))).toBe(true),
   ),
   vector(
-    'HOLDING "kv", slots 3 and 258',
-    '6B 76 00 00 00 00 00 00 02 00 00 00 03 00 00 00 02 01 00 00',
+    wikiVector('test-vectors/sharding-payloads/holding-kv-slots-3-and-258'),
+
     HoldingRequest.decode,
     (r) => {
       expect(r.type.equals(kv)).toBe(true);
@@ -100,17 +109,19 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'HOLDING response, discard slot 258',
-    '01 00 00 00 02 01 00 00',
+    wikiVector('test-vectors/sharding-payloads/holding-response-discard-slot-258'),
+
     HoldingResponse.decode,
     (r) => expect(r.discard).toEqual([258]),
   ),
-  vector('HOLDING response, nothing to discard', '00 00 00 00', HoldingResponse.decode, (r) =>
-    expect(r.discard).toEqual([]),
+  vector(
+    wikiVector('test-vectors/sharding-payloads/holding-response-nothing-to-discard'),
+    HoldingResponse.decode,
+    (r) => expect(r.discard).toEqual([]),
   ),
   vector(
-    'CLAIM "discord" slot 5, no storage, epoch 0',
-    '64 69 73 63 6F 72 64 00 05 00 00 00 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/claim-discord-slot-5-no-storage-epoch-0'),
+
     ClaimRequest.decode,
     (r) => {
       expect(r.type.equals(discord)).toBe(true);
@@ -120,8 +131,8 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'CLAIM "kv" slot 7, holding, last epoch 9',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 01 09 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/claim-kv-slot-7-holding-last-epoch-9'),
+
     ClaimRequest.decode,
     (r) => {
       expect(r.slot).toBe(7);
@@ -129,12 +140,14 @@ const vectors: Vector[] = [
       expect(r.epoch).toBe(9);
     },
   ),
-  vector('CLAIM response, epoch 7', '07 00 00 00', ClaimResponse.decode, (r) =>
-    expect(r.epoch).toBe(7),
+  vector(
+    wikiVector('test-vectors/sharding-payloads/claim-response-epoch-7'),
+    ClaimResponse.decode,
+    (r) => expect(r.epoch).toBe(7),
   ),
   vector(
-    'RELEASE "kv" slot 7, keep storage',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 01',
+    wikiVector('test-vectors/sharding-payloads/release-kv-slot-7-keep-storage'),
+
     ReleaseRequest.decode,
     (r) => {
       expect(r.type.equals(kv)).toBe(true);
@@ -143,8 +156,8 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'LOCATE "userq" slot 0x1234',
-    '75 73 65 72 71 00 00 00 34 12 00 00',
+    wikiVector('test-vectors/sharding-payloads/locate-userq-slot-0x1234'),
+
     LocateRequest.decode,
     (r) => {
       expect(r.type.equals(userq)).toBe(true);
@@ -152,20 +165,20 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'LOCATE response, owned by 0x1A2B, epoch 7',
-    '01 2B 1A 00 00 00 00 07 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/locate-response-owned-by-0x1a2b-epoch-7'),
+
     LocateResponse.decode,
     (r) => expect(r.equals(new LocateResponse(SlotState.owned, 0x1a2b, 7))).toBe(true),
   ),
   vector(
-    'LOCATE response, free, epoch 3',
-    '00 00 00 00 00 00 00 03 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/locate-response-free-epoch-3'),
+
     LocateResponse.decode,
     (r) => expect(r.equals(new LocateResponse(SlotState.free, 0, 3))).toBe(true),
   ),
   vector(
-    'MIGRATE "zone" slot 4 to 0xB',
-    '7A 6F 6E 65 00 00 00 00 04 00 00 00 0B 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/migrate-zone-slot-4-to-0xb'),
+
     MigrateRequest.decode,
     (r) => {
       expect(r.type.equals(zone)).toBe(true);
@@ -174,20 +187,20 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'MIGRATE "zone" slot 4, allocator chooses',
-    '7A 6F 6E 65 00 00 00 00 04 00 00 00 00 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/migrate-zone-slot-4-allocator-chooses'),
+
     MigrateRequest.decode,
     (r) => expect(r.to).toBe(0),
   ),
-  vector('PHASE draining', '01', PhaseItem.decode, (r) =>
+  vector(wikiVector('test-vectors/sharding-payloads/phase-draining'), PhaseItem.decode, (r) =>
     expect(r.phase).toBe(MigrationPhase.draining),
   ),
-  vector('PHASE rolled back', '05', PhaseItem.decode, (r) =>
+  vector(wikiVector('test-vectors/sharding-payloads/phase-rolled-back'), PhaseItem.decode, (r) =>
     expect(r.phase).toBe(MigrationPhase.rolledBack),
   ),
   vector(
-    'ASSIGN "kv" slot 7, epoch 8, holder 2',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 08 00 00 00 02 00 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/assign-kv-slot-7-epoch-8-holder-2'),
+
     AssignRequest.decode,
     (r) => {
       expect(r.type.equals(kv)).toBe(true);
@@ -198,23 +211,29 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'ASSIGN "room" slot 1, epoch 1, no holder, shared recovery',
-    '72 6F 6F 6D 00 00 00 00 01 00 00 00 01 00 00 00 00 00 00 00 00 00 01',
+    wikiVector(
+      'test-vectors/sharding-payloads/assign-room-slot-1-epoch-1-no-holder-shared-recovery',
+    ),
+
     AssignRequest.decode,
     (r) => {
       expect(r.holder).toBe(0);
       expect(r.shared).toBe(true);
     },
   ),
-  vector('ASSIGN response, holding (empty)', '', AssignResponse.decode, (r) =>
-    expect(r.notHolding).toBe(false),
-  ),
-  vector('ASSIGN response, not holding', '01', AssignResponse.decode, (r) =>
-    expect(r.notHolding).toBe(true),
+  vector(
+    wikiVector('test-vectors/sharding-payloads/assign-response-holding'),
+    AssignResponse.decode,
+    (r) => expect(r.notHolding).toBe(false),
   ),
   vector(
-    'DRAIN "kv" slot 7, epoch 9, to 3',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 09 00 00 00 03 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/assign-response-not-holding'),
+    AssignResponse.decode,
+    (r) => expect(r.notHolding).toBe(true),
+  ),
+  vector(
+    wikiVector('test-vectors/sharding-payloads/drain-kv-slot-7-epoch-9-to-3'),
+
     DrainRequest.decode,
     (r) => {
       expect(r.type.equals(kv)).toBe(true);
@@ -224,8 +243,8 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'FORWARD "kv" slot 7, epoch 9, to 3',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 09 00 00 00 03 00 00 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/forward-kv-slot-7-epoch-9-to-3'),
+
     ForwardRequest.decode,
     (r) => {
       expect(r.slot).toBe(7);
@@ -234,8 +253,8 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'RESUME "kv" slot 7, epoch 8',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 08 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/resume-kv-slot-7-epoch-8'),
+
     ResumeRequest.decode,
     (r) => {
       expect(r.type.equals(kv)).toBe(true);
@@ -244,17 +263,17 @@ const vectors: Vector[] = [
     },
   ),
   vector(
-    'SLOT "kv" slot 7, owned by 2, holder 2, epoch 8',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 01 02 00 00 00 00 00 00 00 00 00 ' +
-      '00 00 02 00 00 00 00 00 08 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/slot-kv-slot-7-owned-by-2-holder-2-epoch-8'),
+
     SlotItem.decode,
     (v) =>
       expect(v.equals(new SlotItem(kv, 7, SlotEntry.owned(2, { holder: 2, epoch: 8 })))).toBe(true),
   ),
   vector(
-    'SLOT "kv" slot 7, migrating from 2 to 3, holder 2, epoch 8',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 02 02 00 00 00 00 00 03 00 00 00 ' +
-      '00 00 02 00 00 00 00 00 08 00 00 00',
+    wikiVector(
+      'test-vectors/sharding-payloads/slot-kv-slot-7-migrating-from-2-to-3-holder-2-epoch-8',
+    ),
+
     SlotItem.decode,
     (v) =>
       expect(
@@ -262,17 +281,17 @@ const vectors: Vector[] = [
       ).toBe(true),
   ),
   vector(
-    'SLOT "kv" slot 7, free, holder 2, epoch 8',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 00 00 00 00 00 00 00 00 00 00 00 ' +
-      '00 00 02 00 00 00 00 00 08 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/slot-kv-slot-7-free-holder-2-epoch-8'),
+
     SlotItem.decode,
     (v) =>
       expect(v.equals(new SlotItem(kv, 7, SlotEntry.free({ holder: 2, epoch: 8 })))).toBe(true),
   ),
   vector(
-    'SLOT "x" slot 0xFFFFFFFF, owned by 0xFFFFFFFFFFFF, holder 0x123456789ABC, epoch 0xFFFFFFFF',
-    '78 00 00 00 00 00 00 00 FF FF FF FF 01 FF FF FF FF FF FF 00 00 00 00 ' +
-      '00 00 BC 9A 78 56 34 12 FF FF FF FF',
+    wikiVector(
+      'test-vectors/sharding-payloads/slot-x-slot-0xffffffff-owned-by-0xffffffffffff-holder-0x123456789abc-epoch-0xfff',
+    ),
+
     SlotItem.decode,
     (v) =>
       expect(
@@ -287,41 +306,47 @@ const vectors: Vector[] = [
   ),
 ];
 
-const negative: [string, string, (bytes: Uint8Array) => unknown][] = [
-  ['SLOTSPC with mode 2', '6B 76 00 00 00 00 00 00 00 04 00 00 02 00', SlotSpace.decode],
+/** The negative wiki vectors (table sharding-payloads#13), each with its decoder. */
+const negative: [WikiVector, (bytes: Uint8Array) => unknown][] = [
+  [wikiVector('test-vectors/sharding-payloads/slotspc-with-mode-2'), SlotSpace.decode],
+  [wikiVector('test-vectors/sharding-payloads/slot-with-state-3'), SlotItem.decode],
   [
-    'SLOT with state 3',
-    '6B 76 00 00 00 00 00 00 07 00 00 00 03 02 00 00 00 00 00 00 00 00 00 ' +
-      '00 00 02 00 00 00 00 00 08 00 00 00',
-    SlotItem.decode,
-  ],
-  [
-    'HOLDING announcing 2 slots, carrying 1',
-    '6B 76 00 00 00 00 00 00 02 00 00 00 03 00 00 00',
+    wikiVector('test-vectors/sharding-payloads/holding-announcing-2-slots-carrying-1'),
     HoldingRequest.decode,
   ],
-  ['PHASE 0', '00', PhaseItem.decode],
-  ['PHASE 6', '06', PhaseItem.decode],
-  ['LOCATE response with state 3', '03 00 00 00 00 00 00 00 00 00 00', LocateResponse.decode],
-  ['CLAIM without epoch', '6B 76 00 00 00 00 00 00 07 00 00 00 01', ClaimRequest.decode],
+  [wikiVector('test-vectors/sharding-payloads/phase-0'), PhaseItem.decode],
+  [wikiVector('test-vectors/sharding-payloads/phase-6'), PhaseItem.decode],
+  [
+    wikiVector('test-vectors/sharding-payloads/locate-response-with-state-3'),
+    LocateResponse.decode,
+  ],
+  [
+    wikiVector(
+      'test-vectors/sharding-payloads/claim-without-epoch-wiki-layout-before-the-amendment',
+    ),
+    ClaimRequest.decode,
+  ],
 ];
 
 describe('sharding payloads', () => {
   test.each(vectors.map((v) => [v.name, v] as const))('%s', (_name, v) => {
-    const value = v.decode(hexBytes(v.hex));
+    const value = v.decode(v.bytes);
     v.check(value);
-    expect(hexString(value.encode())).toBe(hexString(hexBytes(v.hex)));
+    expect(hexString(value.encode())).toBe(hexString(v.bytes));
   });
 
-  test.each(negative)('negative: %s', (_name, hex, decode) => {
-    expect(() => decode(hexBytes(hex))).toThrow(ProtocolError);
-  });
+  test.each(negative.map(([v, decode]) => [v.case, v.id, decode] as const))(
+    'negative: %s',
+    (_name, id, decode) => {
+      expect(() => decode(wikiBytes(id))).toThrow(ProtocolError);
+    },
+  );
 });
 
 describe('codecs', () => {
   test('every structure: truncation is a protocol error, trailing bytes are ignored', () => {
     for (const v of vectors) {
-      const bytes = hexBytes(v.hex);
+      const bytes = v.bytes;
       // An ASSIGN response is a flags byte or nothing: any prefix is valid.
       if (bytes.length === 0 || v.name.startsWith('ASSIGN response')) {
         continue;
@@ -337,7 +362,10 @@ describe('codecs', () => {
   });
 
   test('unknown flag bits are ignored', () => {
-    const space = SlotSpace.decode(hexBytes('6B 76 00 00 00 00 00 00 00 04 00 00 00 FE'));
+    // The wiki's paragraph: flags FE on a SLOTSPC, shared recovery only.
+    const space = SlotSpace.decode(
+      wikiBytes('test-vectors/sharding-payloads/prose-6b-76-00-00-00-00-00-00-00-04-00-00-00-fe'),
+    );
     expect(space.lazy).toBe(false);
     expect(space.shared).toBe(true);
     expect(AssignResponse.decode(hexBytes('FE')).notHolding).toBe(false);
@@ -405,42 +433,35 @@ describe('codecs', () => {
 describe('MOVED and RELOCATED status', () => {
   test('owner and epoch', () => {
     const moved = new MovedStatus({ owner: 0x1a2b, epoch: 7 });
-    expect(hexString(moved.encode())).toBe('25 00 2B 1A 00 00 00 00 07 00 00 00');
-    expect(MovedStatus.parse(hexBytes('25 00 2B 1A 00 00 00 00 07 00 00 00')).equals(moved)).toBe(
-      true,
-    );
+    const wire = wikiBytes('test-vectors/sharding-payloads/moved-owner-0x1a2b-epoch-7');
+    expect(hexString(moved.encode())).toBe(hexString(wire));
+    expect(MovedStatus.parse(wire).equals(moved)).toBe(true);
     expect(moved.hasOwner).toBe(true);
     expect(moved.ownerOf(userq)?.equals(new ServiceAddress(userq, 0x1a2b))).toBe(true);
   });
 
   test('RELOCATED, owner and epoch', () => {
     const relocated = new MovedStatus({ owner: 0x1a2b, epoch: 7 });
-    expect(hexString(relocated.encode({ relocated: true }))).toBe(
-      '26 00 2B 1A 00 00 00 00 07 00 00 00',
-    );
-    expect(
-      MovedStatus.parse(hexBytes('26 00 2B 1A 00 00 00 00 07 00 00 00')).equals(relocated),
-    ).toBe(true);
+    const wire = wikiBytes('test-vectors/sharding-payloads/relocated-owner-0x1a2b-epoch-7');
+    expect(hexString(relocated.encode({ relocated: true }))).toBe(hexString(wire));
+    expect(MovedStatus.parse(wire).equals(relocated)).toBe(true);
     const status = relocated.toStatus({ relocated: true });
     expect(status.known).toBe(StatusCode.relocated);
     expect(MovedStatus.carriesFields(status)).toBe(true);
-    // ABORTED has no fields.
+    // ABORTED has no fields (the wiki's paragraph).
     expect(
-      MovedStatus.parse(hexBytes('0A 00 2B 1A 00 00 00 00 07 00 00 00')).equals(
-        MovedStatus.unknown,
-      ),
+      MovedStatus.parse(
+        wikiBytes('test-vectors/sharding-payloads/prose-0a-00-2b-1a-00-00-00-00-07-00-00-00'),
+      ).equals(MovedStatus.unknown),
     ).toBe(true);
     expect(MovedStatus.carriesFields(Status.of(StatusCode.aborted))).toBe(false);
   });
 
   test('unknown', () => {
-    expect(hexString(MovedStatus.unknown.encode())).toBe('25 00 00 00 00 00 00 00 00 00 00 00');
+    const wire = wikiBytes('test-vectors/sharding-payloads/moved-owner-and-epoch-unknown');
+    expect(hexString(MovedStatus.unknown.encode())).toBe(hexString(wire));
     expect(new MovedStatus().equals(MovedStatus.unknown)).toBe(true);
-    expect(
-      MovedStatus.parse(hexBytes('25 00 00 00 00 00 00 00 00 00 00 00')).equals(
-        MovedStatus.unknown,
-      ),
-    ).toBe(true);
+    expect(MovedStatus.parse(wire).equals(MovedStatus.unknown)).toBe(true);
     expect(MovedStatus.unknown.hasOwner).toBe(false);
     expect(MovedStatus.unknown.ownerOf(userq)).toBeUndefined();
   });

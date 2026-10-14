@@ -1,6 +1,9 @@
 // The reference key-to-slot function, FNV-1a 32 of the key bytes modulo the
 // slot count (Dart `test/vectors/slot_key_vectors_test.dart`). The 32-bit
-// multiplication must stay exact.
+// multiplication must stay exact. The wiki's test-vector page has no
+// key-to-slot table (test/vectors/wiki-vectors.json has no such vector), so
+// there is nothing to register through test/support/vectors.ts here: these
+// are the Dart file's values.
 import { expect, test } from 'vitest';
 import { utf8Encode } from '../../src/core/bytes.ts';
 import { fnv1a32, slotForKey, slotForText } from '../../src/core/naming/index.ts';
