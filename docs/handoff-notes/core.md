@@ -1,6 +1,6 @@
 # Hand-off: protocol core (transports, mux, identity)
 
-State on 2026-10-14, after PR #14 merged. Repo `kaetemi/switchboard_ts`. Base branch `claude/switchboard-ts-design-s5r9na` (the lead merges, real merges, never squash). Porting decisions so far are in `notes/core.md` §22.
+State on 2026-10-14, after the continuation's merges. Repo `kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs went into `claude/switchboard-ts-design-s5r9na`, from which `main` was initialised; the lead merges with real merges, never squash). Porting decisions are in `notes/core.md` §22.
 
 ## Merged
 
@@ -16,33 +16,25 @@ https://github.com/kaetemi/switchboard_ts/pull/14 was merged by kaetemi into the
 - `src/core/mux/output-scheduler.ts`: the per-channel queues and the bulk zipper.
 - Both classes are exported from `src/core/mux/index.ts`.
 - `Fifo` (`src/core/transport/fifo.ts`) is now iterable.
-- `test/unit/mux/frame-mux-smoke.test.ts`: 4 end-to-end checks over the memory pair (subframes, credit wait, close status, ping, GOAWAY, writable). The Dart suites are ported since (step 3 below).
+- `test/unit/mux/frame-mux-smoke.test.ts`: 4 end-to-end checks over the memory pair (subframes, credit wait, close status, ping, GOAWAY, writable). The Dart suites are ported since (below).
 
-## Remaining from the work split
+## Done since: steps 3 to 5 of the work split
 
-**Step 3: frame mux tests (branch `claude/mux-tests`)**
+All merged into `main` (the integration branch since the first hand-off) from topic branches:
 
-- Ported, one TS file per Dart file under `test/unit/mux/`, over `support.ts` (the port of `mux_harness.dart`, every connection on a `SteppingClock`): `mux.test.ts` (`mux_test.dart`), `mux-flow.test.ts`, `mux-limits.test.ts` (connection groups added to the codec half), `mux-schedule.test.ts`; the "connection identity" group of `identity_test.dart` is the identity thread's `test/unit/identity/identity.test.ts`, and `mux_talk_test.dart` the Talk thread's (`test/unit/talk/mux-talk.test.ts`, `test/integration/talk-frame-mux.test.ts`). `test/vectors/mux.test.ts` has the "connection" group of `mux_vectors_test.dart`; `test/vectors/binding-protocol.test.ts` the IDENT gating tests. `frame-mux-api.test.ts` covers the TS-only API (streams, signals, `await using`, the hooks, the write backlog).
-- The TCP cases of the flow and limits suites run on the loopback in the unit files; those of `mux_test.dart` (TCP, WebSocket) are the transports thread's `test/integration/mux-tcp.test.ts` and `mux-websocket.test.ts`. Not ported: the Dart mirrors that count the scheduler's private turn lists (the observable half is checked).
-- Also fixed on this branch: `identify()` hands out a pre-caught promise; `MuxChannel` is async iterable over its subframes (contract, all channel classes, `readSubframes` in `mux-protocol.ts`); a `StreamTransport` errors its writable once its output ended on its own (peer FIN, failure, abort), so `writer.closed` settles, at the cost of Dart's silent drop of later writes; the `IdentifyOptions.holderKey` comment (ignored with a bearer credential, as in Dart; the QUIC binding still refuses it).
+**Step 3, the frame mux tests (`claude/mux-tests`).**
+
+- Ported, one TS file per Dart file under `test/unit/mux/`, over `support.ts` (the port of `mux_harness.dart`, every connection on a `SteppingClock`): `mux.test.ts` (`mux_test.dart`), `mux-flow.test.ts`, `mux-limits.test.ts` (connection groups added to the codec half), `mux-schedule.test.ts`; the "connection identity" group of `identity_test.dart` is in `test/unit/identity/identity.test.ts`, and `mux_talk_test.dart` in `test/unit/talk/mux-talk.test.ts` and `test/integration/talk-frame-mux.test.ts`. `test/vectors/mux.test.ts` has the "connection" group of `mux_vectors_test.dart`; `test/vectors/binding-protocol.test.ts` the IDENT gating tests. `frame-mux-api.test.ts` covers the TS-only API (streams, signals, `await using`, the hooks, the write backlog).
+- The TCP cases of the flow and limits suites run on the loopback in the unit files; those of `mux_test.dart` (TCP, WebSocket) are `test/integration/mux-tcp.test.ts` and `mux-websocket.test.ts`. Not ported: the Dart mirrors that count the scheduler's private turn lists (the observable half is checked).
+- Also fixed there: `identify()` hands out a pre-caught promise; `MuxChannel` is async iterable over its subframes (contract, all channel classes, `readSubframes` in `mux-protocol.ts`); a `StreamTransport` errors its writable once its output ended on its own (peer FIN, failure, abort), so `writer.closed` settles, at the cost of Dart's silent drop of later writes (design section 12, item 11); the `IdentifyOptions.holderKey` comment (ignored with a bearer credential, as in Dart and in the QUIC binding).
 - The suites found no wire or state bug in the frame mux. They found two performance problems, both fixed: every channel built a `ReadableStream` and a `WritableStream` at both ends (now made on first use), and Node's `WritableStream` drains its queue in quadratic time beyond some 16K queued writes (the mux now keeps at most 1024 writes in flight and queues the rest itself).
-- Adaptations, each commented where it applies: credit is returned per read (design §12 item 10), so batch sizes differ from Dart's; Dart's synchronous peers become `AnsweringTransport`, whose answer the mux reads after the write.
-- `coreRuntime().mux` already opens `FrameMuxConnection`s since PR #17; the node tests' `toy-mux.ts` can give way to the real mux.
+- Adaptations, each commented where it applies: credit is returned per read (design section 12, item 10), so batch sizes differ from Dart's; Dart's synchronous peers become `AnsweringTransport`, whose answer the mux reads after the write.
 
-**Step 4: identity**
+**Step 4, identity (`claude/identity`).** `credential.ts`, `scope.ts`, `credential-issuer.ts` (`hmac`, `ed25519`, `ed25519FromSeed`, `issue`), `credential-verifier.ts` (keys by id, `addIssuer`, `removeKey`, `verify`, `cached`, the LRU cache), `holder-key.ts` (`Ed25519HolderKey`, exported under its own name beside the contract's `HolderKey` interface), the credential vectors C1 and C2 and the negative ones, `identity_test.dart` ported, `NamingClient.renew()` on top. The node and QUIC fixtures use real credentials (`claude/quic-identity`); `test/support/identity/stub-verifier.ts` remains for the mux IDENT tests, which check IDENT verification on its own.
 
-- Credential and scope codecs, with vectors C1 and C2.
-- HMAC and Ed25519 verifiers, and the issuer.
-- A `HolderKey` class. `ed25519KeyPairFromSeed` already exists. The contract already has an interface named `HolderKey`, so the class needs an explicit export.
-- Port `identity_test.dart` (953 lines).
-- Replace `test/support/identity/stub-verifier.ts` with the real verifier.
+**Step 5, transports (`claude/transports`).** `websocket-transport.ts` (the global `WebSocket`), `src/node/transport/tcp.ts`, `ws-server.ts`, `ws-client.ts`, `connect.ts` (`connectTransport` for `tcp`, `ws`, `wss`, `mem`; other schemes are UNSUPPORTED), the loopback integration tests, and the ports of `transport_test.dart` and `web_socket_server_test.dart`. The interop raw probe against a TS server waits on the TS peer (`claude/ts-peer`).
 
-**Step 5: transports and integration**
-
-- `websocket-transport.ts`, Node `tcp.ts` and `ws-server.ts`, `connect.ts`.
-- Integration tests over the loopback.
-- Port the Dart `web_socket_*` and `stream_transport_*` tests.
-- The interop raw probe against `FrameMuxConnection`.
+**Left in this area:** `TcpTransport.bufferedOutputBytes` reports a turn late after an abort; the memory pair's writable `closed` does not settle when the other side closes; `test/support/identity/mux-harness.ts` duplicates `test/unit/mux/support.ts`; `SteppingClock` could merge into `ManualClock.elapseAsync`.
 
 ## Deviations from Dart
 
@@ -66,15 +58,11 @@ The lead accepted the first three choices below as written and recorded them, wi
   - `consumed` throws `Error` (Dart `StateError`).
   - `grant` requires an integer, and the `priority` setter validates its value.
   - `toString` keeps Dart's `MuxConnection(...)`.
-- **For step 5.** Dart's unknown scheme is UNIMPLEMENTED; the design says UNSUPPORTED.
+- **Unknown schemes.** `connectTransport` refuses a scheme that is not a frame transport's with UNSUPPORTED; the node's `connect` refuses a scheme it has no dialer or binding for with UNIMPLEMENTED, as Dart does.
 
 ## For a fresh session
 
-- Push only to the designated branch.
-- If you open a PR against the design branch:
-  - follow the attribution lines the thread's instructions give;
-  - assign kaetemi;
-  - subscribe to the PR's activity.
+- Work on a topic branch `claude/<topic>` in a worktree under `/home/user/wt/<topic>`; push only that branch; the lead merges into `main`.
 - Never rewrite merged history.
 - The Dart repos are read-only.
 - Contracts (`src/core/*/contract.ts`) are the lead's.

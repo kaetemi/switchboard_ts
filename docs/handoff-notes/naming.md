@@ -1,8 +1,10 @@
 # Hand-off: naming and sharding (thread 4)
 
-State on 2026-10-14, for the session that picks this up. Repository
-`kaetemi/switchboard_ts`, integration branch `claude/switchboard-ts-design-s5r9na`,
-thread branch `claude/switchboard-ts-naming-hi15aj`. The running notes, with
+State on 2026-10-14, for the session that picks this up, after the
+continuation's merges. Repository `kaetemi/switchboard_ts`, integration
+branch `main` (the first phase's PRs went into
+`claude/switchboard-ts-design-s5r9na`, from which `main` was initialised;
+the first thread branch was `claude/switchboard-ts-naming-hi15aj`). The running notes, with
 the earlier decisions and the seams other threads meet, are in
 `../notes/naming.md`.
 
@@ -64,49 +66,19 @@ The test support is in `test/support/naming/`:
 * `fake-identity.ts`: fake credentials, issuer, verifier and naming
   connection
 
-## Remaining from the work split
+## Done since: everything the work split left open
 
-1. **`SlotGate` and `SlotLifecycle`** (Dart `switchboard/slot_gate.dart`) are
-   not started, with no TS counterpart yet for `slot_gate_test.dart` (53
-   tests) or `slot_gate_credential_test.dart` (6). They need the real
-   `TalkChannel` (Talk PR #11) and the node's proxy forwarding. When they
-   land, un-skip the two `sharding-client.test.ts` tests marked
-   `// Not ported: SlotGate`.
-2. **Slot routing in the node.** The node does not route by slot yet: no
-   `openChannelToSlot`, no slot-routed `selectAndConnect`, no
-   `resolveSlotOwner`, and the proxy does not route by slot. Who wires it
-   (the node thread or this one) is open. The building blocks are
-   `reopenAtSlotOwner`, `SlotChannel` and `SlotResolver`. Once it lands:
-   * Replace the test-local `openChannelToSlot` in `slot-routing.test.ts`
-     with the node's.
-   * Fill in the `test.todo` routing group (9) and the Talk and proxy MOVED
-     cases (3).
-3. **Swap the fake Talk pair for the real `TalkChannel`** once PR #11
-   merges. Then:
-   * Re-check the `isBulk` assertion that `naming-bulk.test.ts` leaves out.
-   * Hook `SlotChannel`'s `onReplaced` seam to Talk's bulk routes (Dart
-     `BulkRoutes.follow`).
-4. **`NamingClient.renew()`** needs a core `Credential.decode`. When it exists:
-   * Implement `renew()`.
-   * Un-skip "RENEW re-issues the channel's credential".
-   * MeshNode's renewal schedule is the node's.
-5. **Integration tests** `test/integration/naming-*.test.ts` and
-   `sharding-*.test.ts`, over the memory transport. They port
-   `test/integration/naming_mesh_test.dart` (14 tests) and
-   `test/integration/sharding/*` (11 tests over 6 files, with `cluster.dart`).
-   They need the node's Talk layer, which throws UNIMPLEMENTED until Talk
-   lands.
-6. **Interop with the Dart naming service, both ways.** This is the
-   acceptance criterion. It needs the TS peer (interop hand-off, step 1), and
-   naming and sharding oracle kinds in `dart_peer/lib/src/oracle.dart`.
-7. **The skipped node-side identity tests** in `naming-identity.test.ts`.
-   Each `test.skip` has a `// Not ported:` reason: brokered connections,
-   dial-back GOAWAY, `Switchboard.broker` preconditions, PeerSet. Port them
-   with the node or move them to the node's tests.
-8. **Vector coverage.** `test/vectors/naming.test.ts`,
-   `test/vectors/sharding.test.ts` and `test/vectors/slot-key.test.ts` read
-   hex inline. Register their ids through `test/support/vectors.ts`
-   (`wikiVector`/`wikiBytes`) so `coverage.test.ts` checks the naming tables.
+Merged into `main` (the integration branch since the first hand-off) from topic branches:
+
+1. **`SlotGate`, `SlotLifecycle`, `SlotGates`** (`src/core/naming/slot-gate.ts`, Dart `switchboard/slot_gate.dart`) on `claude/slot-routing`, with `slot-gate.test.ts` (53 of `slot_gate_test.dart`) and `slot-gate-credential.test.ts` (6 of `slot_gate_credential_test.dart`); the two `sharding-client.test.ts` tests once marked `// Not ported: SlotGate` run.
+2. **Slot routing in the node** (`claude/slot-routing`): `Switchboard.openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner` and slot-routed `selectAndConnect`, `src/core/switchboard/slot-layer.ts` wired to `SlotChannel` and `reopenAtSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups; `slot-routing.test.ts` has the routing group and the Talk and proxy MOVED cases, over the node's `openChannelToSlot`. `isSlotResolver` moved to `src/core/switchboard/resolver.ts`.
+3. **Real Talk:** the suites run over real `TalkChannel`s (`test/support/naming/talk-link.ts`, an in-memory frame link), the fake pair (`fake-talk.ts`) staying only where a test needs synchronous delivery; `SlotChannel`'s replacement is followed by Talk's bulk routes (`followBulkTarget`). The suites that need nodes also run over the frame mux (`test/unit/naming/over-frame-mux/`).
+4. **`NamingClient.renew()`** on `claude/identity` (with `Credential.decode`); MeshNode's renewal schedule is in `test/unit/switchboard/mesh.test.ts`.
+5. **Integration tests:** `test/integration/naming-mesh.test.ts` (`naming_mesh_test.dart`, over TCP, WebSocket and `mem`), and the whole Dart sharding suite in `test/integration/sharding/` with `cluster.ts` (`claude/sharding`, together with `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave`).
+6. **The node-side identity tests** of `naming_identity_test.dart` that need real nodes are in `naming-identity-nodes.test.ts` (brokered connections, dial-back GOAWAY, the `broker` preconditions) and `test/unit/switchboard/mesh.test.ts`; each place left in `naming-identity.test.ts` says where.
+7. **Vector coverage:** the naming, sharding and slot-key vectors name their ids through `test/support/vectors.ts`; `SWITCHBOARD_VECTORS_STRICT=1` passes.
+
+**Left:** interop with the Dart naming service in both directions (the acceptance criterion) comes with the TS peer and the naming and sharding scenarios on `claude/ts-peer`; `TestClock` (`test/support/naming/test-clock.ts`) could merge into `ManualClock.elapseAsync`.
 
 ## Known gaps and deviations from Dart
 
@@ -118,15 +90,15 @@ The test support is in `test/support/naming/`:
   CONNECTION_LOST.
 * When a fake request declares both a deadline and a renewal, it times out at
   the earlier of the two; Dart uses the later. No test exercises this.
-* `isSlotResolver` is a duck-typed guard in `slot-reopen.ts`. The node may
-  want it beside the contract.
+* `isSlotResolver` is a duck-typed guard, now in
+  `src/core/switchboard/resolver.ts` beside `isBrokeringResolver`.
 * `SlotChannel.close` throws `RangeError` for an application status code, as
   an inlined `checkMuxStatus`. Its held bytes default to
   `defaultMuxOptions.initialWindow` (64 KiB), as in Dart.
 * Error types: `ArgumentError` becomes `RangeError` or `TypeError`, and
   `StateError` becomes `Error`. Decode errors are `ProtocolError`.
-* `TestClock` overlaps with the node thread's `SteppingClock` and Talk's
-  `FakeClock`. One could absorb the others later.
+* `TestClock` overlaps with the node thread's `SteppingClock`; both could
+  merge into `ManualClock.elapseAsync` (Talk's `FakeClock` already did).
 * Dart SDK finding: `Uri.parse` throws `RangeError` for some IPv6 literals,
   so the Dart record decoder can let a non-protocol exception escape. It was
   reported in PR #3 only, since the Dart repositories are read-only.
@@ -135,11 +107,13 @@ The test support is in `test/support/naming/`:
 
 * The lead merges with real merge commits. Keep branch history granular,
   with no squash, amend or rebase.
-* After a PR merges, restart the branch from the integration branch.
+* Work on a topic branch `claude/<topic>` in a worktree under
+  `/home/user/wt/<topic>`; the lead merges it into `main`.
 * Run `npx tsc -p tsconfig.test.json --noEmit` before every push; CI does not
   run it.
-* `npx biome check .` fails while agent worktrees sit under `.claude/` (nested
-  `biome.json`). Lint with `npx biome check src test tool *.json`.
+* `npx biome check .` fails while a git worktree sits inside the checkout
+  (a nested `biome.json`); the worktrees live under `/home/user/wt/` for
+  that reason.
 * The Dart repositories `kaetemi/switchboard` and `kaetemi/switchboard_quic`
   are read-only references. Dart behaviour is the contract and the Dart tests
   are the checklist.
