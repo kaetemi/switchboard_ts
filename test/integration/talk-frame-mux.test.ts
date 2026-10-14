@@ -22,7 +22,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
 import type { MuxChannel } from '../../src/core/mux/contract.ts';
-import { MuxCommand } from '../../src/core/mux/mux-frame.ts';
+import { MuxCommand, MuxFrame } from '../../src/core/mux/mux-frame.ts';
 import { Name } from '../../src/core/name.ts';
 import { Status, StatusCode } from '../../src/core/status.ts';
 import type { TalkMessage } from '../../src/core/talk/contract.ts';
@@ -31,7 +31,13 @@ import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
 import { ManualClock } from '../../src/testing/manual-clock.ts';
 import { until } from '../support/talk/bulk-peers.ts';
-import { acceptAll, frameMuxPair, nextIncoming, WireLog } from '../support/talk/frame-mux-peers.ts';
+import {
+  acceptAll,
+  frameMuxPair,
+  nextIncoming,
+  rawMuxPair,
+  WireLog,
+} from '../support/talk/frame-mux-peers.ts';
 import {
   bytes,
   Collector,
@@ -863,6 +869,74 @@ describe('GOAWAY', () => {
     expectStatus(pending.error, StatusCode.goingAway);
     expect((await talk.done).known).toBe(StatusCode.goingAway);
     expect((await client.done).known).toBe(StatusCode.goingAway);
+  });
+});
+
+describe('what the frame mux brings', () => {
+  test("a transport's frame limit, announced in LIMITS, makes Talk send bulk earlier", async () => {
+    // Each side's transport takes frames of at most 4096 bytes: the mux
+    // announces that, and the peer's subframes stay within it.
+    const [client, server] = frameMuxPair({ transport: { maxFrameSize: 4096 } });
+    const raw = client.open(empty);
+    const talk = new TalkChannel(raw);
+    const responder = new TalkChannel(await nextIncoming(server));
+    const seen: boolean[] = [];
+    serve(responder, (m) => {
+      seen.push(m.isBulk);
+      return m.reply(Uint8Array.from(m.payload).reverse());
+    });
+    await talk.request('WARM', empty);
+    expect(raw.maxSubframeLength).toBeLessThan(4096);
+    const payload = Uint8Array.from({ length: 10_000 }, (_, i) => i % 251);
+    const answer = await talk.request('ECHO', payload);
+    expect(seen).toEqual([false, true]);
+    expect(answer.isBulk).toBe(true);
+    expect([...answer.payload]).toEqual([...payload].reverse());
+    expect(client.isOpen).toBe(true);
+    expect(server.isOpen).toBe(true);
+    await talk.close();
+  });
+
+  test('keep-alive runs under a long request on a ManualClock, and the request still completes', async () => {
+    const clock = new ManualClock();
+    const [client, server] = frameMuxPair({
+      options: { clock, keepAliveInterval: 1000, keepAliveTimeout: 1000 },
+    });
+    const talk = new TalkChannel(client.open(empty), { requestTimeout: 0 });
+    const responder = new TalkChannel(await nextIncoming(server), { replyTimeout: 0 });
+    const served = nextMessage(responder);
+    const pending = new Outcome(talk.request('LONG', empty));
+    const m = await served;
+    // A minute of silence on the channel: the connections ping each other.
+    for (let i = 0; i < 60; i++) {
+      await clock.elapseAsync(1000);
+    }
+    expect(client.isOpen).toBe(true);
+    expect(server.isOpen).toBe(true);
+    expect(pending.isDone).toBe(false);
+    await m.reply(bytes([1]));
+    await clock.elapseAsync(0);
+    expect([...(pending.value as TalkMessage).payload]).toEqual([1]);
+    await talk.close();
+  });
+
+  test('a peer that goes silent is cut by keep-alive: the outstanding request fails, the channel ends', async () => {
+    const clock = new ManualClock();
+    const [connection, peer] = rawMuxPair({
+      options: { clock, keepAliveInterval: 1000, keepAliveTimeout: 1000 },
+    });
+    peer.send(MuxFrame.open(2, empty));
+    const talk = new TalkChannel(await nextIncoming(connection), { requestTimeout: 0 });
+    const pending = new Outcome(talk.request('Q', empty));
+    // The raw peer answers nothing, PINGs included.
+    await clock.elapseAsync(1000);
+    expect(pending.isDone).toBe(false);
+    await clock.elapseAsync(1000);
+    await clock.elapseAsync(0);
+    expect(pending.isDone).toBe(true);
+    expectStatus(pending.error, StatusCode.connectionLost);
+    expect((await talk.done).known).toBe(StatusCode.connectionLost);
+    expect(connection.isOpen).toBe(false);
   });
 });
 
