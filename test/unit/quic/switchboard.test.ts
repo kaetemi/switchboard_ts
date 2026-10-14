@@ -10,7 +10,11 @@
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { ReconnectingClient } from '../../../src/core/client/reconnecting-client.ts';
-import { type HolderKey, Right } from '../../../src/core/identity/contract.ts';
+import { CredentialKind, type HolderKey, Right } from '../../../src/core/identity/contract.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import { CredentialVerifier } from '../../../src/core/identity/credential-verifier.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
+import { Scope } from '../../../src/core/identity/scope.ts';
 import type { MuxChannel, MuxOptions } from '../../../src/core/mux/contract.ts';
 import { FrameMuxChannel } from '../../../src/core/mux/frame-mux-channel.ts';
 import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
@@ -54,7 +58,7 @@ import {
   FakeQuicNetwork,
   FakeQuicSession,
 } from '../../../src/testing/fake-quic-provider.ts';
-import { FakeVerifier, fakeCredential } from '../../support/node/fake-identity.ts';
+import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import { node as harnessNode, onCleanup, tagOf, useMux } from '../../support/node/harness.ts';
 import {
   bindingAndRaw,
@@ -71,7 +75,6 @@ import {
   until,
   within,
 } from './harness.ts';
-import { generateHolderKey } from './identity-fixtures.ts';
 
 // The nodes' in-process (`mem://`) connections run over the frame mux.
 useMux('frame');
@@ -83,13 +86,13 @@ let clientKey: HolderKey;
 let serverKey: HolderKey;
 
 beforeAll(async () => {
-  clientKey = await generateHolderKey();
-  serverKey = await generateHolderKey();
+  clientKey = await Ed25519HolderKey.generate();
+  serverKey = await Ed25519HolderKey.generate();
 });
 
 /** A node credential of [identity] for [key], allowed to open anything. */
 function credential(identity: string, key: HolderKey) {
-  return fakeCredential({ identity, holderKey: key.publicKey, scopes: [[Right.open, '*']] });
+  return issueCredential({ identity, holderKey: key.publicKey, scopes: [[Right.open, '*']] });
 }
 
 /** A node closed after the test, with the binding tests' options. */
@@ -470,8 +473,8 @@ describe('identity', () => {
   test('nodes identify both ways with exporter-bound proofs, and the scoped policy admits the identified peer', async () => {
     const network = new FakeQuicNetwork();
     const server = node({
-      verifier: new FakeVerifier(),
-      credential: credential('server-1', serverKey),
+      verifier: new TestVerifier(),
+      credential: await credential('server-1', serverKey),
       holderKey: serverKey,
     });
     server.registerService(npc, answer);
@@ -479,8 +482,8 @@ describe('identity', () => {
     const binding = new QuicSwitchboardBinding(network.connector());
     const client = node({
       bindings: [binding],
-      verifier: new FakeVerifier(),
-      credential: credential('npc-7', clientKey),
+      verifier: new TestVerifier(),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
       expectedIdentityFor: () => 'server-1',
     });
@@ -506,7 +509,7 @@ describe('identity', () => {
     const network = new FakeQuicNetwork({ delay: (info) => (info.ordinal === 0 ? 60 : 0) });
     let asked = 0;
     const scoped = ChannelPolicies.scoped();
-    const server = node({ verifier: new FakeVerifier() });
+    const server = node({ verifier: new TestVerifier() });
     server.registerService(npc, answer);
     const listener = await listen(network, server, 'hold-1', {
       policy: (address, connection) => {
@@ -520,7 +523,7 @@ describe('identity', () => {
           identityRules: new QuicIdentityRules({ requireExporterBinding: true }),
         }),
       ],
-      credential: credential('npc-7', clientKey),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
       identifyOutgoing: false,
     });
@@ -538,13 +541,13 @@ describe('identity', () => {
   test('an initiator with a credential reaches only an acceptor that identifies in turn', async () => {
     const network = new FakeQuicNetwork();
     // A listener without a credential cannot identify.
-    const server = node({ verifier: new FakeVerifier() });
+    const server = node({ verifier: new TestVerifier() });
     server.registerService(npc, answer);
     const listener = await listen(network, server, 'id-2');
     const client = node({
       bindings: [new QuicSwitchboardBinding(network.connector())],
-      verifier: new FakeVerifier(),
-      credential: credential('npc-7', clientKey),
+      verifier: new TestVerifier(),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
       identityTimeout: 300,
     });
@@ -554,16 +557,16 @@ describe('identity', () => {
     );
     // One whose identity is not the one expected is refused as well.
     const other = node({
-      verifier: new FakeVerifier(),
-      credential: credential('server-x', serverKey),
+      verifier: new TestVerifier(),
+      credential: await credential('server-x', serverKey),
       holderKey: serverKey,
     });
     other.registerService(npc, answer);
     const elsewhere = await listen(network, other, 'id-3');
     const strict = node({
       bindings: [new QuicSwitchboardBinding(network.connector())],
-      verifier: new FakeVerifier(),
-      credential: credential('npc-7', clientKey),
+      verifier: new TestVerifier(),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
       expectedIdentityFor: () => 'server-1',
     });
@@ -575,7 +578,7 @@ describe('identity', () => {
 
   test('a node without the exporter cannot identify to a self-signed listener, and a nonce-bound IDENT is refused', async () => {
     const network = new FakeQuicNetwork();
-    const server = node({ verifier: new FakeVerifier() });
+    const server = node({ verifier: new TestVerifier() });
     server.registerService(npc, answer);
     const listener = await listen(network, server, 'id-4', { policy: ChannelPolicies.scoped() });
     // Browser-like: the stack has no exporter. Under the rules the
@@ -583,8 +586,8 @@ describe('identity', () => {
     const browserLike = network.connector({ config: { exporter: false } });
     const careful = node({
       bindings: [new QuicSwitchboardBinding(browserLike)],
-      verifier: new FakeVerifier(),
-      credential: credential('npc-7', clientKey),
+      verifier: new TestVerifier(),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
     });
     await expectCode(
@@ -598,7 +601,7 @@ describe('identity', () => {
     });
     const careless = node({
       bindings: [binding],
-      credential: credential('npc-7', clientKey),
+      credential: await credential('npc-7', clientKey),
       holderKey: clientKey,
     });
     await expectCode(
@@ -621,9 +624,16 @@ describe('identity', () => {
 
   test('a bearer credential goes only to an authenticated end: a pin, not a self-signed certificate', async () => {
     const network = new FakeQuicNetwork();
-    const bearer = fakeCredential({ identity: 'bearer-1', scopes: [[Right.open, '*']] });
+    const hmac = CredentialIssuer.hmac('k1', new Uint8Array(32));
+    const bearer = await hmac.issue({
+      kind: CredentialKind.node,
+      identity: 'bearer-1',
+      scopes: [Scope.of(Right.open, '*')],
+    });
     const hash = Uint8Array.from({ length: 32 }, (_, i) => i);
-    const server = node({ verifier: new FakeVerifier() });
+    const server = node({
+      verifier: new CredentialVerifier({ hmacKeys: { k1: new Uint8Array(32) } }),
+    });
     server.registerService(npc, answer);
     const listener = await listen(network, server, 'bearer-1', {
       policy: ChannelPolicies.scoped(),

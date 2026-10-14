@@ -8,6 +8,7 @@ import { beforeAll, describe, expect, onTestFinished, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
 import { hexBytes, hexString, readU48, writeU32, writeU48 } from '../../../src/core/bytes.ts';
 import type { HolderKey } from '../../../src/core/identity/contract.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import { MuxIdent, verifyIdent } from '../../../src/core/mux/mux-protocol.ts';
@@ -65,10 +66,9 @@ import {
   within,
 } from './harness.ts';
 import {
-  FakeVerifier,
-  fakeCredential,
-  generateHolderKey,
+  credentialOf as credentialFor,
   HeldVerifier,
+  verifier as testVerifier,
 } from './identity-fixtures.ts';
 
 const empty = new Uint8Array(0);
@@ -910,10 +910,10 @@ describe('identity', () => {
   let holder: HolderKey;
 
   beforeAll(async () => {
-    holder = await generateHolderKey();
+    holder = await Ed25519HolderKey.generate();
   });
 
-  const credentialOf = (identity: string) => fakeCredential(identity, holder.publicKey);
+  const credentialOf = (identity: string) => credentialFor(identity, holder.publicKey);
 
   /** The exporter of [session]. */
   async function exporterOf(session: FakeQuicSession): Promise<Uint8Array> {
@@ -929,7 +929,7 @@ describe('identity', () => {
     connection: QuicBindingConnection,
     raw: RawPeer,
   ): Promise<[MuxIdent, Uint8Array, Uint8Array]> {
-    const identifying = connection.identify(credentialOf('npc-7'), { holderKey: holder });
+    const identifying = connection.identify(await credentialOf('npc-7'), { holderKey: holder });
     const nonce = await raw.nextControlOf(MuxControlType.nonce);
     const ours = new Uint8Array(32).fill(0x42);
     await raw.sendControl(MuxControlMessage.nonce(ours));
@@ -981,7 +981,7 @@ describe('identity', () => {
     expect(connection.exporterBound).toBe(true);
     const [ident, senderNonce, receiverNonce] = await identOf(connection, raw);
     const exporter = await exporterOf(raw.session);
-    const verifier = new FakeVerifier();
+    const verifier = testVerifier();
     expect(
       (await verifyIdent(ident, { verifier, senderNonce, receiverNonce, exporter })).identity,
     ).toBe('npc-7');
@@ -1000,8 +1000,7 @@ describe('identity', () => {
     expect(connection.exporterBound).toBe(false);
     const [ident, senderNonce, receiverNonce] = await identOf(connection, raw);
     expect(
-      (await verifyIdent(ident, { verifier: new FakeVerifier(), senderNonce, receiverNonce }))
-        .identity,
+      (await verifyIdent(ident, { verifier: testVerifier(), senderNonce, receiverNonce })).identity,
     ).toBe('npc-7');
   });
 
@@ -1013,20 +1012,20 @@ describe('identity', () => {
       rawHello: new QuicHello(),
     });
     await until(() => sender.peerHello !== undefined);
-    const identifying = sender.identify(credentialOf('npc-7'), { holderKey: holder });
+    const identifying = sender.identify(await credentialOf('npc-7'), { holderKey: holder });
     await rawReceiver.nextControlOf(MuxControlType.nonce);
     await rawReceiver.sendControl(MuxControlMessage.nonce(nonceOf(9)));
     await expectCode(identifying, StatusCode.unauthenticated);
     // Receiving: one is refused as failing verification.
     const [receiver, raw] = await bindingAndRaw({
-      options: { ...fast, identityVerifier: new FakeVerifier() },
+      options: { ...fast, identityVerifier: testVerifier() },
       quicOptions: { identity: rules },
       rawHello: new QuicHello(),
     });
     await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
     const theirs = await raw.nextControlOf(MuxControlType.nonce);
     const ours = nonceOf(1);
-    const credential = credentialOf('npc-7');
+    const credential = await credentialOf('npc-7');
     await raw.sendControl(
       MuxControlMessage.ident(
         new MuxIdent({
@@ -1052,7 +1051,7 @@ describe('identity', () => {
   test("an initiator awaiting the acceptor's identity opens no channel before it verified", async () => {
     const [connection, raw] = await bindingAndRaw({
       bindingIsInitiator: true,
-      options: { ...fast, identityVerifier: new FakeVerifier() },
+      options: { ...fast, identityVerifier: testVerifier() },
       quicOptions: {
         identity: new QuicIdentityRules({ requireExporterBinding: true, awaitPeerIdentity: true }),
       },
@@ -1060,7 +1059,7 @@ describe('identity', () => {
     });
     connection.localIdentity = 'npc-7';
     const early = connection.open(bytes('early'));
-    const identifying = connection.identify(credentialOf('npc-7'), {
+    const identifying = connection.identify(await credentialOf('npc-7'), {
       holderKey: holder,
       receiver: 'server-1',
     });
@@ -1079,7 +1078,7 @@ describe('identity', () => {
     await raw.sendControl(
       MuxControlMessage.ident(
         new MuxIdent({
-          credential: credentialOf('server-1').encode(),
+          credential: (await credentialOf('server-1')).encode(),
           receiver: bytes('npc-7'),
           proof: await holder.sign(
             MuxIdent.proofMessage(ours, theirs.payload, empty, bytes('npc-7'), exporter),
@@ -1100,10 +1099,10 @@ describe('identity', () => {
       quicOptions: { identity: QuicIdentityRules.listener },
     });
     await expectCode(
-      connection.identify(credentialOf('server-1'), { holderKey: holder }),
+      connection.identify(await credentialOf('server-1'), { holderKey: holder }),
       StatusCode.failedPrecondition,
     );
-    const bearer = fakeCredential('bearer');
+    const bearer = await credentialFor('bearer');
     const [initiator] = await bindingAndRaw({
       bindingIsInitiator: true,
       quicOptions: { identity: new QuicIdentityRules({ bearerOnlyToAuthenticatedPeer: true }) },
@@ -1118,12 +1117,11 @@ describe('identity', () => {
       rawHello: new QuicHello({ exporter: true }),
     });
     await until(() => connection.peerHello !== undefined);
-    expect(() => connection.identify(credentialOf('npc-7'))).toThrow(TypeError);
-    const other = await generateHolderKey();
-    expect(() => connection.identify(credentialOf('npc-7'), { holderKey: other })).toThrow(
-      TypeError,
-    );
-    const bearer = fakeCredential('bearer');
+    const npc7 = await credentialOf('npc-7');
+    expect(() => connection.identify(npc7)).toThrow(TypeError);
+    const other = await Ed25519HolderKey.generate();
+    expect(() => connection.identify(npc7, { holderKey: other })).toThrow(TypeError);
+    const bearer = await credentialFor('bearer');
     const identifying = connection.identify(bearer, { holderKey: holder });
     await raw.nextControlOf(MuxControlType.nonce);
     await raw.sendControl(MuxControlMessage.nonce(new Uint8Array(32).fill(0x42)));
@@ -1137,13 +1135,13 @@ describe('identity', () => {
 
   test('a bearer IDENT is not exporter-bound: it authenticates nobody', async () => {
     const [connection, raw] = await bindingAndRaw({
-      options: { ...fast, identityVerifier: new FakeVerifier() },
+      options: { ...fast, identityVerifier: testVerifier() },
       rawHello: new QuicHello({ exporter: true }),
     });
     await raw.nextControl();
     await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
     await raw.nextControlOf(MuxControlType.nonce);
-    const bearer = fakeCredential('bearer');
+    const bearer = await credentialFor('bearer');
     await raw.sendControl(MuxControlMessage.ident(new MuxIdent({ credential: bearer.encode() })));
     await raw.sendControl(MuxControlMessage.ping(bytes('p')));
     await raw.nextControlOf(MuxControlType.pong);
@@ -1173,7 +1171,7 @@ describe('identity', () => {
     await raw.sendControl(MuxControlMessage.nonce(nonceOf(1)));
     const theirs = await raw.nextControlOf(MuxControlType.nonce);
     const ours = nonceOf(1);
-    const credential = credentialOf('npc-7');
+    const credential = await credentialOf('npc-7');
     const exporter = await exporterOf(raw.session);
     await raw.sendControl(
       MuxControlMessage.ident(
@@ -1211,7 +1209,7 @@ describe('identity', () => {
           await raw.sendControl(MuxControlMessage.nonce(nonceOf(2)));
           break;
         default: {
-          connection.identify(credentialOf('npc-7'), { holderKey: holder }).catch(() => {});
+          connection.identify(await credentialOf('npc-7'), { holderKey: holder }).catch(() => {});
           const theirs = await raw.nextControlOf(MuxControlType.nonce);
           await raw.sendControl(MuxControlMessage.nonce(theirs.payload));
         }
