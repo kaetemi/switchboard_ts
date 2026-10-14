@@ -1,20 +1,25 @@
 # Interop tests against the Dart reference
 
-The Dart implementation (`kaetemi/switchboard` and `kaetemi/switchboard_quic`) runs as a separate process, a **peer**, that the tests drive over a JSON-lines protocol on stdin and stdout. A TS peer will speak the same protocol over this package's public API, so that one scenario runs in four pairings: Dart to Dart (which checks the scenario against the reference: a failure there is a broken test, not a TS bug), TS to Dart, Dart to TS and TS to TS.
+The Dart implementation (`kaetemi/switchboard` and `kaetemi/switchboard_quic`) runs as a separate process, a **peer**, that the tests drive over a JSON-lines protocol on stdin and stdout. The TS peer speaks the same protocol over this package's public API, so that one scenario runs in four pairings: Dart to Dart (which checks the scenario against the reference: a failure there is a broken test, not a TS bug), TS to Dart, Dart to TS and TS to TS, each over TCP, WebSocket, raw QUIC and WebTransport. Chains of three peers (a proxy, a relay, a forwarding service, a naming service between a client and a backend) run in every assignment of the two implementations to the roles. The Dart driver runs Dart-written scenarios against the TS peer, and the codec oracle compares the two implementations' codecs.
 
 ```
 test/interop/
   dart_peer/          the Dart peer: a package depending on the Dart repositories by path,
                       built with `dart build cli` to an AOT executable; dart_commits.txt pins them
-  ts_peer/            the TS peer over the public Node entry, run as `node ts_peer/main.ts`
+  ts_peer/            the TS peer over the public Node entry (src/node/index.ts only),
+                      run as `node ts_peer/main.ts`
+  dart_driver/        Dart-written scenarios (`dart test`) against the TS peer it spawns
   protocol.ts         the protocol's messages as types
   launcher.ts         spawns a peer, waits for READY, speaks JSON lines, logs events
-  peers.ts            which peers this run has (the Dart peer from the global setup)
+  peers.ts            which peers this run has (the Dart peer from the global setup, the TS peer)
   global-setup.ts     builds or locates the Dart peer once per run
   matrix.ts           pairings × transports, skip reasons, describeCells()
-  scenarios/          two-peer scenarios over real transports
-  oracle.test.ts      the wiki vectors against the Dart codecs; TS codecs against Dart, fuzzed
-  probe/              raw byte conformance: hand-built frames against a server's listeners
+  chain.ts            chains of three or more peers, every role in either language, describeChains()
+  scenarios/          the scenarios: basics, talk, talk-wire, bulk, close and GOAWAY, mux limits,
+                      protocol errors, forward, identity, naming and sharding, mesh (proxy, relay,
+                      forwarding and naming chains)
+  oracle.test.ts      the wiki vectors against the Dart codecs; the TS codecs against Dart, fuzzed
+  probe/              raw byte conformance: hand-built frames against each server's listeners
 ```
 
 ## Running
@@ -23,7 +28,10 @@ test/interop/
 npm run test:interop                    # builds the Dart peer if needed, then runs the interop project
 node tool/dart-peer.mjs status          # what the build would use
 node tool/dart-peer.mjs build           # build only
+node tool/dart-peer.mjs driver          # the Dart driver's scenarios against the TS peer
 ```
+
+The TS peer runs on the Node that runs the tests (22.18 or later: type stripping runs `ts_peer/main.ts` as it is). Its raw QUIC and WebTransport listeners and dialers need the native QUIC addon (`npm run build:native`, or `SWITCHBOARD_QUIC_ADDON=<path>`); without it the TS cells over those two transports skip with the reason, and `SWITCHBOARD_NATIVE=required` (CI) fails instead.
 
 The Dart peer needs a Dart SDK (3.13 or later; CI uses 3.13.5), a Rust toolchain (switchboard_quic's build hook compiles its QUIC library with cargo, a minute or two the first time), and checkouts of the two Dart repositories. They are found as follows:
 
@@ -43,6 +51,8 @@ Without a peer the interop files skip, and the run prints one line saying why. E
 | `SWITCHBOARD_INTEROP=skip` | skip the Dart cells without looking for a peer |
 | `SWITCHBOARD_INTEROP_BUILD=0` | use a peer that is already built, never build |
 | `SWITCHBOARD_FUZZ_SEED`, `SWITCHBOARD_FUZZ_COUNT` | the oracle's random inputs (the seed is in the test names) |
+| `SWITCHBOARD_QUIC_ADDON=<path>` | the native QUIC addon the TS peer and the matrix load |
+| `SWITCHBOARD_NATIVE=required` | a missing native QUIC addon fails the run instead of skipping the TS QUIC cells (CI) |
 
 ## Writing a scenario
 
@@ -62,7 +72,9 @@ describeCells('my scenario', { transports: ['tcp', 'ws'] }, (peers) => {
 });
 ```
 
-Each cell starts its server and client peers once, resets both after every test (and fails the test if either reported a `peer.error`), and prints both peers' stderr when a test fails. A cell that cannot run is a skipped suite whose name says why: the TS peer is missing, or the TS side lacks the transport (`tsTransportGaps` in `matrix.ts`, which each porting thread clears as it lands).
+Each cell starts its server and client peers once, resets both after every test (and fails the test if either reported a `peer.error`), and prints both peers' stderr when a test fails. A cell that cannot run is a skipped suite whose name says why: a peer is missing, or the TS side lacks the transport (`tsTransportGaps` in `matrix.ts`: raw QUIC and WebTransport without the native addon). `describeChains` (`chain.ts`) does the same for three or more peers, each role in either language, started from the backend to the client and each configured from the peers started before it.
+
+A value the reference decides is found by running the Dart to Dart cell and asserting what it does in every cell, never by recording a snapshot per cell (each cell would record its own).
 
 Wait for events rather than sleeping: `peers.server.events.waitFor({ event: 'channel.closed', channel })`. Timeouts cannot be faked across a process boundary, so a scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
 
@@ -171,7 +183,7 @@ Behaviours both peers implement identically, so a scenario can run against eithe
 
 A plain message (no reply expected) to `echo` is reported as `service.message {service, procedure, bulk, payload}`.
 
-**`raw`**: each incoming channel becomes a handle: `channel.incoming {channel, connection, service, id, type, instance, shard, host, payload}`, its subframes `channel.data {channel, hex}`, its end `channel.closed {channel, code, reason}`. `channel.send` and `channel.close` drive it.
+**`raw`**: each incoming channel becomes a handle: `channel.incoming {channel, connection, service, id, type, instance, shard, host, payload, identity}`, its subframes `channel.data {channel, hex}`, its end `channel.closed {channel, code, reason}`. `channel.send` and `channel.close` drive it.
 
 **`sink`**: accepts the channel and never reads it, so its window fills up.
 
@@ -235,3 +247,7 @@ The kinds without a note also answer `reencoded`. The oracle test compares the D
 ## Test vectors
 
 `test/vectors/wiki-vectors.json` holds the wiki's vectors with the wiki commit; `tool/extract-wiki-vectors.mjs` regenerates it from a checkout of `kaetemi/sway` (`wiki/switchboard/`). Tests name vectors through `test/support/vectors.ts` (`wikiBytes('test-vectors/names/api')`, `wikiVectorsIn('test-vectors/talk-messages/')`, `skippedWikiVector(id, reason)`), always with string literals: `test/vectors/coverage.test.ts` reads the test sources for them, fails on an id the file does not have, and, once a test names any vector of a wiki table, on every vector of that table no test names. `SWITCHBOARD_VECTORS_STRICT=1` checks every table.
+
+## Dart driver
+
+`dart_driver/` is a Dart package whose tests run the Dart Switchboard in process against the TS peer, which `lib/ts_peer.dart` spawns with Node (`SWITCHBOARD_NODE`, else `node` on PATH) and drives over this protocol: the Dart side is then observable as in the Dart repositories' own two-peer tests, the TS side is the port behind its peer. `node tool/dart-peer.mjs driver [-- <dart test arguments>]` runs it with the SDK and Dart checkouts the peer build uses (it writes the driver's `pubspec_overrides.yaml` too). Its groups: a Dart node against the TS peer over each transport (requests, item windows, aborts, bulk both ways, plain messages, GOAWAY, raw channels), a Dart credential identifying to the TS peer and the TS peer in return, the TS peer as the requester of a service implemented in the Dart test, and Dart-encoded Talk frames decoded alike by the TS peer's oracle. A group whose transport the TS peer cannot serve is skipped with the reason. The Dart peer's library `switchboard_dart_peer.dart` exports what the driver shares with it: the test authorities and the byte helpers.

@@ -34,38 +34,26 @@ Nothing. The branch `claude/switchboard-ts-interop-x2iz7c` holds no commit
 the integration branch lacks, and no work in progress exists. The TS peer has
 not been started.
 
-## Remaining from the work split
+## Done since (branch `claude/ts-peer`)
 
-1. **Deliverable 2: the TS peer and the mux and Talk matrix.**
-   * It needs the frame mux connection (thread 1) and the Talk channel layer
-     (thread 2). Neither had landed at hand-off; only their codecs had.
-   * The TS peer goes in `test/interop/ts_peer/main.ts`, using the public
-     API only. It implements the commands, events and `echo`, `raw` and
-     `sink` services in `test/interop/README.md`, and prints the same READY
-     line. `peers.ts` finds it by that path.
-   * Clear the entries in `tsTransportGaps` (`test/interop/matrix.ts`) as
-     transports become servable. `src/core/quic/` and `src/node/quic/` have
-     landed (thread 5), so check whether QUIC can be served on Node.
-   * Then add the scenarios: request, stream, abort, extend, bulk, close,
-     GOAWAY and protocol-error injection. Also point `probe/conformance.test.ts`
-     at the TS server, which it already loops over.
-2. **More oracle kinds.**
-   * The TS talk frame (`src/core/talk/talk-frame.ts`) and stream framing
-     codecs exist, and the Dart peer already answers the `talk` and `stream`
-     kinds. Agreement checks for these two are not written yet.
-   * Naming, sharding, credential and QUIC record kinds need new cases in
-     `dart_peer/lib/src/oracle.dart` first.
-3. **Deliverable 3:** identity (NONCE and IDENT both ways, holder key and
-   bearer, exporter-bound over QUIC), naming and sharding, relay and proxy,
-   and mixed-language meshes.
-4. **Deliverable 4:** a Dart driver under `test/interop/dart_driver/` that
-   spawns the TS peer.
-5. **Vector coverage.**
-   * The vector tests under `test/vectors/` belong to other threads. They
-     read hex inline, so their wiki tables still show as `todo` in the
-     coverage test (13 todo).
-   * They count once they name vectors through `test/support/vectors.ts`.
-   * `SWITCHBOARD_VECTORS_STRICT=1` makes every table required.
+The TS peer, the scenario matrix in all four pairings over TCP, WebSocket,
+raw QUIC and WebTransport, chains of three peers in every assignment of
+the implementations, the identity, naming, sharding, proxy and relay
+scenarios, the oracle for every codec, the Dart driver and the CI steps:
+see `../notes/interop.md`, section 11. 3686 interop tests pass, none
+skipped, with the native addon.
+
+## Remaining
+
+1. Sharding beyond a static space: managed and lazy spaces, migration
+   (DRAIN, ASSIGN, FORWARD, RESUME) across implementations, and the MOVED
+   retry of slot-routed opens once the node routes by slot.
+2. The reconnecting client against a server's GOAWAY and close (scenario
+   23 of the notes) and the QUIC record-level cases (24): they need a raw
+   QUIC probe or more peer commands.
+3. A browser peer (the web entry in Chromium) as a third implementation of
+   the client half.
+4. More of the Dart repositories' two-peer tests in the Dart driver.
 
 Conventions:
 * The lead merges with real merge commits. Keep branch history granular,
