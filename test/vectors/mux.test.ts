@@ -1,10 +1,11 @@
 // Mux frames and control messages: the wiki page "Polyverse Switchboard
 // Test Vectors", section "Mux frames", plus the decoding rules of the
-// "Switchboard Mux" page. Ports the codec groups of
-// `test/vectors/mux_vectors_test.dart`; its "connection" group needs the
-// frame mux and is ported with it.
+// "Switchboard Mux" page, and the negative vectors through a connection.
+// Ports `test/vectors/mux_vectors_test.dart`.
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
+import type { MuxOptions } from '../../src/core/mux/contract.ts';
+import { FrameMuxConnection } from '../../src/core/mux/frame-mux-connection.ts';
 import {
   MuxCommand,
   MuxControlMessage,
@@ -14,6 +15,13 @@ import {
   MuxLimits,
 } from '../../src/core/mux/mux-frame.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
+import {
+  FrameReader,
+  Incoming,
+  memoryPair,
+  SteppingClock,
+  Subframes,
+} from '../unit/mux/support.ts';
 
 const empty = new Uint8Array(0);
 
@@ -318,4 +326,101 @@ describe('mux negative vectors, decoder', () => {
       expect(() => decode(hexBytes(hex))).toThrow(ProtocolError);
     });
   }
+});
+
+describe('mux negative vectors, connection', () => {
+  const options: Partial<MuxOptions> = { keepAliveInterval: undefined, announceLimits: false };
+
+  /** A frame mux over one end of a memory pair, and a reader and a writer of the other end. */
+  function connection(): [FrameMuxConnection, FrameReader, (hex: string) => void] {
+    const clock = new SteppingClock();
+    const [local, remote] = memoryPair(clock);
+    const mux = new FrameMuxConnection(local, { ...options, clock, isInitiator: true });
+    const writer = remote.writable.getWriter();
+    const send = (hex: string): void => {
+      writer.write(hexBytes(hex)).catch(() => {});
+    };
+    return [mux, new FrameReader(remote.readable), send];
+  }
+
+  for (const [name, hex] of negative) {
+    test(`${name}: GOAWAY PROTOCOL_ERROR and close`, async () => {
+      const [mux, queue, send] = connection();
+      send(hex);
+      const frame = MuxFrame.decode(await queue.nextBytes());
+      expect(frame.channelId).toBe(0);
+      const control = MuxControlMessage.decode(frame.payload);
+      expect(control.knownType).toBe(MuxControlType.goAway);
+      expect(control.goAwayStatus.known).toBe(StatusCode.protocolError);
+      expect(await queue.hasNext()).toBe(false);
+      expect((await mux.done).known).toBe(StatusCode.protocolError);
+      expect(mux.isOpen).toBe(false);
+    });
+  }
+
+  for (const [name, hex] of [
+    ['LIMITS shorter than 12 bytes', '02 00 00 04 00 04 00 00 04 00 00 00'],
+    ['LIMITS with a zero window', '02 00 00 04 00 04 00 00 04 00 00 00 00 00 00 00'],
+    ['CREDIT that is not 10 bytes', '02 00 00 07 02 00 00 00 00 00 00 80'],
+  ] as const) {
+    test(`${name}: GOAWAY PROTOCOL_ERROR and close`, async () => {
+      const [mux, queue, send] = connection();
+      send(hex);
+      const frame = MuxFrame.decode(await queue.nextBytes());
+      const control = MuxControlMessage.decode(frame.payload);
+      expect(control.knownType).toBe(MuxControlType.goAway);
+      expect(control.goAwayStatus.known).toBe(StatusCode.protocolError);
+      expect(await queue.hasNext()).toBe(false);
+      expect((await mux.done).known).toBe(StatusCode.protocolError);
+    });
+  }
+
+  test('CREDIT for a channel that is not open is ignored', async () => {
+    const [mux, queue, send] = connection();
+    send('02 00 00 07 02 00 00 00 00 00 00 80 00 00');
+    send('02 00 00 07 FE FF FF FF FF FF FF FF FF FF');
+    send('02 00 00 01 AA');
+    expect(hexString(await queue.nextBytes())).toBe('02 00 00 02 AA');
+    expect(mux.isOpen).toBe(true);
+    await mux.close();
+    await queue.cancel();
+  });
+
+  test('a long id above 32 bits addresses its own channel', async () => {
+    const [mux, queue, send] = connection();
+    // OPEN 0x100000003 and OPEN 3, then DATA on each.
+    send('10 03 00 00 00 01 00');
+    send('12 03 00');
+    send('00 03 00 00 00 01 00 AA');
+    send('02 03 00 BB');
+    const channels = new Incoming(mux);
+    const long = await channels.next();
+    const short = await channels.next();
+    expect(long.id).toBe(0x100000003);
+    expect(short.id).toBe(3);
+    expect(await new Subframes(long).nextHex()).toBe('AA');
+    expect(await new Subframes(short).nextHex()).toBe('BB');
+    // Our CLOSE uses the long form for the long id.
+    void long.close();
+    expect(hexString(await queue.nextBytes())).toBe('20 03 00 00 00 01 00');
+    await mux.close();
+    await queue.cancel();
+    await channels.cancel();
+  });
+
+  test('compatible reserved bits are ignored by a connection', async () => {
+    const [mux, queue, send] = connection();
+    // OPEN 3 with bit 0x40, DATA with 0x80, PING with 0xC0.
+    send('52 03 00');
+    send('82 03 00 01');
+    send('C2 00 00 01 DE AD');
+    const channels = new Incoming(mux);
+    const channel = await channels.next();
+    expect(channel.id).toBe(3);
+    expect(await new Subframes(channel).nextHex()).toBe('01');
+    expect(hexString(await queue.nextBytes())).toBe('02 00 00 02 DE AD');
+    await mux.close();
+    await queue.cancel();
+    await channels.cancel();
+  });
 });
