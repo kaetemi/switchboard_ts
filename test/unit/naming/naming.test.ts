@@ -35,11 +35,7 @@ import {
   talkOptions,
 } from '../../../src/core/talk/contract.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import {
-  type FakeFrame,
-  type FakeTalkChannel,
-  fakeTalkPair,
-} from '../../support/naming/fake-talk.ts';
+import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   bytes,
   Connector,
@@ -51,6 +47,7 @@ import {
   Harness,
   isFinalResponse,
   isRequestFor,
+  type LinkChannel,
   LossyConnector,
   ms10,
   ms50,
@@ -60,6 +57,7 @@ import {
   rejectsWith,
   SeededRandom,
   serverOptions,
+  talkPair,
   throwsWith,
   unregister,
   until,
@@ -190,7 +188,7 @@ describe('NamingService', () => {
   test('follows the IDENTs of a connection with one listener, however many channels it carried', async () => {
     const connection = new IdentityEvents();
     for (let i = 0; i < 20; i++) {
-      const [client, server] = fakeTalkPair({ a: clientOptions, b: serverOptions });
+      const [client, server] = talkPair({ a: clientOptions, b: serverOptions });
       h.service.serve(server, { connection });
       await register(client, 'npc');
       await client.close();
@@ -587,7 +585,7 @@ describe('NamingService', () => {
   });
 
   test('serve() of a channel already listened to keeps nothing', async () => {
-    const [channel] = fakeTalkPair({ a: serverOptions, b: clientOptions });
+    const [channel] = talkPair({ a: serverOptions, b: clientOptions });
     const taken = channel.messages[Symbol.asyncIterator]();
     expect(() => h.service.serve(channel)).toThrow(Error);
     expect(h.service.channelCount).toBe(0);
@@ -663,7 +661,7 @@ describe('idle subscriptions', () => {
     const clock = new TestClock();
     // Default options everywhere.
     const ns = new NamingService({ clock });
-    const [server, peer] = fakeTalkPair({ a: { clock }, b: { clock } });
+    const [server, peer] = talkPair({ a: { clock }, b: { clock } });
     ns.serve(server);
     peer.write({
       kind: 'message',
@@ -1148,12 +1146,12 @@ describe('NamingClient', () => {
 
   test('a WATCH without a reply is a loss of the service', async () => {
     // The service never answers.
-    const silent: FakeTalkChannel[] = [];
+    const silent: LinkChannel[] = [];
     let calls = 0;
     const client = new NamingClient(
       async () => {
         calls++;
-        const [client, server] = fakeTalkPair({
+        const [client, server] = talkPair({
           a: { requestTimeout: ms50 },
           b: { replyTimeout: 0 },
           dropBtoA: () => true,
@@ -1536,7 +1534,7 @@ describe('NamingClient', () => {
     const client = new NamingClient(
       async () => {
         calls++;
-        const [client, server] = fakeTalkPair({
+        const [client, server] = talkPair({
           a: clientOptions,
           b: calls === 1 ? { replyTimeout: 200, maxIncomingRequests: 1 } : serverOptions,
         });
@@ -1796,14 +1794,14 @@ const oneRequestAtATime = {
 class ScriptedConnector {
   readonly handle: (request: TalkMessage) => void;
   /** Server sides of the links handed out. */
-  readonly servers: FakeTalkChannel[] = [];
+  readonly servers: LinkChannel[] = [];
 
   constructor(handle: (request: TalkMessage) => void) {
     this.handle = handle;
   }
 
   readonly call = async (): Promise<TalkChannel> => {
-    const [client, server] = fakeTalkPair({ a: clientOptions, b: serverOptions });
+    const [client, server] = talkPair({ a: clientOptions, b: serverOptions });
     this.servers.push(server);
     void (async () => {
       try {

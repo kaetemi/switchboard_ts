@@ -46,14 +46,16 @@ import type {
 } from '../../../src/core/talk/contract.ts';
 import { type Clock, systemClock, type TimerHandle } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { type FakeTalkChannel, type FrameFilter, fakeTalkPair } from './fake-talk.ts';
+import type { FrameFilter } from './fake-talk.ts';
 import {
   describe,
   type Harness,
   LineQueue,
+  type LinkChannel,
   ms50,
   register,
   serverOptions,
+  talkPair,
   Watcher,
 } from './harness.ts';
 
@@ -145,8 +147,8 @@ export class Instance {
   readonly type: Name;
   readonly id: number;
   readonly log: string[];
-  channel!: FakeTalkChannel;
-  server!: FakeTalkChannel;
+  channel!: LinkChannel;
+  server!: LinkChannel;
 
   /** Behaviours; the defaults answer at once (holding for ASSIGN). */
   onAssign: (request: AssignRequest) => Promise<AssignResponse> = async () => new AssignResponse();
@@ -344,7 +346,7 @@ export class SwitchableConnector {
   /** Drops frames from the naming service to the client. */
   dropToClient: FrameFilter = () => false;
   /** Server sides of the links handed out, in order. */
-  readonly servers: FakeTalkChannel[] = [];
+  readonly servers: LinkChannel[] = [];
 
   constructor(harness: Harness) {
     this.harness = harness;
@@ -428,7 +430,7 @@ export class ScriptedNaming {
   answerClaims = true;
   connects = 0;
   /** The service side of the latest link. */
-  server!: FakeTalkChannel;
+  server!: LinkChannel;
 
   constructor(options: { maxOutgoingRequests?: number; clock?: Clock } = {}) {
     this.clock = options.clock;
@@ -443,7 +445,7 @@ export class ScriptedNaming {
   readonly connect = async (): Promise<TalkChannel> => {
     this.connects++;
     const clock = this.clock === undefined ? {} : { clock: this.clock };
-    const [client, server] = fakeTalkPair({
+    const [client, server] = talkPair({
       a: this.options,
       b: { ...serverOptions, ...clock },
     });

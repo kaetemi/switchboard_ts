@@ -5,7 +5,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 // Shared helpers for the naming service, client and resolver tests: the
-// port of the Dart `naming_harness.dart`, over the in-memory Talk pair.
+// port of the Dart `naming_harness.dart`. Links are real Talk channels over
+// an in-memory frame link (`talk-link.ts`), except where a test asks for
+// synchronous delivery, which only the fake pair (`fake-talk.ts`) has.
 
 import { expect } from 'vitest';
 import { utf8Decode } from '../../../src/core/bytes.ts';
@@ -30,9 +32,11 @@ import type { Clock } from '../../../src/core/util/clock.ts';
 import {
   type FakeFrame,
   type FakeTalkChannel,
+  type FakeTalkPairOptions,
   type FrameFilter,
   fakeTalkPair,
 } from './fake-talk.ts';
+import { type LinkedTalkChannel, talkLink } from './talk-link.ts';
 import { flushMicrotasks } from './test-clock.ts';
 
 export const ms10 = 10;
@@ -130,6 +134,25 @@ export async function isSettled(promise: Promise<unknown>): Promise<boolean> {
   return settled;
 }
 
+/**
+ * One side of a test link: a real Talk channel over an in-memory frame link,
+ * or, for synchronous delivery, the fake pair's. Both record the frames
+ * they send (`sent`), take a filter of them (`drop`) and write raw frames
+ * (`write`).
+ */
+export type LinkChannel = LinkedTalkChannel | FakeTalkChannel;
+
+/**
+ * Two linked Talk channels: real ones over an in-memory frame link, or the
+ * fake pair's with `sync` (synchronous delivery, which only the fake has).
+ */
+export function talkPair(options: FakeTalkPairOptions = {}): [LinkChannel, LinkChannel] {
+  if (options.sync === true) {
+    return fakeTalkPair(options);
+  }
+  return talkLink(options);
+}
+
 /** What a link takes. */
 export interface LinkOptions {
   /**
@@ -167,9 +190,9 @@ export class Harness {
   readonly service: NamingService;
   readonly clock: Clock | undefined;
   /** Server sides of every link, in creation order. */
-  readonly servers: FakeTalkChannel[] = [];
+  readonly servers: LinkChannel[] = [];
   /** Client sides of every link, in creation order. */
-  readonly clients: FakeTalkChannel[] = [];
+  readonly clients: LinkChannel[] = [];
 
   constructor(options: NamingServiceOptions = {}) {
     this.clock = options.clock;
@@ -187,9 +210,9 @@ export class Harness {
   }
 
   /** Opens a link: the server side is served, both sides are returned. */
-  link(options: LinkOptions = {}): [FakeTalkChannel, FakeTalkChannel] {
+  link(options: LinkOptions = {}): [LinkChannel, LinkChannel] {
     const clock = this.clock === undefined ? {} : { clock: this.clock };
-    const [client, server] = fakeTalkPair({
+    const [client, server] = talkPair({
       a: { ...clientOptions, ...clock, ...options.options },
       b: { ...serverOptions, ...clock, ...options.serverOptions },
       sync: options.sync ?? false,
@@ -224,7 +247,7 @@ export class Connector {
   down = false;
   calls = 0;
   /** Server sides of the links handed out. */
-  readonly servers: FakeTalkChannel[] = [];
+  readonly servers: LinkChannel[] = [];
 
   constructor(harness: Harness, options: { sync?: boolean; options?: Partial<TalkOptions> } = {}) {
     this.harness = harness;

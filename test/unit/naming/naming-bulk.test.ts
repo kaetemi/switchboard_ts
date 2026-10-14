@@ -7,15 +7,16 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Port of the Dart `naming_bulk_test.dart`: naming payloads larger than a
 // frame go as bulk payloads on their own; the naming service and client
 // read `payload`, which a reassembled bulk payload fills like an inline one.
-//
-// The Dart test runs over mem:// nodes, whose Talk channels send these
-// payloads bulk. The in-memory Talk pair the port runs over delivers every
-// payload inline, so here the naming half is checked: the service and the
-// client carry the same payloads, as large, whole. Whether they go bulk is
-// the Talk layer's (`isBulk` is not checked).
+// As in Dart, over nodes on `mem` listeners: the naming service is served
+// by a host node, and each client reaches it over a Talk channel of its own
+// node (what `MeshNode.join` opens). Over the toy mux and, from
+// `over-frame-mux/`, over the frame mux. A payload goes bulk by the
+// channel's window, which only the frame mux has (the toy mux takes frames
+// up to its frame limit, 1 MiB): over the toy mux the same payloads go
+// inline, and `isBulk` is checked for that.
 
-import { afterEach, beforeEach, expect, test } from 'vitest';
-import { ServiceAddress } from '../../../src/core/address/index.ts';
+import { beforeEach, expect, test } from 'vitest';
+import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { Name } from '../../../src/core/name.ts';
 import { NamingClient } from '../../../src/core/naming/naming-client.ts';
 import {
@@ -23,37 +24,40 @@ import {
   maxMetadataLength,
   Procedures,
   RegisterRequest,
+  Services,
   WatchRequest,
 } from '../../../src/core/naming/naming-protocol.ts';
+import { NamingService } from '../../../src/core/naming/naming-service.ts';
 import type { ServiceEvent } from '../../../src/core/switchboard/contract.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
-import { Harness, within } from '../../support/naming/harness.ts';
+import { within } from '../../support/naming/harness.ts';
+import { node, onCleanup, overFrameMux } from '../../support/node/harness.ts';
 
 const limit = 5000;
 
-let h: Harness;
-let clients: NamingClient[];
+let service: NamingService;
+let naming: string;
 
-beforeEach(() => {
-  // NamingService(assignmentHold: Duration.zero) with the Dart defaults the
-  // harness shortens.
-  h = new Harness({
-    assignmentHold: 0,
-    handoverTimeout: 60_000,
-    holdingSettle: Harness.productionSettle,
-  });
-  clients = [];
+beforeEach(async () => {
+  const host = node();
+  service = new NamingService({ assignmentHold: 0 });
+  onCleanup(() => service.close());
+  host.registerService(Services.naming, service.handler, { instance: 1 });
+  naming = await host.listenMemory();
 });
 
-afterEach(async () => {
-  await Promise.all(clients.map((client) => client.close()));
-  await h.close();
-});
+/** The naming service's address on the host. */
+function namingAddress(): ChannelAddress {
+  return new ChannelAddress({ type: Services.naming, instance: 1 });
+}
 
-/** A node joined to the naming service: its naming client (`MeshNode.join`). */
+/** A new node joined to the naming service: its naming client (`MeshNode.join`). */
 function join(): NamingClient {
-  const client = new NamingClient(async () => h.link()[0], { reconnectDelay: 1000 });
-  clients.push(client);
+  const sb = node();
+  const client = new NamingClient(() => sb.openTalkAt(naming, namingAddress()), {
+    reconnectDelay: 1000,
+  });
+  onCleanup(() => client.close());
   client.start().catch(() => {});
   return client;
 }
@@ -90,7 +94,7 @@ test('a REGISTER of 40 KiB goes bulk; the record reaches watchers and LOOKUP who
   });
   const id = await within(publisher.register(type, endpoints, { metadata }), limit);
   const address = new ServiceAddress(type, id);
-  const record = h.service.table.get(address.key);
+  const record = service.table.get(address.key);
   expect(record).toBeDefined();
   expect(record?.endpoints).toEqual(endpoints);
   expect(record?.metadata).toEqual(metadata);
@@ -100,12 +104,14 @@ test('a REGISTER of 40 KiB goes bulk; the record reaches watchers and LOOKUP who
   expect(seen.record.endpoints).toEqual(endpoints);
   expect(seen.record.metadata).toEqual(metadata);
   // A LOOKUP item, a bulk stream item.
-  const [talk] = h.link();
+  const talk = await within(node().openTalkAt(naming, namingAddress()), limit);
   const lookup = talk.streamRequest(Procedures.lookup.toString(), new WatchRequest(type).encode());
   const items = await within(collect(lookup.items), limit);
   expect(items).toHaveLength(1);
-  const found = decodeServiceRecord((items[0] as TalkMessage).payload);
-  // Not ported: `items.single.isBulk` (see the file comment).
+  const item = items[0] as TalkMessage;
+  const found = decodeServiceRecord(item.payload);
+  // Bulk where the window sends it bulk (see the file comment).
+  expect(item.isBulk).toBe(overFrameMux());
   expect(found.endpoints).toEqual(endpoints);
   expect(found.metadata).toEqual(metadata);
   await talk.close();

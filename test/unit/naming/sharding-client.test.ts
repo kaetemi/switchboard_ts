@@ -52,13 +52,14 @@ import {
 } from '../../../src/core/talk/contract.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import type { FakeFrame, FakeTalkChannel } from '../../support/naming/fake-talk.ts';
+import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   Connector,
   clientOptions,
   delay,
   Harness,
   isRequestFor,
+  type LinkChannel,
   LossyConnector,
   ms10,
   ms50,
@@ -263,7 +264,7 @@ test('requests are answered from the handler, or refused', async () => {
   const client = newClient(connector.call);
   await client.start();
   await within(client.synced);
-  const server = connector.servers.at(-1) as FakeTalkChannel;
+  const server = connector.servers.at(-1) as LinkChannel;
   const ask = async (procedure: string, payload: Uint8Array): Promise<number[]> =>
     Array.from((await server.request(procedure, payload)).payload);
   const assign = new AssignRequest(zone, 1, { epoch: 3 }).encode();
