@@ -4,13 +4,13 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// StaticResolver and EndpointResolver. A port of the Dart resolver_test.dart;
-// the slot table half of StaticResolver comes with slot routing.
+// StaticResolver (with its configured slot tables) and EndpointResolver. A
+// port of the Dart resolver_test.dart.
 
 import { describe, expect, test } from 'vitest';
 import { ServiceAddress } from '../../../src/core/address/index.ts';
 import { Name } from '../../../src/core/name.ts';
-import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
+import { SlotEntry, SlotSpace, serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import type { ServiceEvent } from '../../../src/core/switchboard/contract.ts';
 import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
@@ -32,22 +32,35 @@ describe('StaticResolver', () => {
   test('close ends resolution and refuses changes before mutating', async () => {
     const record = serviceRecord(new ServiceAddress(npc, 1));
     const r = new StaticResolver([record]);
+    r.defineSlots(new SlotSpace(npc, { count: 2 }));
+    r.setSlot(npc, 0, SlotEntry.owned(1, { epoch: 1 }));
     await r.close();
     await r.close();
     await rejectsWith(r.resolve(npc), StatusCode.failedPrecondition);
+    await rejectsWith(r.locateSlot(npc, 0), StatusCode.failedPrecondition);
     closedError(() => r.add(serviceRecord(new ServiceAddress(npc, 2))));
     closedError(() => r.remove(record.address));
+    closedError(() => r.defineSlots(new SlotSpace(npc, { count: 3 })));
+    closedError(() => r.removeSlots(npc));
+    closedError(() => r.setSlot(npc, 0, SlotEntry.unassigned));
     expect([...r.table.values()]).toEqual([record]);
+    expect(r.slotTable(npc)?.count).toBe(2);
+    expect(r.slotOwner(npc, 0)?.owner).toBe(1);
   });
 
   test('close completes while a consumer of events is not reading', async () => {
     const r = new StaticResolver();
     const events = r.events[Symbol.asyncIterator]();
+    const slots = r.slotEvents[Symbol.asyncIterator]();
     r.add(serviceRecord(new ServiceAddress(npc, 1)));
+    r.defineSlots(new SlotSpace(npc, { count: 2 }));
+    r.setSlot(npc, 1, SlotEntry.owned(1, { epoch: 1 }));
     await r.close();
     // What was published before the close is still delivered, then the end.
     expect((await events.next()).value?.up).toBe(true);
     expect((await events.next()).done).toBe(true);
+    expect((await slots.next()).value?.slot).toBe(1);
+    expect((await slots.next()).done).toBe(true);
   });
 
   test('resolves by type and emits events', async () => {
@@ -73,6 +86,40 @@ describe('StaticResolver', () => {
     expect((await r.resolve(npc)).map((record) => record.address.instance)).toEqual([3]);
     await r.close();
     await reading;
+  });
+  // Not in the Dart file: the slot tables StaticResolver carries.
+  test('slot tables: changes, redefinition and removal are reported', async () => {
+    const r = new StaticResolver();
+    const events = r.slotEvents[Symbol.asyncIterator]();
+    expect(r.slotTable(npc)).toBeUndefined();
+    expect(() => r.setSlot(npc, 0, SlotEntry.owned(1))).toThrow(/no slot space/);
+    r.defineSlots(new SlotSpace(npc, { count: 4 }));
+    expect(() => r.setSlot(npc, 4, SlotEntry.owned(1))).toThrow(RangeError);
+    r.setSlot(npc, 1, SlotEntry.owned(2, { epoch: 1 }));
+    r.setSlot(npc, 1, SlotEntry.owned(2, { epoch: 1 }));
+    r.setSlot(npc, 2, SlotEntry.migrating(2, 3, { epoch: 2 }));
+    r.setSlot(npc, 3, SlotEntry.free({ holder: 3 }));
+    expect([...r.slotOwners(npc)]).toEqual([2]);
+    expect(r.slotOwner(npc, 2)?.owner).toBe(2);
+    expect(r.slotOwner(npc, 3)).toBeUndefined();
+    expect(await r.locateSlot(npc, 1)).toBe(r.slotOwner(npc, 1));
+    expect(r.slotTable(npc)?.get(3).holder).toBe(3);
+    r.defineSlots(new SlotSpace(npc, { count: 8 }));
+    expect(r.slotTable(npc)?.count).toBe(8);
+    expect(r.slotOwner(npc, 1)).toBeUndefined();
+    r.setSlot(npc, 5, SlotEntry.owned(1));
+    r.removeSlots(npc);
+    expect(r.slotTable(npc)).toBeUndefined();
+    await r.close();
+    const seen: string[] = [];
+    for (;;) {
+      const next = await events.next();
+      if (next.done) break;
+      seen.push(`${next.value.slot} ${next.value.previous.state}>${next.value.entry.state}`);
+    }
+    // Repeating an entry is no change; a redefinition or a removal frees
+    // what the table held.
+    expect(seen).toEqual(['1 0>1', '2 0>2', '3 0>0', '1 1>0', '2 2>0', '3 0>0', '5 0>1', '5 1>0']);
   });
 });
 

@@ -988,13 +988,11 @@ export function proxyHandler(
           resolver: slots,
           mayLocate: () => locates.take(client),
         });
-        if (carrier !== undefined) {
-          await pipe(new MuxEnd(incoming.channel), new SlotEnd(carrier), {
-            toA: hide,
-            bulkBound: forwarding,
-          });
-          return;
-        }
+        await pipe(new MuxEnd(incoming.channel), new SlotEnd(carrier), {
+          toA: hide,
+          bulkBound: forwarding,
+        });
+        return;
       }
       await pipe(new MuxEnd(incoming.channel), new MuxEnd(channel), {
         toA: hide,

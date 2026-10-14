@@ -7,6 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { defaultMuxOptions, type MuxChannel, type MuxChannelCarrier } from '../mux/contract.ts';
 import type { Name } from '../name.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
+import { followBulkTarget } from '../talk/talk-bulk-routes.ts';
 import { Deferred } from '../util/deferred.ts';
 import { type Logger, noopLogger } from '../util/logger.ts';
 
@@ -30,12 +31,6 @@ export interface SlotChannelOptions {
    * default initial window (`MuxOptions.initialWindow`, 64 KiB).
    */
   readonly maxHeldBytes?: number;
-  /**
-   * Called when a replacement takes over from [previous], so that the bulk
-   * channels the new owner opens go where the first one's would (Talk's
-   * bulk routes follow the replacement).
-   */
-  readonly onReplaced?: (previous: MuxChannel, next: MuxChannel) => void;
   /** Diagnostics, logged as `Switchboard.Router`. */
   readonly logger?: Logger;
 }
@@ -95,7 +90,6 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   readonly maxHeldBytes: number;
 
   readonly #reopen: SlotReopen;
-  readonly #onReplaced: ((previous: MuxChannel, next: MuxChannel) => void) | undefined;
   readonly #logger: Logger;
   #current: MuxChannel;
   /** The reader of {@link readable}'s current source, and the channel it reads. */
@@ -141,7 +135,6 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
     this.#current = channel;
     this.#reopen = reopen;
     this.maxHeldBytes = options.maxHeldBytes ?? defaultMuxOptions.initialWindow;
-    this.#onReplaced = options.onReplaced;
     this.#logger = options.logger ?? noopLogger;
     this.#watch(channel);
   }
@@ -537,8 +530,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
     }
     this.#log('debug', `${this.type}/${this.slot} moved (${moved}), retried on channel ${next.id}`);
     next.manualCredit = this.#manualCredit;
-    // Bulk channels the new owner opens go where the first one's would.
-    this.#onReplaced?.(this.#current, next);
+    // Bulk channels the new owner opens go where the first one's would
+    // (to the Talk layer or the pipe over this slot channel).
+    followBulkTarget(this.#current, next);
     this.#current = next;
     this.#settle();
     this.#watch(next);

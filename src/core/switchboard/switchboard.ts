@@ -25,7 +25,9 @@ import {
   muxOptions,
 } from '../mux/contract.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
-import { serviceRecord } from '../naming/naming-protocol.ts';
+import { SlotMode, serviceRecord } from '../naming/naming-protocol.ts';
+import type { SlotChannel } from '../naming/slot-channel.ts';
+import type { SlotTable } from '../naming/slot-table.ts';
 import { isKnownStatusCode, Status, StatusCode, SwitchboardError } from '../status.ts';
 import { type TalkOptions, talkOptions } from '../talk/contract.ts';
 import type { TalkChannel } from '../talk/talk-channel.ts';
@@ -46,6 +48,7 @@ import type {
   Resolver,
   SelectionPolicy,
   ServiceRecord,
+  SlotResolver,
 } from './contract.ts';
 import { coreRuntime } from './core-runtime.ts';
 import {
@@ -61,8 +64,9 @@ import { genericStatus } from './generic-status.ts';
 import { waitForIdentityChange } from './identity-wait.ts';
 import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
-import { isBrokeringResolver } from './resolver.ts';
+import { isBrokeringResolver, isSlotResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
+import { slotChannel } from './slot-layer.ts';
 import { installBulkRouting, isBulkAddress, routeDispatchedBulk, talkOver } from './talk-layer.ts';
 import {
   abortable,
@@ -276,6 +280,21 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
     typeof value === 'object' &&
     value !== null &&
     typeof (value as { then?: unknown }).then === 'function'
+  );
+}
+
+/** Throws `RangeError` unless [slot] is a `u32`. */
+function checkSlot(slot: number, what: string): void {
+  if (!Number.isInteger(slot) || slot < 0 || slot > 0xffffffff) {
+    throw new RangeError(`${what} ${slot} is outside 0 to 0xFFFFFFFF`);
+  }
+}
+
+/** The records of [address] (an exact instance) among [records]. */
+function recordsOf(records: readonly ServiceRecord[], address: ServiceAddress): ServiceRecord[] {
+  return records.filter(
+    (record) =>
+      record.address.type.equals(address.type) && record.address.instance === address.instance,
   );
 }
 
@@ -2118,6 +2137,22 @@ export class Switchboard implements AsyncDisposable {
    * Endpoints of the chosen instance are tried in order; if none can be
    * connected, the following instances are tried in turn.
    *
+   * Slot routing (wiki page "Polyverse Switchboard Sharding", section
+   * "Routing"): when [address] names any instance, a shard is given and
+   * the resolver is a {@link SlotResolver} with a slot table for the type,
+   * the channel goes to the slot's owner and nowhere else: the owner from
+   * the table (`SlotResolver.slotOwner`, the old owner while the slot
+   * migrates); if the table has none, in a managed space the owner the
+   * resolver locates (`SlotResolver.locateSlot`, which assigns a free slot;
+   * at most {@link slotRefreshTimeout}, then UNAVAILABLE), and in a static
+   * space the open fails with UNAVAILABLE. A slot outside the space fails
+   * with OUT_OF_RANGE; an owner that cannot be connected, or is missing
+   * from the service table, with UNAVAILABLE (the resolver is asked once
+   * more before, since an owner just located may have registered after the
+   * records were read). An explicit instance bypasses slot routing (the
+   * shard is still carried in the header). An owner that [options.where]
+   * refuses is not found (NOT_FOUND); no other instance is tried.
+   *
    * The returned record's instance is the one to put in the address
    * header: the selected record's instance, or the requested instance when
    * the record's is 0.
@@ -2156,8 +2191,8 @@ export class Switchboard implements AsyncDisposable {
       throw SwitchboardError.of(StatusCode.failedPrecondition, `no resolver to find ${address}`);
     }
     const shard = options.shard;
-    if (shard !== undefined && (!Number.isInteger(shard) || shard < 0 || shard > 0xffffffff)) {
-      throw new RangeError(`shard ${shard} is outside 0 to 0xFFFFFFFF`);
+    if (shard !== undefined) {
+      checkSlot(shard, 'shard');
     }
     // Not `await resolver.ready`: resolve() waits for the table itself,
     // bounded, whereas `ready` has no bound.
@@ -2169,6 +2204,12 @@ export class Switchboard implements AsyncDisposable {
       options.signal,
     );
     this.checkOpen();
+    if (shard !== undefined && address.isAny && isSlotResolver(resolver)) {
+      const table = resolver.slotTable(address.type);
+      if (table !== undefined) {
+        return this.#slotRoute(address, shard, table, resolver, known, options);
+      }
+    }
     const candidates = known.filter(
       (record) =>
         record.address.type.equals(address.type) &&
@@ -2192,6 +2233,132 @@ export class Switchboard implements AsyncDisposable {
         ? shard % accepted.length
         : this.#selectStart(address.type, accepted.length);
     return this.#connectFirst(address, accepted, start, options, resolver);
+  }
+
+  /** The route of a shard [slot] of [address]'s type to the owner [table] names (see {@link selectAndConnect}). */
+  async #slotRoute(
+    address: ServiceAddress,
+    slot: number,
+    table: SlotTable,
+    resolver: SlotResolver,
+    known: ServiceRecord[],
+    options: OpenSelectedOptions,
+  ): Promise<Route> {
+    const owner = await this.#slotOwner(resolver, table, slot, false, options.signal);
+    this.checkOpen();
+    const target = new ServiceAddress(address.type, owner);
+    let records = recordsOf(known, target);
+    if (records.length === 0) {
+      // An owner that registered while the slot was located is not in the
+      // records read before.
+      records = recordsOf(
+        await abortable(
+          resolver.resolve(
+            address.type,
+            options.signal === undefined ? {} : { signal: options.signal },
+          ),
+          options.signal,
+        ),
+        target,
+      );
+      this.checkOpen();
+    }
+    if (records.length === 0) {
+      throw SwitchboardError.of(
+        StatusCode.unavailable,
+        `owner ${target} of slot ${slot} is not in the service table`,
+      );
+    }
+    const where = options.where;
+    const accepted = where === undefined ? records : records.filter((record) => where(record));
+    if (accepted.length === 0) {
+      throw SwitchboardError.of(
+        StatusCode.notFound,
+        `owner ${target} of slot ${slot} does not match the filter`,
+      );
+    }
+    return this.#connectFirst(target, accepted, 0, options, resolver);
+  }
+
+  /**
+   * The owner of [slot] in [table], as routing finds it: from the table,
+   * else (managed space, or [refresh]) through `SlotResolver.locateSlot`,
+   * bounded by {@link slotRefreshTimeout}.
+   */
+  async #slotOwner(
+    resolver: SlotResolver,
+    table: SlotTable,
+    slot: number,
+    refresh: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<number> {
+    const type = table.type;
+    if (slot >= table.count) {
+      throw SwitchboardError.of(
+        StatusCode.outOfRange,
+        `slot ${slot} outside the ${table.count} slots of ${type}`,
+      );
+    }
+    let entry = refresh ? undefined : resolver.slotOwner(type, slot);
+    if (entry === undefined && (refresh || table.space.mode === SlotMode.managed)) {
+      const timeout = this.slotRefreshTimeout;
+      entry = await abortable(
+        bounded(resolver.locateSlot(type, slot), timeout, this.clock, () =>
+          SwitchboardError.of(
+            StatusCode.unavailable,
+            `slot ${type}/${slot} not located within ${timeout} ms`,
+          ),
+        ),
+        signal,
+      );
+    }
+    if (entry === undefined || entry.owner === 0) {
+      throw SwitchboardError.of(StatusCode.unavailable, `slot ${type}/${slot} has no owner`);
+    }
+    return entry.owner;
+  }
+
+  /**
+   * The owner of [slot] of [type] by slot routing (see
+   * {@link selectAndConnect}): from the resolver's table, or located when
+   * the table has none in a managed space. With [options.refresh] the
+   * resolver always asks (`SlotResolver.locateSlot`), in either mode; this
+   * is how a caller handling `MOVED` itself refreshes the slot.
+   *
+   * Rejects with `SwitchboardError`: FAILED_PRECONDITION if the resolver is
+   * not a {@link SlotResolver} (or there is none, or the node is closed),
+   * NOT_FOUND if it has no slot table for [type], OUT_OF_RANGE for a slot
+   * outside the space and UNAVAILABLE when the slot has no owner; also
+   * like `Resolver.resolve` and `SlotResolver.locateSlot`. Rejects with
+   * `RangeError` for a slot outside `u32`.
+   */
+  async resolveSlotOwner(
+    type: NameLike,
+    slot: number,
+    options: { refresh?: boolean | undefined; signal?: AbortSignal | undefined } = {},
+  ): Promise<ServiceAddress> {
+    this.checkOpen();
+    checkSlot(slot, 'slot');
+    checkAborted(options.signal);
+    const name = toName(type);
+    const resolver = this.resolver;
+    if (!isSlotResolver(resolver)) {
+      throw SwitchboardError.of(StatusCode.failedPrecondition, 'the resolver has no slot tables');
+    }
+    // The table is complete once the resolver is synced.
+    await abortable(
+      resolver.resolve(name, options.signal === undefined ? {} : { signal: options.signal }),
+      options.signal,
+    );
+    this.checkOpen();
+    const table = resolver.slotTable(name);
+    if (table === undefined) {
+      throw SwitchboardError.of(StatusCode.notFound, `no slot space for ${name}`);
+    }
+    return new ServiceAddress(
+      name,
+      await this.#slotOwner(resolver, table, slot, options.refresh ?? false, options.signal),
+    );
   }
 
   /** The index among [count] candidates of [type] that the {@link selection} policy picks first. */
@@ -2459,6 +2626,81 @@ export class Switchboard implements AsyncDisposable {
     }
   }
 
+  /**
+   * Opens a channel to the owner of [slot] of [type], with the `MOVED`
+   * retry of the wiki page "Polyverse Switchboard Sharding", section
+   * "Routing".
+   *
+   * The first channel is opened as {@link openChannel} with `shard: slot`
+   * does (slot routing through a {@link SlotResolver}; through any other
+   * resolver, such as the {@link EndpointResolver} of a frontend client,
+   * the endpoint routes). If the owner rejects it with CLOSE `MOVED` before
+   * anything was sent or received, it is retried once, with the same
+   * [options.payload] (default: the payload {@link openChannel} gives the
+   * new destination): to the owner the rejection names (`MovedStatus`),
+   * unless the resolver's table has a more recent one (even the instance
+   * that rejected: the slot came back to it); when it names none, to the
+   * owner the resolver finds by asking (`SlotResolver.locateSlot`, bounded
+   * by {@link slotRefreshTimeout}); through a resolver without slot tables,
+   * the same address again. When the refresh finds no owner other than the
+   * instance that rejected, or the retry fails, the returned channel ends
+   * with the `MOVED` status. See `SlotChannel` for why a `MOVED` after the
+   * first subframe is not retried (the caller may open again and resend:
+   * nothing was processed) and why a `RELOCATED` never is. Subframes sent
+   * while the replacement is being opened are held, at most one window,
+   * `MuxOptions.initialWindow` of {@link muxOptions}
+   * (`SlotChannel.maxHeldBytes`); beyond, the channel is closed with
+   * `RESOURCE_EXHAUSTED`.
+   *
+   * [options.where] applies to the first channel and to the retry: an
+   * owner it refuses is not found (see {@link selectAndConnect}); on the
+   * retry, the returned channel then ends with that NOT_FOUND status
+   * instead of `MOVED`.
+   *
+   * Without a payload, each channel carries the payload {@link openChannel}
+   * would give its destination: the retry asks {@link credentialFor} again
+   * for the new owner, so a per-destination credential never reaches the
+   * other instance. [options.signal] abandons the first open only.
+   *
+   * Rejects like {@link openChannel}.
+   */
+  async openChannelToSlot(
+    type: NameLike,
+    slot: number,
+    options: Omit<OpenChannelOptions, 'shard'> = {},
+  ): Promise<SlotChannel> {
+    const name = toName(type);
+    const header = new ChannelAddress({ type: name, shard: slot, payload: options.payload });
+    const implicitPayload = options.payload === undefined;
+    const { channel: first, header: selected } = await this.openSelected(
+      new ServiceAddress(name),
+      header,
+      { where: options.where, signal: options.signal, implicitPayload, mayRelay: true },
+    );
+    return slotChannel(this, name, slot, first, {
+      header,
+      rejectedBy: selected.instance,
+      where: options.where,
+      implicitPayload,
+    });
+  }
+
+  /**
+   * {@link openChannelToSlot} wrapped in a Talk channel with the node's Talk
+   * options and [options.talkOptions]. The retry applies until the first
+   * request or message is sent; see `SlotChannel`.
+   */
+  async openTalkToSlot(
+    type: NameLike,
+    slot: number,
+    options: Omit<OpenChannelOptions, 'shard'> & {
+      talkOptions?: Partial<TalkOptions> | undefined;
+    } = {},
+  ): Promise<TalkChannel> {
+    const channel = await this.openChannelToSlot(type, slot, options);
+    return this.#talk(channel, options.talkOptions);
+  }
+
   /** {@link openChannel} wrapped in a Talk channel with the node's Talk options and [options.talkOptions]. */
   async openTalk(
     address: ServiceAddressLike,
@@ -2468,7 +2710,7 @@ export class Switchboard implements AsyncDisposable {
     return this.#talk(channel, options.talkOptions);
   }
 
-  #talk(channel: MuxChannel, options: Partial<TalkOptions> | undefined): TalkChannel {
+  #talk(channel: MuxChannel | SlotChannel, options: Partial<TalkOptions> | undefined): TalkChannel {
     try {
       return talkOver(
         channel,

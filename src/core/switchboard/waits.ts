@@ -130,8 +130,8 @@ export function goAwayQuietly(connection: MuxConnection, status?: Status): Promi
   return quietly(() => connection.goAway(status));
 }
 
-/** Closes [channel] with [status]; never throws or rejects. */
-export function closeQuietly(channel: MuxChannel, status?: Status): Promise<void> {
+/** Closes [channel] (a mux channel, or a channel carrying one) with [status]; never throws or rejects. */
+export function closeQuietly(channel: Pick<MuxChannel, 'close'>, status?: Status): Promise<void> {
   return quietly(() => channel.close(status));
 }
 
