@@ -7,7 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import type { ServiceAddress } from '../address/index.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
-import type { Resolver, ServiceEvent, ServiceRecord } from '../switchboard/contract.ts';
+import type { BrokeringResolver, ServiceEvent, ServiceRecord } from '../switchboard/contract.ts';
 import type { TimerHandle } from '../util/clock.ts';
 import type { NamingClient } from './naming-client.ts';
 import { SlotEntry } from './naming-protocol.ts';
@@ -29,7 +29,7 @@ export interface NamingResolverOptions {
  * through the client's `CONNECT` ({@link connectTo}), and answers the slot
  * questions of a sharding router from the client's mirrored slot tables.
  */
-export class NamingResolver implements Resolver, AsyncDisposable {
+export class NamingResolver implements BrokeringResolver, AsyncDisposable {
   /** The client whose table this resolver reads. */
   readonly client: NamingClient;
   /** How long {@link resolve} waits for the client to be synced, in ms. */
@@ -171,7 +171,7 @@ export class NamingResolver implements Resolver, AsyncDisposable {
     address: ServiceAddress,
     endpoint: string,
     intent: Uint8Array,
-    options: { timeout?: number; signal?: AbortSignal } = {},
+    options: { timeout?: number | undefined; signal?: AbortSignal | undefined } = {},
   ): Promise<string> {
     this.#checkOpen();
     return this.client.connectTo(address.type, address.instance, endpoint, intent, options);

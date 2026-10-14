@@ -631,7 +631,7 @@ export class NamingClient implements AsyncDisposable {
     instance: number,
     endpoint: string,
     intent: Uint8Array,
-    options: { timeout?: number; signal?: AbortSignal } = {},
+    options: { timeout?: number | undefined; signal?: AbortSignal | undefined } = {},
   ): Promise<string> {
     const payload = new ConnectRequest(type, instance, endpoint, { intent }).encode();
     const request = this.#startRequest(Procedures.connect, payload, options.signal);

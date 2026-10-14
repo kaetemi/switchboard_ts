@@ -28,6 +28,7 @@ import {
   type TalkStream,
   talkOptions,
 } from '../../../src/core/talk/contract.ts';
+import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { type Clock, systemClock, type TimerHandle } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 
@@ -317,8 +318,12 @@ export class FakeMessage implements TalkMessage {
   readonly requestId: number;
   readonly responseId: number;
   readonly expectsStream: boolean;
+  readonly frame: TalkFrame;
   readonly isBulk = false;
   readonly bulkLength = undefined;
+  /** Item windows are not modelled: unlimited. */
+  readonly window = undefined;
+  readonly whenCredit: Promise<void> = Promise.resolve();
   readonly #cancelled = new Deferred<void>();
   readonly #abort = new AbortController();
   #finished = false;
@@ -335,7 +340,18 @@ export class FakeMessage implements TalkMessage {
     this.requestId = frame.requestId;
     this.responseId = responseTo ?? frame.responseId;
     this.expectsStream = frame.expectsStream;
+    this.frame = new TalkFrame({
+      kind: frame.item ? TalkKind.streamItem : TalkKind.message,
+      procedure: frame.procedure,
+      requestId: frame.requestId,
+      responseId: this.responseId,
+      stream: frame.expectsStream,
+      payload: frame.payload,
+    });
   }
+
+  /** Item windows are not modelled: there is no credit bound. */
+  setCreditTimeout(): void {}
 
   get procedureName(): string {
     return this.procedure.toString();
@@ -705,6 +721,10 @@ export class FakeTalkChannel implements TalkChannel {
       requestId: out.id,
       get deadline() {
         return out.deadline;
+      },
+      window: undefined,
+      grant() {
+        throw new Error('the fake Talk pair has no item windows');
       },
       items,
       done: out.response.promise,
