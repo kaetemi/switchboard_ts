@@ -51,7 +51,6 @@ import {
   selfSignedCertificate,
 } from '../../src/node/index.ts';
 import {
-  authority,
   authoritySeed,
   hmacAuthority,
   issueCredential,
