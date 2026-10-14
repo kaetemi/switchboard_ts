@@ -29,6 +29,7 @@ import { type NamingConnection, NamingService } from '../../../src/core/naming/n
 import { Status, StatusCode, SwitchboardError, statusCodeName } from '../../../src/core/status.ts';
 import type { ServiceRecord } from '../../../src/core/switchboard/contract.ts';
 import {
+  defaultTalkOptions,
   type TalkChannel,
   type TalkMessage,
   talkOptions,
@@ -1474,7 +1475,7 @@ describe('NamingClient', () => {
   });
 
   test('a replacement refused before sending drops the old record', async () => {
-    const limited = new Connector(h, { options: { maxOutgoingRequests: 1 } });
+    const limited = new Connector(h, { options: oneRequestAtATime });
     const client = newClient(limited);
     await client.start();
     await within(client.synced);
@@ -1491,7 +1492,7 @@ describe('NamingClient', () => {
   });
 
   test('a refused replacement also retires an in-flight REGISTER', async () => {
-    const limited = new Connector(h, { options: { maxOutgoingRequests: 1 } });
+    const limited = new Connector(h, { options: oneRequestAtATime });
     const client = newClient(limited);
     await client.start();
     await within(client.synced);
@@ -1777,6 +1778,16 @@ describe('NamingClient', () => {
 
 /** The client's requester timeout, which the idle subscription outlives. */
 const clientRequestTimeout = clientOptions.requestTimeout as number;
+
+/**
+ * Default Talk options but one outgoing request at a time (the harness
+ * links start from {@link clientOptions}, so the default timeouts are given).
+ */
+const oneRequestAtATime = {
+  requestTimeout: defaultTalkOptions.requestTimeout,
+  replyTimeout: defaultTalkOptions.replyTimeout,
+  maxOutgoingRequests: 1,
+};
 
 /**
  * A `TalkConnector` to a scripted naming service: `WATCH` is answered at
