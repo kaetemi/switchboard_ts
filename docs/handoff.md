@@ -32,6 +32,7 @@ Every pull request went in with a merge commit, in dependency order, after the l
 | #15 | QUIC | `QuicSwitchboardBinding`, `QuicSwitchboardListener`, `quicConnector`, the WebTransport API surface (not exported) | 6cf6beb |
 | #16 | Node | `pipeChannels`, `proxyHandler`, `RelayService`, forwarding, `PeerSet` | 1a608ed |
 | #17 | Node | The core runtime's nodes run over `FrameMuxConnection` | 7975285 |
+| #18 | Node | Branch sync after #17, no file changes | 0c0f92e |
 
 Lead commits between them: the contract placements (`BrokeringResolver` in the switchboard contract, `ServiceAddressLike` in the address layer, injectable `Clock` and `Logger` in every options object), the package rename, the design and work-split updates, and the Biome rule change (`useLiteralKeys` off, because the TS config requires bracket access to index-signature keys).
 
@@ -138,4 +139,4 @@ npm run build                 # dist/ for the four entry points
 
 **CI** (`.github/workflows/ci.yml`): lint and typecheck, Node 22, 24 and 26, Bun, build, `interop` (Dart peer, required mode), `native` (addon build and loopback tests). The `browser` job is still to be added by the QUIC thread.
 
-**State at hand-off:** the last thread merge is 7975285 (PR #17); the commit that adds this document is the head of both `main` and `claude/switchboard-ts-design-s5r9na`. On it, `npm run check` and the test typecheck are clean and `npm test` reports 1517 passed, 125 skipped (the native QUIC files without the addon, 9 naming cases with their reasons) and 50 todo; the interop project passes 241 Dart cells in CI and skips every TS cell. No pull request is open and no thread branch holds a commit the integration branch lacks.
+**State at hand-off:** the last content merge is 7975285 (PR #17; PR #18, 0c0f92e, is a branch sync with no file changes); `main` and `claude/switchboard-ts-design-s5r9na` point at the same head, the commit that last touched this document. On it, `npm run check` and the test typecheck are clean and `npm test` reports 1517 passed, 125 skipped (the native QUIC files without the addon, 9 naming cases with their reasons) and 50 todo; the interop project passes 241 Dart cells in CI and skips every TS cell. No pull request is open and no thread branch holds a commit the integration branch lacks.
