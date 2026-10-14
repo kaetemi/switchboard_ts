@@ -30,6 +30,7 @@ import { TalkAbortError, TalkChannel } from '../../src/core/talk/talk-channel.ts
 import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
 import { ManualClock } from '../../src/testing/manual-clock.ts';
+import { until } from '../support/talk/bulk-peers.ts';
 import { acceptAll, frameMuxPair, nextIncoming, WireLog } from '../support/talk/frame-mux-peers.ts';
 import {
   bytes,
@@ -734,6 +735,42 @@ describe('item windows', () => {
     expect(items.values).toHaveLength(1);
     expectStatus(items.error, StatusCode.deadlineExceeded);
     await talk.close();
+  });
+
+  test('a bulk item counts as one item', async () => {
+    // The Dart talk_window_test case that runs over a mux pair: every Talk
+    // channel installs bulk routing on its connection, so the bulk channels
+    // the peer opens go to their parent's Talk layer.
+    const [client, server] = frameMuxPair({ routeBulk: false });
+    const talk = new TalkChannel(client.open(empty));
+    const responder = new TalkChannel(await nextIncoming(server));
+    const served = nextMessage(responder);
+    const s = talk.streamRequest('GET', empty, { window: 2 });
+    const m = await served;
+    const lengths: number[] = [];
+    new Collector(s.items, { onValue: (i) => lengths.push(i.payload.length) });
+    // A bulk payload of the reply API, and an item too large inline, which
+    // goes bulk all the same: one item each.
+    const first = new Outcome(
+      m.replyItem(empty, { bulk: [new Uint8Array(100000)], bulkLength: 100000 }),
+    );
+    const second = new Outcome(m.replyItem(new Uint8Array(60000)));
+    const third = new Outcome(m.replyItem(bytes([3])));
+    expect(m.window).toBe(0);
+    await until(() => lengths.length === 2);
+    expect(lengths).toEqual([100000, 60000]);
+    expect(first.error).toBeUndefined();
+    expect(second.error).toBeUndefined();
+    expect(third.isDone).toBe(false);
+    expect(s.window).toBe(0);
+    s.grant(1);
+    await until(() => lengths.length === 3);
+    expect(lengths[2]).toBe(1);
+    expect(third.isDone).toBe(true);
+    void m.reply(empty);
+    await s.done;
+    await talk.close();
+    await responder.done;
   });
 
   test('a credit for a request that is not a stream request closes the channel PROTOCOL_ERROR', async () => {
