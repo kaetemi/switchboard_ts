@@ -391,7 +391,7 @@ The detailed assignments are in `docs/work-split.md`. In short: six threads, eac
 
 | Question | Decision |
 | --- | --- |
-| Package name | `@polyverse/switchboard`, version line 3.x like the Dart package |
+| Package name | `@polyverse/switchboard` as a working name, version line 3.x like the Dart package. **Pending the user's choice** (2026-10-14): the `polyverse` npm scope needs the npm account of that name, which exists and is not known to be the user's; `@kaetemi/switchboard` is free; the bare `switchboard` is taken by an unrelated package (1.3.0, 2022). The name is one field in `package.json` and the import paths in the docs; nothing else depends on it. |
 | Module format | ESM only, Node 22 floor |
 | QUIC on Node, Bun, Deno | one N-API addon mirroring the `sbq` C ABI; prebuilt optional dependencies; lazy load; a missing binary is `UNSUPPORTED`, never a crash |
 | Provider contract | the Dart shape typed for TS: pull-based `read(max)`, `write`, `finish`, `reset`, `stop`, streams taken only while asked for; WHATWG streams are adapted at the provider, not required of it |
