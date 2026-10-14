@@ -16,11 +16,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // connections and PeerSet), ported here with Dart's titles. The first
 // group checks what `mesh.dart` documents of `join`, `publish`,
 // `publishRelay`, `unpublish` and `leave`; the end-to-end meshes are in
-// `test/integration/naming-mesh.test.ts` and its siblings.
-//
-// Not ported: "after a naming service restart, an instance defines its
-// slot space again with its own credential" needs `publishSharded` (the
-// slot gate), which is not ported yet; it is listed as todo.
+// `test/integration/naming-mesh.test.ts` and its siblings, the sharded
+// ones in `test/integration/sharding/`.
 
 import { afterEach, beforeAll, describe, expect, test, vi } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
@@ -32,9 +29,11 @@ import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import { Scope } from '../../../src/core/identity/scope.ts';
 import type { MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name } from '../../../src/core/name.ts';
-import { Services } from '../../../src/core/naming/naming-protocol.ts';
+import { AssignResult } from '../../../src/core/naming/naming-client-slots.ts';
+import { Services, SlotMode, SlotSpace } from '../../../src/core/naming/naming-protocol.ts';
 import { NamingResolver } from '../../../src/core/naming/naming-resolver.ts';
 import { NamingService } from '../../../src/core/naming/naming-service.ts';
+import { SlotLifecycle } from '../../../src/core/naming/slot-gate.ts';
 import { type Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { IncomingChannel, ServiceEvent } from '../../../src/core/switchboard/contract.ts';
@@ -189,12 +188,14 @@ class Mesh {
     this.uri = uri;
   }
 
+  /** A naming service; with [options.name], at that `mem` name (where a stopped one was). */
   static async start(
     options: {
       requireCredential?: boolean;
       renewable?: (credential: Credential) => boolean;
       brokerTimeout?: number;
       clock?: Clock;
+      name?: string;
     } = {},
   ): Promise<Mesh> {
     const host = await newNode({ clock: options.clock });
@@ -212,7 +213,10 @@ class Mesh {
     onCleanup(() => service.close());
     host.registerService(naming, service.handler, { instance: 1 });
     // The naming service checks identities itself, the payload's too.
-    const uri = await host.listenMemory({ policy: ChannelPolicies.allowTypes([naming]) });
+    const uri = await host.listenMemory({
+      policy: ChannelPolicies.allowTypes([naming]),
+      name: options.name,
+    });
     return new Mesh(host, service, uri);
   }
 
@@ -254,6 +258,15 @@ function answering(incoming: IncomingChannel): void {
       void message.reply(`${message.text()} by ${incoming.peerIdentity?.identity}`);
     }
   });
+}
+
+/** A sharded service that keeps nothing and serves nothing. */
+class Idle extends SlotLifecycle {
+  load(): Promise<AssignResult> {
+    return Promise.resolve(AssignResult.notHolding);
+  }
+
+  serve(): void {}
 }
 
 /** A stepping clock whose time is also the (faked) system time: Dart's fake_async with `package:clock`. */
@@ -448,9 +461,44 @@ describe('MeshNode', () => {
 });
 
 describe('scopes', () => {
-  test.todo(
-    'after a naming service restart, an instance defines its slot space again with its own credential: needs publishSharded (the slot gate is not ported yet)',
-  );
+  test('after a naming service restart, an instance defines its slot space again with its own credential', async () => {
+    const name = 'ns-restarting';
+    const mesh = await Mesh.start({ name });
+    const worker = await newNode({
+      credential: await issue('worker-a1', [...workerScopes, Scope.of(Right.claim, 'worker-*')]),
+    });
+    const joined = join(worker, mesh.uri, {
+      watch: false,
+      renewCredential: false,
+      reconnectDelay: 20,
+    });
+    const space = new SlotSpace(workerType, { count: 4, mode: SlotMode.static });
+    await within(
+      joined.publishSharded(workerType, new Idle(), {
+        count: space.count,
+        mode: space.mode,
+        capacity: 0,
+        endpoints: [],
+      }),
+    );
+    await within(joined.claimSlot(workerType, 2));
+    const ids = [...mesh.service.table.values()].map((r) => r.address.instance);
+    expect(ids).toHaveLength(1);
+    const id = ids[0] as number;
+    expect(mesh.service.slotTable(workerType)?.get(2).owner).toBe(id);
+    await mesh.close();
+    // Nobody with admin around: the instance's own SLOTS defines the space
+    // on the new naming service, and its slot is claimed back.
+    const restarted = await Mesh.start({ name });
+    expect(restarted.uri).toBe(mesh.uri);
+    await until(
+      () => restarted.service.slotTable(workerType)?.get(2).owner === id,
+      'the slot claimed back',
+    );
+    expect(restarted.service.slotTable(workerType)?.space.equals(space)).toBe(true);
+    expect(addresses(restarted.service)).toEqual([`${new ServiceAddress(workerType, id)}`]);
+    await within(joined.leave());
+  });
 
   test('a node whose IDENT names the naming service is accepted by a host that requires it; MeshNode works under the scopes', async () => {
     const host = node({
