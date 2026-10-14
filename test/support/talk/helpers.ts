@@ -9,6 +9,17 @@ import { toPayload } from '../../../src/core/bytes.ts';
 import { type StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import type { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
+
+/**
+ * Lets everything that is not waiting for a timer run: promise jobs, Web
+ * Streams deliveries, and the microtasks they queue, over [turns] event
+ * loop turns (default 3), so that chains hopping through a macrotask
+ * settle too ({@link ManualClock.settle}).
+ */
+export function flush(turns = 3): Promise<void> {
+  return ManualClock.settle(turns);
+}
 
 /** Bytes from numbers. */
 export function bytes(values: number[]): Uint8Array {

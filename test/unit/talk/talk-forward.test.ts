@@ -23,13 +23,14 @@ import { forwardMessage } from '../../../src/core/talk/talk-forward.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { costOf, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { type FrameEnd, frameLink } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -663,7 +664,7 @@ for (const hops of [1, 2]) {
 
 describe('timeouts', () => {
   test("a deadline the backend declares reaches the client with the backend's buffer only, through every hop", async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({ proxies: 2, clock });
     const held: TalkMessage[] = [];
     serve(chain.backend, (m) => {
@@ -682,7 +683,7 @@ describe('timeouts', () => {
     expect(r.deadline).toBe(t0 + 65_000);
     // The backend gives up at its own deadline; its abort passes the
     // proxies, which time nothing out themselves.
-    await clock.elapse(60_000);
+    await clock.elapseAsync(60_000);
     expectRemote(result.error, StatusCode.deadlineExceeded);
     await chain.close();
     await flush();
@@ -690,7 +691,7 @@ describe('timeouts', () => {
   });
 
   test('EXTEND from the backend keeps the client waiting', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       proxies: 2,
       clock,
@@ -715,11 +716,11 @@ describe('timeouts', () => {
     expect(held).toHaveLength(2);
     const [slow, tick] = held as [TalkMessage, TalkMessage];
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       void slow.extend();
       void tick.replyItem(bytes([i]));
     }
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(result.isDone).toBe(false);
     expect(items.isDone).toBe(false);
     expect(extensions).toBe(5);
@@ -734,7 +735,7 @@ describe('timeouts', () => {
   });
 
   test('the proxy imposes no timeout of its own', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       client: { requestTimeout: 1000 },
@@ -746,7 +747,7 @@ describe('timeouts', () => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     expect(result.isDone).toBe(false);
     expect(clock.pendingCount, 'the client only').toBe(1);
     void (held as TalkMessage).reply(bytes([1]));
@@ -758,14 +759,14 @@ describe('timeouts', () => {
   });
 
   test('the backend responder timeout reaches the client as DEADLINE_EXCEEDED', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({ clock, backend: { replyTimeout: 30 } });
     let held: TalkMessage | undefined;
     serve(chain.backend, (m) => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expectRemote(result.error, StatusCode.deadlineExceeded);
     expect((held as TalkMessage).isCancelled).toBe(true);
     chain.expectIdle();
@@ -775,7 +776,7 @@ describe('timeouts', () => {
   });
 
   test('the client timeout cancels the forwarded request', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       client: { requestTimeout: 30 },
@@ -786,7 +787,7 @@ describe('timeouts', () => {
       held = m;
     });
     const result = new Outcome(chain.client.request('SLOW', empty));
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expectStatus(result.error, StatusCode.deadlineExceeded);
     expect(result.error).not.toBeInstanceOf(TalkAbortError);
     expect((held as TalkMessage).isCancelled).toBe(true);
@@ -808,7 +809,7 @@ describe('frame level', () => {
     // proxy's channel to the client is a mux channel whose carrier refuses
     // the item FRAME_TOO_LARGE when sent, as `_LimitedSink` does: only a
     // mux channel (or one carrying it) refuses a frame when sending.
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [left, right] = fakeMuxPair({ mux: { clock } });
     const toClient = left.open(empty);
     const client = await right.accept();
@@ -2001,7 +2002,7 @@ describe('item windows', () => {
   // the note after the proxy groups).
 
   test("the proxy runs no credit bound of its own; the backend's does", async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const chain = new Chain({
       clock,
       proxy: { creditTimeout: 1000 },
@@ -2013,10 +2014,10 @@ describe('item windows', () => {
     });
     const s = chain.client.streamRequest('LIST', empty, { window: 0 });
     const done = new Outcome(s.done);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(done.isDone).toBe(false);
     only(held).setCreditTimeout(3000);
-    await clock.elapse(3000);
+    await clock.elapseAsync(3000);
     expectRemote(done.error, StatusCode.deadlineExceeded);
     await chain.close();
     await flush();

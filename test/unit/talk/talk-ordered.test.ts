@@ -23,13 +23,14 @@ import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.t
 import type { TalkMessage, TalkOptions } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { channelPair, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { type FrameEnd, frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -139,7 +140,7 @@ async function carriedChannel(
  */
 class SyncResponder {
   static async create(
-    clock: FakeClock,
+    clock: ManualClock,
     options: { stream?: boolean } = {},
   ): Promise<SyncResponder> {
     const [talk, carrier, peer] = await carriedChannel({ clock });
@@ -303,7 +304,7 @@ describe('synchronous transport', () => {
   // the request gets exactly one final response.
 
   /** Ends the test: no timer may be left, before or after the close. */
-  async function finish(clock: FakeClock, r: SyncResponder): Promise<void> {
+  async function finish(clock: ManualClock, r: SyncResponder): Promise<void> {
     expect(clock.pendingCount).toBe(0);
     void r.talk.close();
     await flush();
@@ -319,7 +320,7 @@ describe('synchronous transport', () => {
   }
 
   test('a cancel during the final reply gets no second final', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring(isFinal);
@@ -338,7 +339,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during replyAbort keeps the application status', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring(isFinal);
@@ -353,11 +354,11 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during an automatic timeout abort gets no second final', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring(isFinal);
-    await clock.elapse(10_000);
+    await clock.elapseAsync(10_000);
     await flush();
     expect(r.finals).toHaveLength(1);
     expect(r.finals[0]?.status.known).toBe(StatusCode.deadlineExceeded);
@@ -368,7 +369,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during a chained reply leaves the chained request as the final', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring(isFinal);
@@ -388,7 +389,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during a final that fails to send is answered', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring(isFinal, { refuse: true });
@@ -403,7 +404,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during a stream item is answered after it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock, { stream: true });
     await flush();
     r.cancelDuring((f) => f.kind === TalkKind.streamItem);
@@ -418,7 +419,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during an item request is answered after it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock, { stream: true });
     await flush();
     r.cancelDuring((f) => f.kind === TalkKind.streamItem);
@@ -439,7 +440,7 @@ describe('synchronous transport', () => {
   });
 
   test('a cancel during EXTEND is answered after it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const r = await SyncResponder.create(clock);
     await flush();
     r.cancelDuring((f) => f.kind === TalkKind.extend);
@@ -564,7 +565,7 @@ describe('ordered answers', () => {
   });
 
   test('a paused listener holds the answer; resuming or cancelling delivers it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, peer] = syncLink({ clock });
     const seen: string[] = [];
     const sub = held(talk, seen);
@@ -578,7 +579,7 @@ describe('ordered answers', () => {
     expect(done).toBe(false);
     // Local failures do not wait.
     const late = talk.request('T', empty, { timeout: 30, ordered: true });
-    await clock.elapse(30);
+    await clock.elapseAsync(30);
     await rejectsStatus(late, StatusCode.deadlineExceeded);
     sub.resume();
     await response;
@@ -669,7 +670,7 @@ describe('ordered answers', () => {
 
   for (const abort of [false, true]) {
     test(`a paused listener holds an ${abort ? 'abort' : 'answer'} that arrived before the channel ended; resuming or cancelling delivers it`, async () => {
-      const clock = new FakeClock();
+      const clock = new ManualClock();
       for (const resume of [true, false]) {
         const [talk, peer] = syncLink({ clock });
         const seen: string[] = [];

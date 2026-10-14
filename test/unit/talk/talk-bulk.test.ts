@@ -30,6 +30,7 @@ import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { IncomingMessage } from '../../../src/core/talk/talk-message.ts';
 import { noop } from '../../../src/core/talk/talk-util.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   collect,
   concat,
@@ -40,11 +41,11 @@ import {
   until,
 } from '../../support/talk/bulk-peers.ts';
 import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -496,34 +497,34 @@ for (const cancelBefore of [false, true]) {
 }
 
 test('references without bulk OPENs have a bounded dispatch wait', async () => {
-  const clock = new FakeClock();
+  const clock = new ManualClock();
   const [client, server] = fakeMuxPair({ mux: { clock } });
   const talks: TalkChannel[] = [];
   void server.accept().then((raw) => talks.push(new TalkChannel(raw)));
   const raw = client.open(empty);
-  await clock.elapse(0);
+  await clock.elapseAsync(0);
   const baseline = clock.pendingCount;
   for (let number = 1; number <= 100; number++) {
     // Unknown: consumed by Talk immediately.
     void raw.send(bulkFrame({ responseId: 1 }, number));
   }
-  await clock.elapse(0);
+  await clock.elapseAsync(0);
   expect(clock.pendingCount - baseline).toBeLessThanOrEqual(defaultTalkOptions.maxUnclaimedBulk);
   expect(talks).toHaveLength(1);
   let end: Status | undefined;
   void (talks[0] as TalkChannel).done.then((status) => {
     end = status;
   });
-  await clock.elapse(0);
+  await clock.elapseAsync(0);
   expect(end?.known).toBe(StatusCode.protocolError);
   expect(clock.pendingCount).toBe(0);
   await client.close();
   await server.close();
-  await clock.elapse(defaultMuxOptions.keepAliveTimeout);
+  await clock.elapseAsync(defaultMuxOptions.keepAliveTimeout);
 });
 
 test("a request cancelled while it waits for the peer's LIMITS does not start its upload", async () => {
-  const clock = new FakeClock();
+  const clock = new ManualClock();
   const [client, server] = fakeMuxPair({ mux: { clock }, awaitLimits: true });
   // A peer that takes the channels but never reads nor closes them.
   const taken: MuxChannel[] = [];
@@ -539,13 +540,13 @@ test("a request cancelled while it waits for the peer's LIMITS does not start it
   // The LIMITS arrive: the request, its bulk channel and the cancel go
   // out, in that order.
   client.announceLimits();
-  await clock.elapse(0);
+  await clock.elapseAsync(0);
   expect(taken).toHaveLength(2);
   expect(source.hasListener).toBe(false);
   source.close();
   await client.close();
   await server.close();
-  await clock.elapse(defaultMuxOptions.keepAliveTimeout);
+  await clock.elapseAsync(defaultMuxOptions.keepAliveTimeout);
 });
 
 describe('idle timeout', () => {
@@ -554,7 +555,7 @@ describe('idle timeout', () => {
    * bulk channels of both sides routed; then a function closing both.
    */
   async function fakeTalk(
-    clock: FakeClock,
+    clock: ManualClock,
     init: { near?: Partial<TalkOptions>; far?: Partial<TalkOptions> } = {},
   ): Promise<[TalkChannel, TalkChannel, () => Promise<void>]> {
     const [client, server] = fakeMuxPair({ mux: { clock } });
@@ -562,14 +563,14 @@ describe('idle timeout', () => {
     installBulkRouting(server);
     const talk = new TalkChannel(client.open(empty), init.near);
     const accepted = new TalkChannel(await server.accept(), init.far);
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     return [
       talk,
       accepted,
       async () => {
         await client.close();
         await server.close();
-        await clock.elapse(defaultMuxOptions.keepAliveTimeout);
+        await clock.elapseAsync(defaultMuxOptions.keepAliveTimeout);
       },
     ];
   }
@@ -580,19 +581,19 @@ describe('idle timeout', () => {
   };
 
   test('a request whose bulk payload stalls is answered DEADLINE_EXCEEDED once no byte came for the timeout', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, { near: { bulkChunkSize: 500 } });
     const delivered: TalkMessage[] = [];
     serve(server, (m) => delivered.push(m));
     const source = new SourceController();
     const outcome = new Outcome(talk.request('PUT', empty, { bulk: source.stream, timeout: 0 }));
     source.add(pattern(500));
-    await clock.elapse(20_000);
+    await clock.elapseAsync(20_000);
     // A chunk restarts the timeout.
     source.add(pattern(500));
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(outcome.isDone).toBe(false);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(outcome.error).toBeInstanceOf(TalkAbortError);
     deadlineExceeded(outcome.error);
     // The sender's transfer ended with its bulk channel.
@@ -604,7 +605,7 @@ describe('idle timeout', () => {
   });
 
   test('a final response whose payload stalls fails its request', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock);
     const source = new SourceController();
     const sent: Promise<void>[] = [];
@@ -612,15 +613,15 @@ describe('idle timeout', () => {
       sent.push(m.reply(empty, { bulk: source.stream }));
     });
     const outcome = new Outcome(talk.request('GET', empty));
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(outcome.isDone).toBe(false);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     // This side's own failure, not an abort from the peer.
     deadlineExceeded(outcome.error);
     expect(outcome.error).not.toBeInstanceOf(TalkAbortError);
     expect(sent).toHaveLength(1);
     const sendOutcome = new Outcome(sent[0] as Promise<void>);
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     deadlineExceeded(sendOutcome.error);
     expect(source.hasListener).toBe(false);
     source.close();
@@ -628,7 +629,7 @@ describe('idle timeout', () => {
   });
 
   test('an item whose payload stalls ends its stream', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     // The responder's own timeout would end the request first.
     const [talk, server, close] = await fakeTalk(clock, { far: { replyTimeout: 0 } });
     const source = new SourceController();
@@ -639,9 +640,9 @@ describe('idle timeout', () => {
     const delivered: TalkMessage[] = [];
     const items = new Collector(stream.items, { onValue: (m) => delivered.push(m) });
     const outcome = new Outcome(stream.done);
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(outcome.isDone).toBe(false);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     deadlineExceeded(outcome.error);
     expect(items.isDone).toBe(true);
     deadlineExceeded(items.error);
@@ -652,15 +653,15 @@ describe('idle timeout', () => {
   });
 
   test('a plain message whose payload stalls is dropped', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock);
     const seen = new Collector(talk.messages);
     const source = new SourceController();
     void server.send('NOTE', empty, { bulk: source.stream });
     void server.send('AFTER', bytes([7]));
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(seen.values).toHaveLength(0);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(seen.values.map((m) => m.procedureName)).toEqual(['AFTER']);
     expect(source.hasListener).toBe(false);
     source.close();
@@ -668,7 +669,7 @@ describe('idle timeout', () => {
   });
 
   test('a streamed payload the application reads errors', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, { near: { streamBulk: () => true } });
     const readers: Collector<Uint8Array>[] = [];
     serve(talk, (m) => {
@@ -677,11 +678,11 @@ describe('idle timeout', () => {
     const source = new SourceController();
     void server.send('NOTE', empty, { bulk: source.stream });
     source.add(pattern(100));
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(readers).toHaveLength(1);
     const reader = readers[0] as Collector<Uint8Array>;
     expect(reader.isDone).toBe(false);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(reader.isDone).toBe(true);
     deadlineExceeded(reader.error);
     source.close();
@@ -689,7 +690,7 @@ describe('idle timeout', () => {
   });
 
   test('a payload waiting for its reader here does not time out', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, { near: { streamBulk: () => true } });
     const readers: Collector<Uint8Array>[] = [];
     serve(talk, (m) => {
@@ -698,12 +699,12 @@ describe('idle timeout', () => {
     });
     void server.send('NOTE', empty, { bulk: [pattern(200_000)], bulkLength: 200_000 });
     // The window is used up: the sender waits for this side.
-    await clock.elapse(120_000);
+    await clock.elapseAsync(120_000);
     expect(readers).toHaveLength(1);
     const reading = readers[0] as Collector<Uint8Array>;
     expect(reading.isDone).toBe(false);
     reading.resume();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect(reading.isDone).toBe(true);
     expect(reading.error).toBeUndefined();
     expectBytes(concat(reading.values), pattern(200_000));
@@ -714,7 +715,7 @@ describe('idle timeout', () => {
   });
 
   test('a payload waiting for the reassembly budget does not time out; once admitted, the timeout counts from then', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, {
       near: { reassemblyBudget: 1000 },
       far: { bulkThreshold: 100 },
@@ -722,19 +723,19 @@ describe('idle timeout', () => {
     const seen = new Collector(talk.messages, { paused: true });
     // Fills the budget, held by the paused listener.
     void server.send('FULL', pattern(1000));
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     // Waits for the budget, its sender silent meanwhile.
     const source = new SourceController();
     void server.send('NEXT', empty, { bulk: source.stream });
-    await clock.elapse(120_000);
+    await clock.elapseAsync(120_000);
     expect(seen.values).toHaveLength(0);
     seen.resume();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect(seen.values.map((m) => m.procedureName)).toEqual(['FULL']);
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     source.add(pattern(500));
     source.close();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect(seen.values.map((m) => m.procedureName)).toEqual(['FULL', 'NEXT']);
     expectBytes((seen.values[1] as TalkMessage).payload, pattern(500));
     await seen.cancel();
@@ -742,7 +743,7 @@ describe('idle timeout', () => {
   });
 
   test('a forwarded payload waiting for a paused reader is neither cut nor timed out', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const piping: Partial<TalkOptions> = { streamBulk: () => true };
     const [client, front, closeFront] = await fakeTalk(clock, { near: piping, far: piping });
     const [back, backend, closeBack] = await fakeTalk(clock, { near: piping });
@@ -753,17 +754,17 @@ describe('idle timeout', () => {
       m.reply(empty, { bulk: [pattern(300_000)], bulkLength: 300_000 }).catch(noop);
     });
     const outcome = new Outcome(client.request('GET', empty));
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     const response = outcome.value as TalkMessage;
     expect(response).toBeDefined();
     const reading = new Collector(response.bulk, { paused: true });
     // Every hop waits for the client, which does not read: longer than the
     // idle timeout, and than the close confirmation timeout of the
     // forwarded bulk channel, whose source ended meanwhile.
-    await clock.elapse(120_000);
+    await clock.elapseAsync(120_000);
     expect(reading.isDone).toBe(false);
     reading.resume();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect(reading.isDone).toBe(true);
     expect(reading.error).toBeUndefined();
     expectBytes(concat(reading.values), pattern(300_000));
@@ -773,7 +774,7 @@ describe('idle timeout', () => {
   });
 
   test('an unclaimed bulk channel goes idle too', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, { near: { bulkOpenTimeout: 60_000 } });
     const seen = new Collector(talk.messages);
     const raw = rawOf(server);
@@ -782,9 +783,9 @@ describe('idle timeout', () => {
     void bulk.done.then((status) => {
       end = status;
     });
-    await clock.elapse(29_000);
+    await clock.elapseAsync(29_000);
     expect(end).toBeUndefined();
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(end?.known).toBe(StatusCode.deadlineExceeded);
     // Its message fails when it comes: refused, the next one delivered.
     void raw.send(bulkFrame({ procedure: 'PUT', requestId: 1 }, 1));
@@ -795,14 +796,14 @@ describe('idle timeout', () => {
         payload: empty,
       }).encode(),
     );
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect(seen.values.map((m) => m.procedureName)).toEqual(['AFTER']);
     expect(talk.incomingRequestCount).toBe(0);
     await close();
   });
 
   test('Duration.zero sets no idle timeout', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const [talk, server, close] = await fakeTalk(clock, {
       near: { bulkChunkSize: 500 },
       far: { bulkIdleTimeout: 0 },
@@ -811,11 +812,11 @@ describe('idle timeout', () => {
     const source = new SourceController();
     const outcome = new Outcome(talk.request('PUT', empty, { bulk: source.stream, timeout: 0 }));
     source.add(pattern(500));
-    await clock.elapse(600_000);
+    await clock.elapseAsync(600_000);
     expect(outcome.isDone).toBe(false);
     source.add(pattern(500, 500));
     source.close();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     expect([...((outcome.value as TalkMessage | undefined)?.payload ?? [])]).toEqual([0]);
     expect(clock.pendingCount).toBe(0);
     await close();

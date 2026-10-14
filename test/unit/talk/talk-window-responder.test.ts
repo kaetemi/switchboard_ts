@@ -19,13 +19,14 @@ import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import type { TimerHandle } from '../../../src/core/util/clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -116,8 +117,8 @@ async function until(condition: () => boolean): Promise<void> {
   }
 }
 
-/** A {@link FakeClock} that tells the delays of its pending timers, as `fake_async`'s `pendingTimers` does. */
-class TimerClock extends FakeClock {
+/** A {@link ManualClock} that tells the delays of its pending timers, as `fake_async`'s `pendingTimers` does. */
+class TimerClock extends ManualClock {
   readonly #delays = new Map<TimerHandle, number>();
 
   override setTimeout(callback: () => void, ms: number): TimerHandle {
@@ -197,7 +198,7 @@ class Feed implements AsyncIterable<Uint8Array> {
 
 describe('timeouts', () => {
   test('the requester timeout stops when the last granted item arrives, and a grant restarts it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { requestTimeout: 10 * second, clock } });
     const s = peer.talk.streamRequest('LIST', empty, { window: 2 });
     const done = new Outcome(s.done);
@@ -205,30 +206,30 @@ describe('timeouts', () => {
     await flush();
     const id = single(peer.received).requestId;
     expect(s.deadline).toBeDefined();
-    await clock.elapse(5 * second);
+    await clock.elapseAsync(5 * second);
     peer.send(itemFrame(id, 1));
     await flush();
     // An item that leaves room restarts the gap, as before.
-    await clock.elapse(9 * second);
+    await clock.elapseAsync(9 * second);
     expect(done.isDone).toBe(false);
     peer.send(itemFrame(id, 2));
     await flush();
     expect(s.window).toBe(0);
     expect(s.deadline).toBeUndefined();
-    await clock.elapse(2 * hour);
+    await clock.elapseAsync(2 * hour);
     expect(done.isDone, 'no timeout while exhausted').toBe(false);
     // An EXTEND while exhausted changes nothing while it lasts.
     peer.send(new TalkFrame({ kind: TalkKind.extend, responseId: id }));
     await flush();
-    await clock.elapse(2 * hour);
+    await clock.elapseAsync(2 * hour);
     expect(done.isDone).toBe(false);
     s.grant(1);
     await flush();
     expect(last(peer.received).isCredit).toBe(true);
     expect(s.deadline).toBeDefined();
-    await clock.elapse(9 * second);
+    await clock.elapseAsync(9 * second);
     expect(done.isDone).toBe(false);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expectStatus(done.error, StatusCode.deadlineExceeded);
     expect(last(peer.received).kind).toBe(TalkKind.abort);
     void peer.talk.close();
@@ -236,25 +237,25 @@ describe('timeouts', () => {
   });
 
   test('a request opened with window 0 starts no requester timeout until its first grant', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { requestTimeout: 10 * second, clock } });
     const s = peer.talk.streamRequest('LIST', empty, { window: 0 });
     const done = new Outcome(s.done);
     await flush();
     expect(s.deadline).toBeUndefined();
-    await clock.elapse(3 * day);
+    await clock.elapseAsync(3 * day);
     expect(done.isDone).toBe(false);
     expect(clock.pendingCount).toBe(0);
     s.grant(1);
     await flush();
-    await clock.elapse(10 * second);
+    await clock.elapseAsync(10 * second);
     expectStatus(done.error, StatusCode.deadlineExceeded);
     void peer.talk.close();
     await flush();
   });
 
   test('a cancel while exhausted keeps the id until the final, or the timeout', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { requestTimeout: 10 * second, clock } });
     const s = peer.talk.streamRequest('LIST', empty, { window: 0 });
     const done = new Outcome(s.done);
@@ -265,14 +266,14 @@ describe('timeouts', () => {
     expect(last(peer.received).kind).toBe(TalkKind.abort);
     expect(peer.received.filter((f) => f.isCredit)).toEqual([]);
     expect(peer.talk.outgoingRequestCount).toBe(1);
-    await clock.elapse(10 * second);
+    await clock.elapseAsync(10 * second);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     void peer.talk.close();
     await flush();
   });
 
   test('the responder timeout stops when the last granted item goes, and a grant restarts it', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { replyTimeout: 10 * second, clock } });
     let held: TalkMessage | undefined;
     serve(peer.talk, (m) => {
@@ -286,14 +287,14 @@ describe('timeouts', () => {
     expect(m.window).toBe(0);
     // Nothing waits for a grant: neither the responder timeout nor the
     // credit bound runs.
-    await clock.elapse(2 * hour);
+    await clock.elapseAsync(2 * hour);
     expect(repliesTo(peer, 1).map((f) => f.kind)).toEqual([TalkKind.streamItem]);
     expect(m.canReply).toBe(true);
     peer.send(credit(1, 1));
     await flush();
-    await clock.elapse(9 * second);
+    await clock.elapseAsync(9 * second);
     expect(repliesTo(peer, 1)).toHaveLength(1);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     const abort = last(repliesTo(peer, 1));
     expect(abort.kind).toBe(TalkKind.abort);
     expect(abort.status.known).toBe(StatusCode.deadlineExceeded);
@@ -302,7 +303,7 @@ describe('timeouts', () => {
   });
 
   test('a declared deadline that passes while the window is exhausted fires right after the grant, on the requester', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { requestTimeout: 10 * second, clock } });
     const s = peer.talk.streamRequest('LIST', empty, { window: 1 });
     const done = new Outcome(s.done);
@@ -325,13 +326,13 @@ describe('timeouts', () => {
     // among them.
     expect(s.window).toBe(0);
     expect(s.deadline).toBeUndefined();
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(done.isDone, 'no timeout while exhausted').toBe(false);
     // The grant restarts the timeout; the deadline passed during the
     // wait, so it fires at once.
     s.grant(1);
     await flush();
-    await clock.elapse(1);
+    await clock.elapseAsync(1);
     expectStatus(done.error, StatusCode.deadlineExceeded);
     expect(last(peer.received).kind).toBe(TalkKind.abort);
     void peer.talk.close();
@@ -339,7 +340,7 @@ describe('timeouts', () => {
   });
 
   test('a declared deadline that passes while the window is exhausted fires right after the credit, on the responder', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { replyTimeout: 10 * second, clock } });
     let held: TalkMessage | undefined;
     serve(peer.talk, (m) => {
@@ -355,14 +356,14 @@ describe('timeouts', () => {
     // Exhausted, and nothing waits for a grant: neither the declared
     // deadline nor the credit bound runs.
     expect(m.window).toBe(0);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(repliesTo(peer, 1).map((f) => f.kind)).toEqual([TalkKind.extend, TalkKind.streamItem]);
     expect(m.canReply).toBe(true);
     // The credit restarts the timeout; the deadline passed during the
     // wait, so it fires at once.
     peer.send(credit(1, 1));
     await flush();
-    await clock.elapse(1);
+    await clock.elapseAsync(1);
     const abort = last(repliesTo(peer, 1));
     expect(abort.kind).toBe(TalkKind.abort);
     expect(abort.status.known).toBe(StatusCode.deadlineExceeded);
@@ -371,7 +372,7 @@ describe('timeouts', () => {
   });
 
   test('the credit bound aborts DEADLINE_EXCEEDED after the default, while an item waits', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { clock } });
     let held: TalkMessage | undefined;
     serve(peer.talk, (m) => {
@@ -381,13 +382,13 @@ describe('timeouts', () => {
     await flush();
     const m = held as TalkMessage;
     void m.replyItem(bytes([1]));
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     // The bound starts when something waits for a grant.
     const waiting = new Outcome(m.replyItem(bytes([2])));
-    await clock.elapse(59 * second);
+    await clock.elapseAsync(59 * second);
     expect(repliesTo(peer, 1)).toHaveLength(1);
     expect(m.isCancelled).toBe(false);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     const abort = last(repliesTo(peer, 1));
     expect(abort.kind).toBe(TalkKind.abort);
     expect(abort.status.known).toBe(StatusCode.deadlineExceeded);
@@ -405,7 +406,7 @@ describe('timeouts', () => {
   });
 
   test('the credit bound runs from the arrival of a request opened with window 0', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { creditTimeout: 3 * second, clock } });
     let held: TalkMessage | undefined;
     serve(peer.talk, (m) => {
@@ -414,21 +415,21 @@ describe('timeouts', () => {
     peer.send(streamRequestFrame(1, 0));
     await flush();
     expect(held).toBeDefined();
-    await clock.elapse(2 * second);
+    await clock.elapseAsync(2 * second);
     expect(repliesTo(peer, 1)).toEqual([]);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(held?.isCancelled).toBe(true);
     // A grant in time stops it, and starts the responder timeout, which
     // did not run before.
     peer.send(streamRequestFrame(2, 0));
     await flush();
-    await clock.elapse(2 * second);
+    await clock.elapseAsync(2 * second);
     peer.send(credit(2, 1));
     await flush();
-    await clock.elapse(9 * second);
+    await clock.elapseAsync(9 * second);
     expect(repliesTo(peer, 2)).toEqual([]);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(
       single(repliesTo(peer, 2)).status.equals(
         Status.of(StatusCode.deadlineExceeded, 'no reply in time'),
@@ -439,7 +440,7 @@ describe('timeouts', () => {
   });
 
   test('the credit bound per request: setCreditTimeout, replyStream and Duration.zero', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { clock } });
     const held: TalkMessage[] = [];
     serve(peer.talk, (m) => {
@@ -453,20 +454,20 @@ describe('timeouts', () => {
     held0.setCreditTimeout(5 * second);
     void held1.replyStream([bytes([1])], { creditTimeout: 7 * second });
     held2.setCreditTimeout(0);
-    await clock.elapse(5 * second);
+    await clock.elapseAsync(5 * second);
     expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(repliesTo(peer, 2)).toEqual([]);
-    await clock.elapse(2 * second);
+    await clock.elapseAsync(2 * second);
     expect(single(repliesTo(peer, 2)).status.known).toBe(StatusCode.deadlineExceeded);
     void held2.replyItem(bytes([1]));
-    await clock.elapse(2 * day);
+    await clock.elapseAsync(2 * day);
     expect(repliesTo(peer, 3)).toEqual([]);
     expect(held2.canReply).toBe(true);
     // Back to the channel default: it restarts from now.
     held2.setCreditTimeout(undefined);
-    await clock.elapse(59 * second);
+    await clock.elapseAsync(59 * second);
     expect(repliesTo(peer, 3)).toEqual([]);
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(single(repliesTo(peer, 3)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(clock.pendingCount).toBe(0);
     void peer.talk.close();
@@ -474,7 +475,7 @@ describe('timeouts', () => {
   });
 
   test('waiting for whenCredit runs the credit bound', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { creditTimeout: 4 * second, clock } });
     let held: TalkMessage | undefined;
     serve(peer.talk, (m) => {
@@ -484,10 +485,10 @@ describe('timeouts', () => {
     await flush();
     const m = held as TalkMessage;
     void m.replyItem(bytes([1]));
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(repliesTo(peer, 1)).toHaveLength(1);
     const granted = new Outcome(m.whenCredit);
-    await clock.elapse(4 * second);
+    await clock.elapseAsync(4 * second);
     expect(granted.isDone).toBe(true);
     expect(m.isCancelled).toBe(true);
     expect(last(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
@@ -496,7 +497,7 @@ describe('timeouts', () => {
   });
 
   test('a credit that raced the end of a request by its credit bound is ignored, and one after the peer reused the id is for the new request', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const peer = rawPeer({ options: { creditTimeout: 3 * second, clock } });
     const held: TalkMessage[] = [];
     serve(peer.talk, (m) => {
@@ -505,7 +506,7 @@ describe('timeouts', () => {
     peer.send(streamRequestFrame(1, 0));
     await flush();
     const old = new Outcome(single(held).replyItem(bytes([1])));
-    await clock.elapse(3 * second);
+    await clock.elapseAsync(3 * second);
     expectStatus(old.error, StatusCode.deadlineExceeded);
     expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     // Sent before the abort reached the peer: ignored.
@@ -557,10 +558,10 @@ describe('timeouts', () => {
     await flush();
     expect(held).toBeDefined();
     expectTimersInRange();
-    await clock.elapse(29 * day);
+    await clock.elapseAsync(29 * day);
     expectTimersInRange();
     expect(repliesTo(peer, 1)).toEqual([]);
-    await clock.elapse(day);
+    await clock.elapseAsync(day);
     expect(single(repliesTo(peer, 1)).status.known).toBe(StatusCode.deadlineExceeded);
     expect(clock.pendingCount).toBe(0);
     void peer.talk.close();

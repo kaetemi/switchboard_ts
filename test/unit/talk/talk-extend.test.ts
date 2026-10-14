@@ -16,12 +16,13 @@ import type { TalkMessage, TalkOptions } from '../../../src/core/talk/contract.t
 import { TalkAbortError } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   rejectsStatus,
   serve,
@@ -68,7 +69,7 @@ function expectLocal(error: unknown, code: StatusCode): void {
 }
 
 /** Closes [close]'s channels without waiting, then expects no timer left on [clock]. */
-async function closeAndCheck(clock: FakeClock, close: () => Promise<void>): Promise<void> {
+async function closeAndCheck(clock: ManualClock, close: () => Promise<void>): Promise<void> {
   void close();
   await flush();
   expect(clock.pendingCount).toBe(0);
@@ -176,7 +177,7 @@ describe('request handles and EXTEND', () => {
   });
 
   test('EXTEND restarts the timer of a stream request', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { requestTimeout: ms30, clock } });
     let extends_ = 0;
     const s = peer.talk.streamRequest('S', empty, {
@@ -187,11 +188,11 @@ describe('request handles and EXTEND', () => {
     const done = new Outcome(s.done);
     await flush();
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       peer.send(new TalkFrame({ kind: TalkKind.extend, responseId: s.requestId }));
       await flush();
     }
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(done.isDone).toBe(false);
     expect(extends_).toBe(5);
     peer.send(new TalkFrame({ kind: TalkKind.message, responseId: s.requestId }));
@@ -201,7 +202,7 @@ describe('request handles and EXTEND', () => {
   });
 
   test('EXTEND after a cancel is ignored', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { requestTimeout: ms30, clock } });
     let extends_ = 0;
     const s = peer.talk.streamRequest('S', empty, {
@@ -211,25 +212,25 @@ describe('request handles and EXTEND', () => {
     });
     await flush();
     s.cancel();
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     peer.send(new TalkFrame({ kind: TalkKind.extend, responseId: s.requestId }));
     await flush();
     expect(extends_).toBe(0);
     expect(peer.talk.outgoingRequestCount).toBe(1);
     // The release timer was not restarted by the EXTEND.
-    await clock.elapse(11);
+    await clock.elapseAsync(11);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     await closeAndCheck(clock, () => peer.talk.close());
   });
 
   test('a cancelled request without a timeout is released after the channel default', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { requestTimeout: ms30, clock } });
     const s = peer.talk.streamRequest('S', empty, { timeout: 0 });
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(peer.talk.outgoingRequestCount).toBe(1);
     s.cancel();
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     void peer.talk.close();
     await flush();
@@ -315,7 +316,7 @@ describe('declared deadlines', () => {
    * given) on a fake clock, its outcome, and the time it was sent.
    */
   async function start(options: Partial<TalkOptions> = {}) {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { ...options, clock } });
     const s = peer.talk.streamRequest('S', empty);
     const done = new Outcome(s.done);
@@ -323,26 +324,26 @@ describe('declared deadlines', () => {
     return { clock, peer, s, done, t0: clock.now() };
   }
 
-  async function finish(clock: FakeClock, peer: RawPeer): Promise<void> {
+  async function finish(clock: ManualClock, peer: RawPeer): Promise<void> {
     await closeAndCheck(clock, () => peer.talk.close());
   }
 
   /** Expects [done] to fail with the requester's own DEADLINE_EXCEEDED exactly [left] from now. */
   async function expectTimeoutIn(
-    clock: FakeClock,
+    clock: ManualClock,
     done: Outcome<TalkMessage>,
     left: number,
   ): Promise<void> {
-    await clock.elapse(left - ms1);
+    await clock.elapseAsync(left - ms1);
     expect(done.isDone).toBe(false);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expectLocal(done.error, StatusCode.deadlineExceeded);
   }
 
   test('without EXTEND the default gap applies, restarted by items', async () => {
     const { clock, peer, s, done, t0 } = await start();
     expect(s.deadline).toBe(t0 + sec * 15);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     peer.send(item(s.requestId));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 25);
@@ -356,7 +357,7 @@ describe('declared deadlines', () => {
     peer.send(declare(s.requestId, { deadline: sec * 60 }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 60);
-    await clock.elapse(sec * 50);
+    await clock.elapseAsync(sec * 50);
     peer.send(item(s.requestId));
     await flush();
     expect(s.deadline, 'no renewal declared').toBe(t0 + sec * 60);
@@ -372,7 +373,7 @@ describe('declared deadlines', () => {
     peer.send(declare(s.requestId, { renew: sec * 30 }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 30);
-    await clock.elapse(sec * 20);
+    await clock.elapseAsync(sec * 20);
     peer.send(item(s.requestId));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 50);
@@ -385,11 +386,11 @@ describe('declared deadlines', () => {
     peer.send(declare(s.requestId, { deadline: sec * 60, renew: sec * 20 }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 60);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     peer.send(item(s.requestId));
     await flush();
     expect(s.deadline, 'not t0 + 30 s').toBe(t0 + sec * 60);
-    await clock.elapse(sec * 45);
+    await clock.elapseAsync(sec * 45);
     peer.send(item(s.requestId));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 75);
@@ -402,13 +403,13 @@ describe('declared deadlines', () => {
     peer.send(declare(s.requestId, { deadline: 10 * minute, renew: minute }));
     await flush();
     expect(s.deadline).toBe(t0 + 10 * minute);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     // Deadline shortened to t0 + 30 s; the renewal of 1 min stands,
     // counted from this EXTEND.
     peer.send(declare(s.requestId, { deadline: sec * 20 }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 70);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     // Renewal shortened; the deadline (t0 + 30 s) stands.
     peer.send(declare(s.requestId, { renew: sec * 5 }));
     await flush();
@@ -464,11 +465,11 @@ describe('declared deadlines', () => {
     const { clock, peer, s, done, t0 } = await start();
     // Default regime: an empty EXTEND and two zero fields restart the
     // gap alike.
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     peer.send(new TalkFrame({ kind: TalkKind.extend, responseId: s.requestId }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 25);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     peer.send(
       new TalkFrame({ kind: TalkKind.extend, responseId: s.requestId, payload: new Uint8Array(8) }),
     );
@@ -477,12 +478,12 @@ describe('declared deadlines', () => {
     // Declared: deadline t0 + 80 s.
     peer.send(declare(s.requestId, { deadline: sec * 60 }));
     await flush();
-    await clock.elapse(sec * 55);
+    await clock.elapseAsync(sec * 55);
     // t0 + 75 s: the gap ends after the deadline.
     peer.send(new TalkFrame({ kind: TalkKind.extend, responseId: s.requestId }));
     await flush();
     expect(s.deadline).toBe(t0 + sec * 90);
-    await clock.elapse(sec * 10);
+    await clock.elapseAsync(sec * 10);
     // t0 + 85 s: a declaration replaces the gap; the deadline stands.
     peer.send(declare(s.requestId, { renew: sec * 2 }));
     await flush();
@@ -502,7 +503,7 @@ describe('declared deadlines', () => {
   });
 
   test('onExtend receives the values as received', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { clock } });
     const seen: { deadline?: number; renew?: number }[] = [];
     const r = peer.talk.startRequest('X', empty, {
@@ -527,14 +528,14 @@ describe('declared deadlines', () => {
   });
 
   test('the deadline of a request without a timeout is null', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const peer = new RawPeer({ options: { clock } });
     const r = peer.talk.startRequest('X', empty, { timeout: 0 });
     const result = new Outcome(r.response);
     await flush();
     expect(r.deadline).toBeUndefined();
     peer.send(declare(r.requestId, { deadline: sec * 10 }));
-    await clock.elapse(2 * hour);
+    await clock.elapseAsync(2 * hour);
     expect(r.deadline).toBeUndefined();
     expect(result.isDone).toBe(false);
     peer.send(new TalkFrame({ kind: TalkKind.message, responseId: r.requestId }));
@@ -544,7 +545,7 @@ describe('declared deadlines', () => {
   });
 
   test('extend puts the buffer on the wire, not on the responder timeout, so the responder gives up first', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const p = new Pair({ a: { clock }, b: { clock } });
     const held: TalkMessage[] = [];
     serve(p.b, (m) => {
@@ -563,16 +564,16 @@ describe('declared deadlines', () => {
     expect(wire.extension).toEqual({ deadline: sec * 65, renew: undefined });
     expect(hexString(p.bToARaw[0] as Uint8Array)).toBe('34 01 00 00 E8 FD 00 00 00 00 00 00');
     expect(r.deadline).toBe(t0 + sec * 65);
-    await clock.elapse(sec * 60 - ms1);
+    await clock.elapseAsync(sec * 60 - ms1);
     expect(result.isDone).toBe(false);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expectRemote(result.error, StatusCode.deadlineExceeded);
     expect(m.isCancelled).toBe(true);
     await closeAndCheck(clock, () => p.close());
   });
 
   test('the buffer comes from extendBuffer or the call, on each value', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const p = new Pair({ a: { clock }, b: { extendBuffer: 10 * sec, clock } });
     const held: TalkMessage[] = [];
     serve(p.b, (m) => {
@@ -599,7 +600,7 @@ describe('declared deadlines', () => {
   });
 
   test('a value beyond the EXTEND field is lowered on both sides, the buffer kept', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const max = TalkFrame.maxExtendMillis;
     const p = new Pair({
       a: { requestTimeout: 100 * day, maxExtension: 0, clock },
@@ -620,9 +621,9 @@ describe('declared deadlines', () => {
       { deadline: undefined, renew: max },
     ]);
     // The responder still gives up the buffer before the requester.
-    await clock.elapse(max - 20 * day - ms1);
+    await clock.elapseAsync(max - 20 * day - ms1);
     expect([...held.values()].map((m) => m.canReply)).toEqual([true, true]);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expect([...held.values()].map((m) => m.canReply)).toEqual([false, false]);
     await flush();
     for (const outcome of [deadline, renew]) {
@@ -632,7 +633,7 @@ describe('declared deadlines', () => {
   });
 
   test('the responder timeout follows its own declaration: items renew, the default gap is gone', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const p = new Pair({ a: { clock }, b: { clock } });
     const held: TalkMessage[] = [];
     serve(p.b, (m) => {
@@ -645,14 +646,14 @@ describe('declared deadlines', () => {
     expect(held).toHaveLength(1);
     const m = held[0] as TalkMessage;
     void m.extend({ deadline: sec * 30, renew: sec * 20 });
-    await clock.elapse(sec * 25);
+    await clock.elapseAsync(sec * 25);
     void m.replyItem(bytes([1]));
     // Responder: max(30, 25 + 20) = 45 s; the requester waits until
     // max(35, 25 + 25) = 50 s.
-    await clock.elapse(sec * 20 - ms1);
+    await clock.elapseAsync(sec * 20 - ms1);
     expect(done.isDone).toBe(false);
     expect(m.canReply).toBe(true);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expect(m.canReply).toBe(false);
     await flush();
     expect(done.error).toBeInstanceOf(TalkAbortError);
@@ -660,7 +661,7 @@ describe('declared deadlines', () => {
   });
 
   test('on the responder, an empty extend restarts the gap and setReplyTimeout goes back to the default regime', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const p = new Pair({ a: { requestTimeout: 0, clock }, b: { clock } });
     const held = new Map<string, TalkMessage>();
     serve(p.b, (m) => {
@@ -677,19 +678,19 @@ describe('declared deadlines', () => {
     for (const m of [gap, reset, none]) {
       void m.extend({ deadline: sec * 30 });
     }
-    await clock.elapse(sec * 25);
+    await clock.elapseAsync(sec * 25);
     void gap.extend();
     reset.setReplyTimeout(sec * 2);
     // GAP: max(30, 25 + 10) = 35 s; RESET: 27 s; NONE: never.
-    await clock.elapse(sec * 2 - ms1);
+    await clock.elapseAsync(sec * 2 - ms1);
     expect(reset.canReply).toBe(true);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expect(reset.canReply).toBe(false);
-    await clock.elapse(sec * 8 - ms1);
+    await clock.elapseAsync(sec * 8 - ms1);
     expect(gap.canReply).toBe(true);
-    await clock.elapse(ms1);
+    await clock.elapseAsync(ms1);
     expect(gap.canReply).toBe(false);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(none.canReply).toBe(true);
     void none.reply(empty);
     await closeAndCheck(clock, () => p.close());
@@ -716,7 +717,7 @@ describe('declared deadlines', () => {
 
 describe('responder timeout override', () => {
   test('setReplyTimeout applies at once and to later restarts', async () => {
-    const clock = new FakeClock(clockStart);
+    const clock = new ManualClock(clockStart);
     const p = new Pair({
       a: { requestTimeout: 0, clock },
       b: { replyTimeout: ms30, clock },
@@ -740,20 +741,20 @@ describe('responder timeout override', () => {
     const none = new Outcome(p.a.request('NONE', empty));
     const back = new Outcome(p.a.request('BACK', empty));
     const normal = new Outcome(p.a.request('NORMAL', empty));
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     held.get('BACK')?.setReplyTimeout(undefined);
-    await clock.elapse(11);
+    await clock.elapseAsync(11);
     expectStatus(normal.error, StatusCode.deadlineExceeded);
     expect(longer.isDone).toBe(false);
     expect(back.isDone, 'restarted at 20 ms').toBe(false);
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expectStatus(back.error, StatusCode.deadlineExceeded);
     void held.get('LONGER')?.extend();
-    await clock.elapse(99);
+    await clock.elapseAsync(99);
     expect(longer.isDone, 'extend restarts 100 ms').toBe(false);
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     expectStatus(longer.error, StatusCode.deadlineExceeded);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(none.isDone).toBe(false);
     void held.get('NONE')?.reply(bytes([1]));
     await flush();

@@ -18,12 +18,12 @@ import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkChannel, TalkMessage, TalkRequest } from '../../../src/core/talk/contract.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { TalkAbortError } from '../../../src/core/talk/talk-util.ts';
-import { flush } from '../../support/talk/fake-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,

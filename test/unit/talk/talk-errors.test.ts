@@ -17,12 +17,13 @@ import { Status, StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Pair, RawPeer, type StatusFrameEnd } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   rejectsStatus,
   serve,
@@ -188,7 +189,7 @@ describe('protocol errors and channel end', () => {
   });
 
   test('close: both sides end, outstanding work fails, no timers left', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const p = new Pair({
       a: { requestTimeout: 30, clock },
       b: { replyTimeout: 30, clock },

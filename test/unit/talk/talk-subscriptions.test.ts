@@ -23,12 +23,13 @@ import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Pair, RawPeer, type StatusFrameEnd } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   Collector,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -305,7 +306,7 @@ describe('subscriptions', () => {
 
 describe('chained and item requests', () => {
   test('the responder timeout applies to chained and item requests', async () => {
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const p = new Pair({ a: { replyTimeout: 30, clock }, b: { clock } });
     const results = new Map<string, Outcome<TalkMessage>>();
     serve(p.b, (m) => {
@@ -318,12 +319,12 @@ describe('chained and item requests', () => {
     const chained = new Outcome(p.a.request('CHAIN', empty));
     const s = p.a.streamRequest('ITEMS', empty);
     const items = new Collector(s.items);
-    await clock.elapse(29);
+    await clock.elapseAsync(29);
     expect(chained.value?.expectsReply).toBe(true);
     expect(items.values).toHaveLength(1);
     expect(items.values[0]?.expectsReply).toBe(true);
     expect(results.get('chain')?.isDone).toBe(false);
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     for (const key of ['chain', 'item']) {
       const error = results.get(key)?.error;
       expect(error).toBeInstanceOf(TalkAbortError);
