@@ -7,8 +7,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Nodes end to end over WebSocket on the loopback: listenWebSocket and
 // acceptWebSocket of the Node node, its ws and wss dialer, and the web
 // entry's connect-only node. Ports the "Switchboard listener" group of
-// `test/web_socket_server_test.dart`. Raw channels; the Talk cases wait
-// for the Talk layer of the node.
+// `test/web_socket_server_test.dart`. Raw channels, and Talk requests
+// with a bulk echo.
 
 import { createServer, request as httpRequest } from 'node:http';
 import { describe, expect, test } from 'vitest';
@@ -33,7 +33,7 @@ import {
   RawClient,
   sampleAccept,
 } from '../unit/transport/ws-support.ts';
-import { echo, node, onCleanup, roundTrip } from './node-support.ts';
+import { echo, exerciseTalk, node, onCleanup, roundTrip, talkService } from './node-support.ts';
 
 const svc = Name.of('svc');
 
@@ -56,7 +56,15 @@ describe('two nodes over WebSocket', () => {
     await channel.close();
   });
 
-  test.todo('Talk requests over WebSocket: the node Talk layer is not wired yet');
+  test('Talk requests over WebSocket', async () => {
+    const server = node();
+    server.registerService('echo', talkService);
+    const endpoint = await server.listenWebSocket('127.0.0.1', 0, { path: '/mesh' });
+    const client = node({ resolver: new EndpointResolver(endpoint) });
+    const talk = await client.openTalk('echo', { talkOptions: { bulkThreshold: 64 * 1024 } });
+    await exerciseTalk(talk, 1024 * 1024 + 3);
+    await talk.close();
+  });
 
   test('a fragment names the service, not the endpoint; a query is kept', async () => {
     const server = node();

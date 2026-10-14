@@ -6,8 +6,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Two Node nodes end to end over TCP on the loopback: listenTcp, the tcp
 // dialer, the pool, dial, listener policies, close, and what the node
-// refuses. Raw channels; the Talk cases wait for the Talk layer of the
-// node (talk-layer.ts still refuses).
+// refuses. Raw channels, and Talk: the design's example and a bulk echo.
 
 import { connect } from 'node:net';
 import { describe, expect, test } from 'vitest';
@@ -15,12 +14,12 @@ import { ChannelAddress } from '../../src/core/address/index.ts';
 import type { MuxConnection } from '../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType, MuxFrame } from '../../src/core/mux/mux-frame.ts';
 import { Name } from '../../src/core/name.ts';
-import { StatusCode } from '../../src/core/status.ts';
+import { Status, StatusCode } from '../../src/core/status.ts';
 import { ChannelPolicies } from '../../src/core/switchboard/channel-policy.ts';
 import { EndpointResolver } from '../../src/core/switchboard/resolver.ts';
 import { StreamFrameDecoder, StreamFraming } from '../../src/core/transport/stream-framing.ts';
 import { rejectsWith, tagged, tagOf } from '../support/node/harness.ts';
-import { echo, node, onCleanup, roundTrip } from './node-support.ts';
+import { echo, exerciseTalk, node, onCleanup, roundTrip, talkService } from './node-support.ts';
 
 const svc = Name.of('svc');
 
@@ -54,7 +53,53 @@ describe('two nodes over TCP', () => {
     await server.close();
   });
 
-  test.todo('the README example with Talk (UPPER, COUNT): the node Talk layer is not wired yet');
+  test('the README example with Talk (UPPER, COUNT)', async () => {
+    const server = node();
+    server.registerService('echo', async (incoming) => {
+      const talk = incoming.talk();
+      for await (const message of talk.messages) {
+        switch (message.procedureName) {
+          case 'UPPER':
+            await message.reply(message.text().toUpperCase());
+            break;
+          case 'COUNT':
+            for (let i = 1; i <= Number(message.text()); i++) await message.replyItem(String(i));
+            await message.reply('done');
+            break;
+          default:
+            await message.replyAbort(Status.of(StatusCode.unimplemented));
+        }
+      }
+    });
+    const endpoint = await server.listenTcp('127.0.0.1', 0); // 'tcp://127.0.0.1:41234'
+
+    const client = node({ resolver: new EndpointResolver(endpoint) });
+    {
+      await using talk = await client.openTalk('echo');
+
+      const reply = await talk.request('UPPER', 'hello');
+      expect(reply.text()).toBe('HELLO');
+
+      const stream = talk.streamRequest('COUNT', '3');
+      const items: string[] = [];
+      for await (const item of stream) items.push(item.text());
+      expect(items).toEqual(['1', '2', '3']);
+      expect((await stream.done).text()).toBe('done');
+    }
+
+    await client.close();
+    await server.close();
+  });
+
+  test('Talk requests, a stream and a bulk echo over TCP', async () => {
+    const server = node();
+    server.registerService('echo', talkService);
+    const endpoint = await server.listenTcp('127.0.0.1', 0);
+    const client = node({ resolver: new EndpointResolver(endpoint) });
+    const talk = await client.openTalk('echo', { talkOptions: { bulkThreshold: 64 * 1024 } });
+    await exerciseTalk(talk, 1024 * 1024 + 3);
+    await talk.close();
+  });
 
   test('each side sees the address of the other', async () => {
     const server = node();

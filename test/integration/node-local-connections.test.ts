@@ -11,7 +11,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // localConnections false. The tcp and ws variants of
 // `test/local_connections_test.dart`; its mem variant is
 // test/unit/switchboard/local-connections.test.ts. The Talk cases (the
-// bulk echo, the PeerSet request) wait for the node's Talk layer.
+// bulk echo, the PeerSet request) run over TCP, as in Dart.
 
 import { createServer } from 'node:net';
 import { describe, expect, test } from 'vitest';
@@ -35,7 +35,7 @@ import { Deferred } from '../../src/core/util/deferred.ts';
 import type { Switchboard, SwitchboardOptions } from '../../src/node/switchboard.ts';
 import { FakeVerifier, fakeCredential } from '../support/node/fake-identity.ts';
 import { bytes, rejectsWith, tagged, tagOf, until } from '../support/node/harness.ts';
-import { node, onCleanup } from './node-support.ts';
+import { node, onCleanup, within } from './node-support.ts';
 
 const svc = Name.of('svc');
 const other = Name.of('other');
@@ -292,9 +292,29 @@ describe('identity', () => {
   });
 });
 
-test.todo(
-  'a large bulk payload to itself, both ways, under flow control: needs the node Talk layer (bulk requests)',
-);
+test('a large bulk payload to itself, both ways, under flow control', async () => {
+  const n = node();
+  const uri = await listen(n, 'tcp');
+  const bulk: boolean[] = [];
+  n.registerService(svc, (incoming) => {
+    void incoming.talk().serve((message) => {
+      bulk.push(message.isBulk);
+      void message.reply(message.payload);
+    });
+  });
+  const talk = await n.openTalkAt(uri, at(svc));
+  const payload = new Uint8Array(3 * 1024 * 1024 + 17);
+  for (let i = 0; i < payload.length; i++) {
+    payload[i] = (i * 31 + Math.floor(i / 2048)) & 0xff;
+  }
+  const reply = await within(talk.request('ECHO', payload), 20_000);
+  expect(bulk).toEqual([true]);
+  expect(reply.isBulk).toBe(true);
+  const echoed = reply.payload;
+  expect(echoed.length).toBe(payload.length);
+  expect(Buffer.compare(Buffer.from(echoed), Buffer.from(payload)), 'the echo differs').toBe(0);
+  await talk.close();
+});
 
 test('a PeerSet over its own instance comes online in-process', async () => {
   const table = new StaticResolver();
@@ -306,6 +326,11 @@ test('a PeerSet over its own instance comes online in-process', async () => {
     svc,
     (incoming) => {
       seen.push(incoming);
+      void incoming.talk().serve((message) => {
+        if (message.expectsReply) {
+          void message.reply('pong');
+        }
+      });
     },
     { instance: 1 },
   );
@@ -319,9 +344,10 @@ test('a PeerSet over its own instance comes online in-process', async () => {
   expect(seen[0]?.address.address?.equals(new ServiceAddress(svc, 1))).toBe(true);
   // The set's connection is its own, not the pooled one.
   expect(peer?.connection).not.toBe(await n.connect(uri));
+  const talk = await set.openTalk(1);
+  expect((await talk.request('PING')).text()).toBe('pong');
+  await talk.close();
 });
-
-test.todo('a PeerSet over its own instance answers a Talk request: needs the node Talk layer');
 
 test('the proxy still refuses to forward to its own listener', async () => {
   const table = new StaticResolver();

@@ -7,7 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Two Node nodes end to end over raw QUIC on the loopback, through the
 // native provider: listenQuic (ALPN switchboard, a self-signed
 // certificate) and the quic option's QuicSwitchboardBinding. Raw
-// channels; the Talk cases wait for the node's Talk layer.
+// channels, and Talk requests with a bulk echo.
 //
 // Without the addon (`npm run build:native`, or SWITCHBOARD_QUIC_ADDON)
 // the file is skipped with the reason; with SWITCHBOARD_NATIVE=required a
@@ -27,7 +27,7 @@ import {
   selfSignedCertificate,
 } from '../../src/node/quic/index.ts';
 import { rejectsWith, tagged, tagOf } from '../support/node/harness.ts';
-import { echo, node, roundTrip, within } from './node-support.ts';
+import { echo, exerciseTalk, node, roundTrip, talkService, within } from './node-support.ts';
 
 const availability = nativeQuicAvailability();
 if (!availability.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {
@@ -56,7 +56,18 @@ describe.skipIf(!availability.available)(
       expect((await channel.done).isOk).toBe(true);
     });
 
-    test.todo('Talk requests over raw QUIC: the node Talk layer is not wired yet');
+    test('Talk requests over raw QUIC', async () => {
+      const server = node({ quic: nativeQuic() });
+      server.registerService('echo', talkService);
+      const endpoint = await server.listenQuic('127.0.0.1', 0);
+      const client = node({ quic: nativeQuic(), resolver: new EndpointResolver(endpoint) });
+      const talk = await within(
+        client.openTalk('echo', { talkOptions: { bulkThreshold: 64 * 1024 } }),
+      );
+      expect(talk.raw?.connection).toBeInstanceOf(QuicBindingConnection);
+      await within(exerciseTalk(talk, 1024 * 1024 + 3));
+      await talk.close();
+    });
 
     test('a given certificate, an advertised host, the listener policy', async () => {
       const certificate = selfSignedCertificate('node-1');
