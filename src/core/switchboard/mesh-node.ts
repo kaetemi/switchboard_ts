@@ -10,19 +10,35 @@ import type { Credential } from '../identity/contract.ts';
 import type { MuxConnection } from '../mux/contract.ts';
 import { Name, type NameLike, toName } from '../name.ts';
 import { NamingClient } from '../naming/naming-client.ts';
-import { type DialBackRequest, type PhaseItem, Services } from '../naming/naming-protocol.ts';
+import {
+  type DialBackRequest,
+  type PhaseItem,
+  Services,
+  SlotMode,
+  SlotSpace,
+} from '../naming/naming-protocol.ts';
 import { NamingResolver } from '../naming/naming-resolver.ts';
+import { SlotGate, SlotGates, type SlotLifecycle } from '../naming/slot-gate.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import type { TalkOptions } from '../talk/contract.ts';
 import type { Clock, TimerHandle } from '../util/clock.ts';
+import { Deferred } from '../util/deferred.ts';
 import type { Logger, LogLevel } from '../util/logger.ts';
 import { ChannelPolicies } from './channel-policy.ts';
 import type { ChannelHandler, ChannelPolicy } from './contract.ts';
 import type { RelayService } from './relay.ts';
 import type { Switchboard } from './switchboard.ts';
-import { goAwayQuietly } from './waits.ts';
+import { bounded, goAwayQuietly } from './waits.ts';
 
 const logName = 'Switchboard.Naming';
+
+/**
+ * At most this many `RELEASE`s, and as many hand-over migrations,
+ * {@link MeshNode.leave} keeps in flight: well under the request limit of
+ * the naming channel (`TalkOptions.maxOutgoingRequests`, 1024 by default),
+ * refilled as the answers arrive.
+ */
+const leaveWindow = 64;
 
 /** What {@link namingClientFor} takes beside the node and the endpoint. */
 export interface NamingClientForOptions {
@@ -147,6 +163,40 @@ export interface MeshPublishOptions {
 }
 
 /**
+ * What {@link MeshNode.publishSharded} takes beside the type and the
+ * lifecycle: the slot space (`count`, `mode`, `lazy`, `shared`), this
+ * instance's share of it (`capacity`, `holding`), the registration
+ * (`instance`, `endpoints`, as {@link MeshPublishOptions}) and the gate's
+ * settings (see `SlotGateOptions`).
+ */
+export interface MeshPublishShardedOptions extends MeshPublishOptions {
+  /** Number of slots, 1 to 0xFFFFFFFF. */
+  readonly count: number;
+  /** Default `SlotMode.managed`. */
+  readonly mode?: SlotMode | undefined;
+  /** Slots are assigned when first located rather than up front (managed mode); default false. */
+  readonly lazy?: boolean | undefined;
+  /** Shared recovery: the state is in shared storage; default false (holder-only). */
+  readonly shared?: boolean | undefined;
+  /** This instance's share weight in a managed space; 0 takes no slots from the allocator; default 1. */
+  readonly capacity?: number | undefined;
+  /** Slots whose storage this instance has, declared with `HOLDING`; default none. */
+  readonly holding?: Iterable<number> | undefined;
+  /** How long channels and requests keep being forwarded to the new owner after `FORWARD`, in ms; default 30 000. */
+  readonly forwardGrace?: number | undefined;
+  /** Longest wait of `DRAIN` for a locked slot's work in flight, in ms; default 30 000. */
+  readonly drainTimeout?: number | undefined;
+  /** Most channels the gate queues at a time, over all slots; default 1024. */
+  readonly maxQueuedChannels?: number | undefined;
+  /** Most requests the gate queues at a time, over all slots; default 1024. */
+  readonly maxQueuedRequests?: number | undefined;
+  /** Whether served channels count as work in flight until they end; default true. */
+  readonly trackChannels?: boolean | undefined;
+  /** Receives the channels that carry no shard slot (state transfer between instances); default none (`INVALID_ARGUMENT`). */
+  readonly noSlotHandler?: ChannelHandler | undefined;
+}
+
+/**
  * What {@link MeshNode.leave} did with the slots the node served, by type
  * (keyed by `Name.key`, sorted slot numbers).
  */
@@ -159,7 +209,9 @@ export class LeaveReport {
   /**
    * Slots released keeping their storage (`RELEASE`): not handed over in
    * time, or in a space where no other instance could take them, a static
-   * space or a `shared` one.
+   * space or a `shared` one. In a holder-only managed space their new
+   * owner fetches the state from this node only while it is still
+   * reachable.
    */
   readonly released: ReadonlyMap<string, readonly number[]>;
   /**
@@ -189,13 +241,16 @@ export class LeaveReport {
 
   /** The three maps, with the type names. */
   toString(): string {
-    const show = (map: ReadonlyMap<string, readonly number[]>): string =>
-      `{${[...map].map(([key, slots]) => `${Name.fromKey(key)}: [${slots.join(', ')}]`).join(', ')}}`;
     return (
-      `LeaveReport(handed over ${show(this.handedOver)}, released ${show(this.released)}, ` +
-      `dropped ${show(this.dropped)})`
+      `LeaveReport(handed over ${showSlots(this.handedOver)}, ` +
+      `released ${showSlots(this.released)}, dropped ${showSlots(this.dropped)})`
     );
   }
+}
+
+/** `{type: [slots], ...}` with the type names. */
+function showSlots(map: ReadonlyMap<string, readonly number[]>): string {
+  return `{${[...map].map(([key, slots]) => `${Name.fromKey(key)}: [${slots.join(', ')}]`).join(', ')}}`;
 }
 
 function sorted(
@@ -232,6 +287,11 @@ function sorted(
  * await node.close();
  * ```
  *
+ * A sharded type is published with {@link publishSharded}, which also
+ * defines its slot space and installs a {@link SlotGate}; {@link claimSlot},
+ * {@link releaseSlot}, {@link migrateSlot} and {@link slotOwners} work on its
+ * slots. See the wiki page "Polyverse Switchboard Sharding".
+ *
  * Identity (wiki page "Polyverse Switchboard Identity and Credentials"):
  * the node serves the `CONNECT` requests the naming service relays to it
  * (a consumer wants an instance this node registered without endpoints to
@@ -242,11 +302,6 @@ function sorted(
  * the naming service (`RENEW`) at two thirds of its lifetime, presenting
  * the renewed credential on every connection the node identified on
  * (`Switchboard.updateCredential`).
- *
- * Sharding: {@link migrateSlot} and {@link slotOwners} work on the slots of
- * any type. Publishing a sharded type (Dart's `publishSharded`,
- * `claimSlot`, `releaseSlot` and `gates`, with the slot hand-over of
- * {@link leave}) needs the slot gate, which is not ported yet.
  */
 export class MeshNode implements AsyncDisposable {
   /** The node this joined to the mesh. */
@@ -274,8 +329,16 @@ export class MeshNode implements AsyncDisposable {
   /** Where the node's mesh diagnostics go. */
   readonly logger: Logger;
 
+  /**
+   * The slot gates of the types published with {@link publishSharded}; the
+   * {@link client}'s slot handler once one is published.
+   */
+  readonly gates = new SlotGates();
+
   readonly #brokered = new Set<MuxConnection>();
   readonly #published = new Map<string, ServiceAddress>();
+  /** The slot spaces of the types published sharded here, by `Name.key`, once defined. */
+  readonly #spaces = new Map<string, SlotSpace>();
   #renewTimer: TimerHandle | undefined;
   #nextRenewalAt: number | undefined;
   #leaving = false;
@@ -397,7 +460,7 @@ export class MeshNode implements AsyncDisposable {
     } catch (error) {
       return Promise.reject(error);
     }
-    return this.#publish(name, handler, options, undefined);
+    return this.#publish(name, handler, options, undefined, undefined);
   }
 
   /**
@@ -436,6 +499,7 @@ export class MeshNode implements AsyncDisposable {
       relay.handler,
       options,
       identity === undefined ? undefined : utf8Encode(identity),
+      undefined,
     );
   }
 
@@ -444,6 +508,7 @@ export class MeshNode implements AsyncDisposable {
     handler: ChannelHandler,
     options: MeshPublishOptions,
     metadata: Uint8Array | undefined,
+    onId: ((id: number) => void) | undefined,
   ): Promise<number> {
     let current: ServiceAddress | undefined;
     return this.client.register(type, options.endpoints ?? this.switchboard.listeningEndpoints, {
@@ -461,8 +526,160 @@ export class MeshNode implements AsyncDisposable {
         current = address;
         this.#published.set(address.key, address);
         this.switchboard.registerService(type, handler, { instance: id });
+        onId?.(id);
       },
     });
+  }
+
+  /**
+   * Publishes a sharded service of [type]: creates its {@link SlotGate}
+   * with [lifecycle], registers the type like {@link publish} (with the
+   * gate's handler, under `instance`, which stateful services set to a
+   * stable configured id so that holders survive a reboot), defines or
+   * confirms the slot space (`SLOTS` with `count`, `mode`, `lazy`, `shared`
+   * and this instance's `capacity`; 0 takes no slots from the allocator)
+   * and, when `holding` lists slots whose storage this instance has,
+   * declares them (`HOLDING`); the slots it should discard reach
+   * `SlotLifecycle.discard` (through `SlotGate.onDiscard`, as do those of
+   * the `HOLDING` the naming client sends again after a reconnect).
+   * Resolves with the gate once all of that is done; in a managed space
+   * slots may already be assigned by then.
+   *
+   * The node's {@link gates} become the naming client's slot handler. The
+   * remaining options configure the gate (see `SlotGate`), whose timers and
+   * diagnostics are this node's {@link clock} and {@link logger}.
+   *
+   * Rejects with `FAILED_PRECONDITION` if [type] is already published
+   * sharded here, if the client has a slot handler other than
+   * {@link gates}, or after {@link leave}; otherwise like
+   * `NamingClient.register`, `NamingClient.defineSlots` (for example
+   * `FAILED_PRECONDITION` when the space is defined differently) and
+   * `NamingClient.declareHolding`, and like the `SlotGate` constructor
+   * (an {@link Error} for a lifecycle attached to another gate that is not
+   * closed, a {@link RangeError} for negative bounds). On failure the type
+   * is unregistered again and the gate closed. Both requests' errors are
+   * handled even if one fails before the other finishes.
+   */
+  async publishSharded(
+    type: NameLike,
+    lifecycle: SlotLifecycle,
+    options: MeshPublishShardedOptions,
+  ): Promise<SlotGate> {
+    if (this.#leaving) {
+      throw SwitchboardError.of(StatusCode.failedPrecondition, 'left mesh');
+    }
+    const name = toName(type);
+    if (this.gates.get(name) !== undefined) {
+      throw SwitchboardError.of(
+        StatusCode.failedPrecondition,
+        `${name} is already published sharded`,
+      );
+    }
+    const current = this.client.slotHandler;
+    if (current !== undefined && current !== this.gates) {
+      throw SwitchboardError.of(
+        StatusCode.failedPrecondition,
+        'the naming client has another slot handler',
+      );
+    }
+    this.client.slotHandler = this.gates;
+    const gate = new SlotGate(this.switchboard, this.client, name, {
+      lifecycle,
+      forwardGrace: options.forwardGrace,
+      drainTimeout: options.drainTimeout,
+      maxQueuedChannels: options.maxQueuedChannels,
+      maxQueuedRequests: options.maxQueuedRequests,
+      trackChannels: options.trackChannels,
+      noSlotHandler: options.noSlotHandler,
+      instance: options.instance,
+      clock: this.clock,
+      logger: this.logger,
+    });
+    this.gates.add(gate);
+    let id = 0;
+    try {
+      id = await this.#publish(name, gate.handler, options, undefined, (assigned) => {
+        gate.instance = assigned;
+      });
+      const space = new SlotSpace(name, {
+        count: options.count,
+        mode: options.mode ?? SlotMode.managed,
+        lazy: options.lazy ?? false,
+        shared: options.shared ?? false,
+      });
+      // Start SLOTS and HOLDING back to back, so that the naming service
+      // sees them in one burst and no round trip separates them.
+      const held = [...(options.holding ?? [])];
+      const defined = this.client.defineSlots(name, {
+        count: space.count,
+        mode: space.mode,
+        lazy: space.lazy,
+        shared: space.shared,
+        capacity: options.capacity ?? 1,
+      });
+      const declared = held.length > 0 ? this.client.declareHolding(name, held) : undefined;
+      // Observed at once, so that a HOLDING failing while SLOTS is pending
+      // (its slots are checked before it is sent) is not an unhandled
+      // rejection; awaited below.
+      declared?.catch(() => {});
+      await defined;
+      // Known from here on, so that a leave() meanwhile withdraws this
+      // node's capacity for the space.
+      this.#spaces.set(name.key, space);
+      // The slots to discard reach lifecycle.discard through the gate.
+      await declared;
+      return gate;
+    } catch (error) {
+      this.gates.remove(name);
+      this.#spaces.delete(name.key);
+      if (id !== 0 && !this.#leaving) {
+        await this.unpublish(name, id).catch(() => {});
+      }
+      await gate.close();
+      throw error;
+    }
+  }
+
+  /** The gate of [type], published here with {@link publishSharded}. */
+  #gateOf(type: NameLike): SlotGate {
+    const name = toName(type);
+    const gate = this.gates.get(name);
+    if (gate === undefined) {
+      throw SwitchboardError.of(
+        StatusCode.failedPrecondition,
+        `${name} is not published sharded here`,
+      );
+    }
+    return gate;
+  }
+
+  /**
+   * Claims the free [slot] of [type], published with {@link publishSharded}
+   * (`SlotGate.claim`): the slot is loaded before this resolves. Resolves
+   * with its epoch. Rejects with `ALREADY_EXISTS` if another instance owns
+   * it, `FAILED_PRECONDITION` if [type] is not published sharded here, and
+   * like `NamingClient.claim`.
+   */
+  async claimSlot(
+    type: NameLike,
+    slot: number,
+    options: { holding?: boolean } = {},
+  ): Promise<number> {
+    return this.#gateOf(type).claim(slot, options);
+  }
+
+  /**
+   * Releases [slot] of [type] (`SlotGate.release`) and stops serving it
+   * here; `keepStorage` keeps this instance its holder. Rejects like
+   * `NamingClient.release`, and with `FAILED_PRECONDITION` if [type] is not
+   * published sharded here.
+   */
+  async releaseSlot(
+    type: NameLike,
+    slot: number,
+    options: { keepStorage?: boolean } = {},
+  ): Promise<void> {
+    return this.#gateOf(type).release(slot, options);
   }
 
   /**
@@ -620,15 +837,44 @@ export class MeshNode implements AsyncDisposable {
   // Leaving -----------------------------------------------------------------
 
   /**
-   * Leaves the mesh: stops renewing the credential and serving `CONNECT`,
-   * sends GOAWAY on the {@link brokeredConnections}, closes the resolver
-   * and with it the client (the naming service then drops every
-   * registration of this node and publishes `DOWN` for each), stops
-   * dispatching the published services locally, and removes the resolver
-   * from {@link switchboard} if it is still installed there. Channels
-   * already open are unaffected. The report says what happened to the
-   * slots the node served (none until sharded types can be published
-   * here). Never rejects.
+   * Leaves the mesh: hands over or gives up the slots of the types
+   * published with {@link publishSharded}, closes the resolver and with it
+   * the client (the naming service then drops every registration of this
+   * node and publishes `DOWN` for each), stops dispatching the published
+   * services locally, and removes the resolver from {@link switchboard} if
+   * it is still installed there. Channels already open are unaffected.
+   *
+   * The slots are handled while connected to the naming service, and while
+   * the gates (and their `noSlotHandler`, which serves state transfers) are
+   * still up:
+   *
+   * 1. For each managed type, `SLOTS` with capacity 0, so that the
+   *    allocator gives this node no slot back.
+   * 2. In a holder-only managed space, every served slot is handed over,
+   *    one after the other (types in parallel, at most 64 migrations at a
+   *    time), with a migration to an instance the allocator chooses
+   *    ({@link migrateSlot} with `to` 0): the new owner takes the drained
+   *    state over (fetching it from this node) while this node is still
+   *    up, so no data stays behind on a node that is about to stop. Steps
+   *    1 and 2 take at most {@link leaveTimeout} in all.
+   * 3. Every slot still served (not handed over in time, a space with no
+   *    other instance to take it, a static space, or a `shared` space,
+   *    whose state is in shared storage and is reassigned at once) is
+   *    released keeping its storage (`RELEASE`, `SlotGate.release`), at
+   *    most {@link leaveTimeout} more, 64 at a time. In a holder-only
+   *    managed space the allocator then assigns such a slot elsewhere, the
+   *    new owner fetching the state from this node only while it is
+   *    reachable.
+   *
+   * Then every gate is closed (`SlotGate.close`). The returned
+   * {@link LeaveReport} tells which slots were handed over, released, or
+   * dropped (stopped here without the naming service taking them: not
+   * connected, or the release failed). A node that is going to come back
+   * with its storage (a reboot) should rather not leave, so that its
+   * holder-only slots wait for it.
+   *
+   * Leaving first stops renewing the credential and serving `CONNECT`, and
+   * sends GOAWAY on the {@link brokeredConnections}. Never rejects.
    *
    * Call this before closing {@link switchboard} (it also cancels the
    * renewal timer, which a node that is closed without leaving keeps until
@@ -655,10 +901,53 @@ export class MeshNode implements AsyncDisposable {
     for (const connection of [...this.#brokered]) {
       void goAwayQuietly(connection);
     }
-    // Not ported: the hand-over and release of the slots of sharded types
-    // (Dart's `_handOver` and `_releaseAll`), which need the slot gates of
-    // `publishSharded`. No slot is served here without them.
-    const report = new LeaveReport();
+    const gates = [...this.gates.gates.values()];
+    const served = new Map<string, Set<number>>();
+    for (const gate of gates) {
+      served.set(gate.type.key, new Set(gate.servedSlots.keys()));
+    }
+    const handedOver = new Map<string, Set<number>>();
+    const released = new Map<string, Set<number>>();
+    if (this.client.isConnected && gates.length > 0) {
+      const start = this.clock.now();
+      let over = false;
+      const left = (): number => this.leaveTimeout - (this.clock.now() - start);
+      const window = new Window(leaveWindow);
+      const handOvers = Promise.all(
+        gates.map((gate) => {
+          const done = new Set<number>();
+          handedOver.set(gate.type.key, done);
+          return this.#handOver(gate, window, left, () => over, done);
+        }),
+      );
+      if (!(await this.#within(handOvers, this.leaveTimeout))) {
+        this.#log('warn', `leaving: slots not handed over within ${this.leaveTimeout} ms`);
+      }
+      over = true;
+      if (this.client.isConnected) {
+        let stop = false;
+        const releases = this.#releaseAll(released, () => stop);
+        if (!(await this.#within(releases, this.leaveTimeout))) {
+          this.#log('warn', `leaving: slots not released within ${this.leaveTimeout} ms`);
+        }
+        stop = true;
+      }
+    }
+    const dropped = new Map<string, Set<number>>();
+    for (const [key, slots] of served) {
+      const kept = new Set<number>();
+      for (const slot of slots) {
+        if (!handedOver.get(key)?.has(slot) && !released.get(key)?.has(slot)) {
+          kept.add(slot);
+        }
+      }
+      dropped.set(key, kept);
+    }
+    const report = new LeaveReport({ handedOver, released, dropped });
+    if (report.dropped.size > 0) {
+      this.#log('warn', `leaving: slots dropped: ${showSlots(report.dropped)}`);
+    }
+    await Promise.allSettled([...this.gates.gates.values()].map((gate) => gate.close()));
     if (this.switchboard.resolver === this.resolver) {
       this.switchboard.resolver = undefined;
     }
@@ -674,11 +963,157 @@ export class MeshNode implements AsyncDisposable {
     return report;
   }
 
+  /** Whether [work] settled within [ms] on the node's clock (it goes on either way); never rejects. */
+  async #within(work: Promise<unknown>, ms: number): Promise<boolean> {
+    try {
+      await bounded(work, ms, this.clock, () => timedOut);
+      return true;
+    } catch (error) {
+      if (error === timedOut) {
+        return false;
+      }
+      this.#log('debug', `leaving: ${error}`, error);
+      return true;
+    }
+  }
+
+  /**
+   * Takes this instance out of the allocator for [gate]'s type, then, in a
+   * holder-only managed space, hands every served slot over to another
+   * instance, one at a time and each in its turn of [window], while [left]
+   * has time and [over] is false. Adds the slots handed over to [done].
+   */
+  async #handOver(
+    gate: SlotGate,
+    window: Window,
+    left: () => number,
+    over: () => boolean,
+    done: Set<number>,
+  ): Promise<void> {
+    const type = gate.type;
+    const space = this.#spaces.get(type.key);
+    if (space === undefined || space.mode !== SlotMode.managed) {
+      return;
+    }
+    try {
+      await this.client.defineSlots(type, {
+        count: space.count,
+        mode: space.mode,
+        lazy: space.lazy,
+        shared: space.shared,
+        capacity: 0,
+      });
+    } catch (error) {
+      this.#log('info', `leaving: capacity of ${type} not withdrawn: ${error}`, error);
+    }
+    if (space.shared) {
+      // The state is in shared storage: a RELEASE is enough.
+      return;
+    }
+    for (const slot of [...gate.servedSlots.keys()].sort((a, b) => a - b)) {
+      await window.enter();
+      try {
+        const time = left();
+        if (over() || time <= 0 || !this.client.isConnected) {
+          return;
+        }
+        if (!gate.serves(slot)) {
+          continue;
+        }
+        await bounded(drain(this.client.migrate(type, slot)), time, this.clock, () => timedOut);
+        done.add(slot);
+      } catch (error) {
+        if (error === timedOut) {
+          this.#log('info', `leaving: ${type}/${slot} not handed over in time`);
+          return;
+        }
+        this.#log('info', `leaving: ${type}/${slot} not handed over: ${error}`, error);
+      } finally {
+        window.exit();
+      }
+    }
+  }
+
+  /**
+   * Releases the slots the gates still serve, keeping the storage, at most
+   * {@link leaveWindow} at a time and until [stop]; adds those released to
+   * [released].
+   */
+  async #releaseAll(released: Map<string, Set<number>>, stop: () => boolean): Promise<void> {
+    const work: [SlotGate, number][] = [];
+    for (const gate of this.gates.gates.values()) {
+      released.set(gate.type.key, new Set());
+      for (const slot of [...gate.servedSlots.keys()].sort((a, b) => a - b)) {
+        work.push([gate, slot]);
+      }
+    }
+    let next = 0;
+    const releasing = async (): Promise<void> => {
+      while (next < work.length && !stop()) {
+        const [gate, slot] = work[next++] as [SlotGate, number];
+        try {
+          await gate.release(slot, { keepStorage: true });
+          released.get(gate.type.key)?.add(slot);
+        } catch (error) {
+          this.#log('info', `leaving: ${gate.type}/${slot} not released: ${error}`, error);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(leaveWindow, work.length) }, () => releasing()),
+    );
+  }
+
   #log(level: LogLevel, message: string, error?: unknown): void {
     try {
       this.logger.log(level, logName, message, error);
     } catch {
       // A logger that throws must not break the mesh node.
+    }
+  }
+}
+
+/** What a bound of {@link MeshNode.leave} rejects with when its time is up. */
+const timedOut: unique symbol = Symbol('timed out');
+
+/** Takes every item of [items] until they end; rejects as the iteration does. */
+async function drain(items: AsyncIterable<unknown>): Promise<void> {
+  for await (const _ of items) {
+    // Only the end matters.
+  }
+}
+
+/**
+ * Lets at most [size] operations in at a time; the others wait for their
+ * turn, in order.
+ */
+class Window {
+  readonly size: number;
+  #inside = 0;
+  readonly #waiting: Deferred<void>[] = [];
+
+  constructor(size: number) {
+    this.size = size;
+  }
+
+  /** Resolves when it is the caller's turn; {@link exit} ends it. */
+  enter(): Promise<void> {
+    if (this.#inside < this.size) {
+      this.#inside++;
+      return Promise.resolve();
+    }
+    const turn = new Deferred<void>();
+    this.#waiting.push(turn);
+    return turn.promise;
+  }
+
+  exit(): void {
+    const turn = this.#waiting.shift();
+    if (turn !== undefined) {
+      // The turn passes on.
+      turn.resolve();
+    } else {
+      this.#inside--;
     }
   }
 }
