@@ -2477,7 +2477,9 @@ export class Switchboard implements AsyncDisposable {
     } catch (e) {
       void closeQuietly(
         channel,
-        e instanceof SwitchboardError ? e.status : Status.of(StatusCode.internal, 'no Talk layer'),
+        e instanceof SwitchboardError
+          ? e.status
+          : Status.of(StatusCode.internal, 'cannot wrap the channel in Talk'),
       );
       throw e;
     }

@@ -735,9 +735,7 @@ describe('relaying', () => {
     );
   });
 
-  it.todo(
-    'openTalkToSlot reaches a slot owner through the relay (needs slot-routed opens and Talk)',
-  );
+  it.todo('openTalkToSlot reaches a slot owner through the relay (needs slot-routed opens)');
 });
 
 describe('refusals', () => {
