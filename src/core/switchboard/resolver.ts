@@ -9,11 +9,30 @@ import type { Name } from '../name.ts';
 import { downEvent, serviceRecord, upEvent } from '../naming/naming-protocol.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import { Broadcast } from './broadcast.ts';
-import type { BrokeringResolver, Resolver, ServiceEvent, ServiceRecord } from './contract.ts';
+import type {
+  BrokeringResolver,
+  Resolver,
+  ServiceEvent,
+  ServiceRecord,
+  SlotResolver,
+} from './contract.ts';
 
 /** Whether [resolver] can broker connections ({@link BrokeringResolver}). */
 export function isBrokeringResolver(resolver: Resolver): resolver is BrokeringResolver {
   return typeof (resolver as Partial<BrokeringResolver>).connectTo === 'function';
+}
+
+/**
+ * Whether [resolver] knows slot tables ({@link SlotResolver}): what the
+ * node's slot routing, the proxy and the `MOVED` retry route through.
+ */
+export function isSlotResolver(resolver: Resolver | undefined): resolver is SlotResolver {
+  const candidate = resolver as Partial<SlotResolver> | undefined;
+  return (
+    typeof candidate?.slotTable === 'function' &&
+    typeof candidate.slotOwner === 'function' &&
+    typeof candidate.locateSlot === 'function'
+  );
 }
 
 function closedError(what: string): SwitchboardError {

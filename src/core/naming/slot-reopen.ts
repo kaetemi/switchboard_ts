@@ -7,21 +7,12 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { type ChannelAddress, ServiceAddress } from '../address/index.ts';
 import type { MuxChannel } from '../mux/contract.ts';
 import { type Status, StatusCode, SwitchboardError } from '../status.ts';
-import type { Resolver, ServiceRecord, SlotResolver } from '../switchboard/contract.ts';
+import type { Resolver, ServiceRecord } from '../switchboard/contract.ts';
+import { isSlotResolver } from '../switchboard/resolver.ts';
 import type { Switchboard } from '../switchboard/switchboard.ts';
 import { MovedStatus } from './naming-protocol.ts';
 
 const logName = 'Switchboard.Router';
-
-/** Whether [resolver] knows slot tables: a {@link SlotResolver}. */
-export function isSlotResolver(resolver: Resolver | undefined): resolver is SlotResolver {
-  const candidate = resolver as Partial<SlotResolver> | undefined;
-  return (
-    typeof candidate?.slotTable === 'function' &&
-    typeof candidate.slotOwner === 'function' &&
-    typeof candidate.locateSlot === 'function'
-  );
-}
 
 /** What {@link reopenAtSlotOwner} takes beside the rejected channel's header and status. */
 export interface SlotReopenOptions {

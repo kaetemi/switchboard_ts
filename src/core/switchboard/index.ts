@@ -23,6 +23,7 @@ export { defaultRelayType, RelayConfig } from './relay-config.ts';
 export {
   EndpointResolver,
   isBrokeringResolver,
+  isSlotResolver,
   StaticResolver,
 } from './resolver.ts';
 export type {
