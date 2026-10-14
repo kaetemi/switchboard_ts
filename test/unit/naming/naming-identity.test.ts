@@ -31,6 +31,9 @@ import {
   Right,
   type Scope,
 } from '../../../src/core/identity/contract.ts';
+import { Credential as Codec } from '../../../src/core/identity/credential.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import { CredentialVerifier as Verifier } from '../../../src/core/identity/credential-verifier.ts';
 import { Name } from '../../../src/core/name.ts';
 import {
   AssignResult,
@@ -54,7 +57,10 @@ import {
   UnregisterRequest,
   WatchRequest,
 } from '../../../src/core/naming/naming-protocol.ts';
-import type { NamingService } from '../../../src/core/naming/naming-service.ts';
+import type {
+  NamingCredentialIssuer,
+  NamingService,
+} from '../../../src/core/naming/naming-service.ts';
 import type { SlotTable } from '../../../src/core/naming/slot-table.ts';
 import {
   type Status,
@@ -235,6 +241,8 @@ function node(options: { credential?: Credential; close?: boolean } = {}): Node 
 interface MeshOptions {
   readonly requireCredential?: boolean;
   readonly withIssuer?: boolean;
+  /** The issuer of `RENEW` when `withIssuer`; default the fake authority. */
+  readonly issuer?: NamingCredentialIssuer;
   readonly payloadVerifier?: CredentialVerifier;
   readonly renewable?: (credential: Credential) => boolean;
   readonly brokerTimeout?: number;
@@ -262,7 +270,7 @@ class Mesh {
       handoverTimeout: 60_000,
       verifier: options.payloadVerifier ?? verifier(),
       requireCredential: options.requireCredential ?? true,
-      issuer: (options.withIssuer ?? true) ? authority : undefined,
+      issuer: (options.withIssuer ?? true) ? (options.issuer ?? authority) : undefined,
       renewable: options.renewable,
       brokerTimeout: options.brokerTimeout ?? 5000,
       wallTime: now,
@@ -1107,8 +1115,54 @@ describe('expiry and RENEW', () => {
     });
   }
 
-  // Not ported: NamingClient.renew waits for the credential codec.
-  test.skip("RENEW re-issues the channel's credential", () => {});
+  test("RENEW re-issues the channel's credential", async () => {
+    // Real credentials: the client decodes the answer with `Credential.decode`.
+    const realIssuer = await CredentialIssuer.ed25519FromSeed(
+      'auth1',
+      Uint8Array.from({ length: 32 }, (_, i) => 7 * i),
+    );
+    const realVerifier = new Verifier();
+    await realVerifier.addIssuer(realIssuer);
+    const realIssue = (identity: string, lifetime?: number): Promise<Credential> =>
+      realIssuer.issue({
+        kind: CredentialKind.node,
+        identity,
+        scopes: workerScopes,
+        holderKey,
+        lifetime,
+      });
+    const mesh = Mesh.start({ issuer: realIssuer, payloadVerifier: realVerifier });
+    const original = await realIssue('worker-a1', hour);
+    const worker = node({ credential: original });
+    const client = join(worker, mesh);
+    await until(() => client.isConnected);
+    for (const current of [undefined, original]) {
+      const renewed = await within(client.renew({ current }), limit);
+      expect(renewed.identity).toBe('worker-a1');
+      expect(renewed.scopes).toEqual(original.scopes);
+      expect(renewed.holderKey).toEqual(original.holderKey);
+      expect(renewed.kind).toBe(original.kind);
+      expect(renewed.expiresAt - renewed.issuedAt).toBe(3600);
+      expect(renewed.issuedAt).toBeGreaterThanOrEqual(original.issuedAt);
+    }
+    // Another identity's credential is refused, an invalid one too.
+    await rejectsWith(
+      client.renew({ current: await realIssue('worker-b2') }),
+      StatusCode.permissionDenied,
+    );
+    const forged = original.encode();
+    forged[forged.length - 1] = (forged[forged.length - 1] as number) ^ 1;
+    await rejectsWith(client.renew({ current: Codec.decode(forged) }), StatusCode.unauthenticated);
+    // A naming service without an issuer does not renew.
+    const plain = Mesh.start({ withIssuer: false, payloadVerifier: realVerifier });
+    const other = join(worker, plain);
+    await until(() => other.isConnected);
+    await rejectsWith(other.renew(), StatusCode.unimplemented);
+    // Not connected.
+    const idle = new NamingClient(async () => mesh.link(worker));
+    addTearDown(() => idle.close());
+    await rejectsWith(idle.renew(), StatusCode.unavailable);
+  });
 
   test(
     'a payload credential is renewed in place; one that is not ends its channel, and only ' +
