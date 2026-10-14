@@ -56,7 +56,12 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
     await cleanup();
   }
+  // Every node of the test is closed: each released its mem:// ids.
+  const leaked = registry.ids;
   registry = new MemoryEndpointTable();
+  if (leaked.length > 0) {
+    throw new Error(`memory listeners leaked: ${leaked.join(', ')}`);
+  }
 });
 
 /** Runs [cleanup] after the current test. */
@@ -73,6 +78,11 @@ export function node(options: SwitchboardOptions = {}): Switchboard {
   });
   onCleanup(() => s.close());
   return s;
+}
+
+/** The `mem://` registry of the nodes of the current test. */
+export function memoryRegistry(): MemoryEndpointTable {
+  return registry;
 }
 
 /** The runtime of the nodes of the current test. */
