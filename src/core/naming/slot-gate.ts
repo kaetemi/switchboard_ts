@@ -5,6 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { ChannelAddress, ServiceAddress } from '../address/index.ts';
+import { hexString } from '../bytes.ts';
 import type { MuxChannel } from '../mux/contract.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
@@ -260,7 +261,7 @@ export interface SlotGateOptions {
 
 /** A channel a gate forwards the requests for one slot that carry one credential on, opened to the new owner with that credential. */
 class Forward {
-  /** The credential as a string, one character per byte. */
+  /** The credential in hex. */
   readonly key: string;
   /** The application payload of the channel's OPEN. */
   readonly payload: Uint8Array;
@@ -862,7 +863,7 @@ export class SlotGate implements SlotHandler {
     this.#queuedRequests++;
     const credential = payload ?? this.#arrivalPayload(message);
     // One forwarding channel per distinct credential: the bytes as the key.
-    const key = String.fromCharCode(...credential);
+    const key = hexString(credential);
     let f = s.forwards.get(key);
     if (f === undefined) {
       f = new Forward(key, credential.slice());
@@ -1576,9 +1577,9 @@ function closeForward(f: Forward): void {
 export class SlotGates implements SlotHandler {
   readonly #gates = new Map<string, SlotGate>();
 
-  /** The gates, by type key (`Name.key`); a read-only view. */
+  /** The gates, by type key (`Name.key`): a copy. */
   get gates(): ReadonlyMap<string, SlotGate> {
-    return this.#gates;
+    return new Map(this.#gates);
   }
 
   /** The gate of [type], or undefined. */
