@@ -14,6 +14,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  */
 
 import { concatBytes } from '../bytes.ts';
+import { StatusCode, SwitchboardError } from '../status.ts';
 import { type Clock, systemClock, type TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import { type Logger, type LogLevel, noopLogger } from '../util/logger.ts';
@@ -164,6 +165,12 @@ export class StreamTransport implements FrameTransport {
   #outputClose: Promise<void> | undefined;
   #readyWaiter: Deferred<void> | undefined;
   #watchingReady = false;
+  #writableController: WritableStreamDefaultController | undefined;
+  // Whether the user of `writable` closed or aborted it: the output then
+  // ends as asked, and its `closed` settles that way.
+  #closeAsked = false;
+  // Why the output ended when the transport ended it on its own.
+  #outputEndReason: unknown;
 
   /**
    * Starts the transport over [input] and [output] and writes the preamble.
@@ -203,12 +210,20 @@ export class StreamTransport implements FrameTransport {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
+      start: (controller) => {
+        this.#writableController = controller;
+      },
       write: (frame) => this.#send(frame),
-      close: () => this.#closeLocal(),
+      close: () => {
+        this.#closeAsked = true;
+        return this.#closeLocal();
+      },
       abort: () => {
+        this.#closeAsked = true;
         void this.#closeLocal();
       },
     });
+    void this.#outputFinished.promise.then(() => this.#onOutputFinished());
     this.#write(StreamFraming.encodePreamble());
   }
 
@@ -269,6 +284,9 @@ export class StreamTransport implements FrameTransport {
       return;
     }
     this.#aborted = true;
+    this.#noteOutputEnd(
+      SwitchboardError.of(StatusCode.connectionLost, 'the transport was aborted'),
+    );
     this.#log('debug', `aborting with ${this.#outQueuedBytes} bytes unwritten`);
     this.#outputClosed = true;
     this.#dropOutput();
@@ -407,6 +425,9 @@ export class StreamTransport implements FrameTransport {
     if (this.#decoder.bufferedBytes > 0) {
       this.#log('debug', `input ended inside a frame (${this.#decoder.bufferedBytes} bytes)`);
     }
+    this.#noteOutputEnd(
+      SwitchboardError.of(StatusCode.connectionLost, 'the peer closed the connection'),
+    );
     this.#end();
     void this.#closeOutput();
   }
@@ -427,6 +448,7 @@ export class StreamTransport implements FrameTransport {
       return;
     }
     this.#ended = true;
+    this.#noteOutputEnd(error);
     if (drain) {
       this.#startLinger();
     } else {
@@ -678,6 +700,7 @@ export class StreamTransport implements FrameTransport {
       return;
     }
     this.#log('debug', `output gone: ${error}`, error);
+    this.#noteOutputEnd(error);
     this.#outputClosed = true;
     this.#dropOutput();
     this.#signalReady();
@@ -712,6 +735,28 @@ export class StreamTransport implements FrameTransport {
       this.#clock.clearTimeout(timer);
     }
     this.#outputClosed = true;
+  }
+
+  /** Records why the output ends, the first reason given. */
+  #noteOutputEnd(reason: unknown): void {
+    this.#outputEndReason ??= reason;
+  }
+
+  /**
+   * The output has ended. When the transport ended it on its own (the
+   * peer closed, the connection failed, an abort), {@link writable} is
+   * errored with the reason, so that its `closed` settles and later writes
+   * are refused rather than dropped for ever; a close or an abort of the
+   * writable itself settles it as asked.
+   */
+  #onOutputFinished(): void {
+    if (this.#closeAsked) {
+      return;
+    }
+    this.#writableController?.error(
+      this.#outputEndReason ??
+        SwitchboardError.of(StatusCode.connectionLost, 'the transport closed'),
+    );
   }
 
   /** Local close: the readable ends after the frames already parsed; the output closes. */
