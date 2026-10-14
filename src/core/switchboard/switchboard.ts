@@ -305,8 +305,8 @@ function isIpAddress(host: string): boolean {
  * endpoints ({@link listenMemory}) and dials them, adopts connections
  * accepted elsewhere ({@link accept}, {@link adopt}), and dials further
  * schemes through the dialers of its runtime and the bindings registered
- * with {@link registerBinding}. `@polyverse/switchboard/node` adds TCP,
- * WebSocket and QUIC listeners and dialers; `@polyverse/switchboard/web`
+ * with {@link registerBinding}. `@kaetemi/switchboard/node` adds TCP,
+ * WebSocket and QUIC listeners and dialers; `@kaetemi/switchboard/web`
  * the browser's WebSocket and WebTransport. A URI fragment (the text form
  * of a service address, as in `ws://host/path#npc/1a2b`) is ignored for
  * connecting. An endpoint of one of the node's own listeners is reached

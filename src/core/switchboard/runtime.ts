@@ -14,8 +14,8 @@ import type { MemoryAcceptor } from '../transport/memory-endpoints.ts';
  * (`Switchboard` in this directory) is runtime neutral: it runs the frame
  * mux over the transports it is given, keeps in-process (`mem://`)
  * endpoints, and dials further schemes through the dialers and bindings of
- * its runtime. The entry points supply it: `@polyverse/switchboard/node`
- * adds TCP and the `ws` package, `@polyverse/switchboard/web` the browser's
+ * its runtime. The entry points supply it: `@kaetemi/switchboard/node`
+ * adds TCP and the `ws` package, `@kaetemi/switchboard/web` the browser's
  * WebSocket and WebTransport.
  */
 
