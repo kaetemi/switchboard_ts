@@ -25,6 +25,7 @@ export {
   type TalkFrameChannel,
   type TalkRawChannel,
 } from './talk-channel.ts';
+export { forwardMessage } from './talk-forward.ts';
 export {
   type TalkExtension,
   TalkFrame,
