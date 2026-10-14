@@ -24,12 +24,14 @@ import type {
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
+import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
 import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
 import {
   codeOf,
   currentRuntime,
   node as harnessNode,
+  overFrameMux,
   pump,
   rejectsWith,
   until,
@@ -264,8 +266,24 @@ describe('brokering', () => {
     await consumer.listenMemory();
     await rejectsWith(consumer.broker('npc/1'), StatusCode.unavailable);
     const { endpoint, intent } = request as { endpoint: string; intent: Uint8Array };
-    const late = await worker.dial(endpoint, { intent });
-    expect(codeOf(await late.done)).toBe('goingAway');
+    const dialled = new Deferred<MuxConnection>();
+    void (async () => {
+      for await (const connection of worker.connections) dialled.resolve(connection);
+    })();
+    const late = worker.dial(endpoint, { intent });
+    // The consumer recognises the intent it gave up on and sends GOAWAY
+    // once the IDENT verified.
+    const connection = await dialled.promise;
+    expect(codeOf(await connection.peerGoAwayStatus)).toBe('goingAway');
+    expect(codeOf(await connection.done)).toBe('goingAway');
+    if (overFrameMux()) {
+      // The GOAWAY overtakes the IDENT's confirmation, so the dial fails
+      // (as in Dart, naming_identity_test.dart).
+      await rejectsWith(late, StatusCode.unauthenticated);
+    } else {
+      // The toy mux confirms an IDENT at once.
+      expect(await late).toBe(connection);
+    }
   });
 
   test('a connection that is not the instance is refused UNAUTHENTICATED', async () => {

@@ -20,11 +20,12 @@ import type { MuxFactory } from '../switchboard/runtime.ts';
 import {
   installBulkRouting,
   isBulkAddress,
-  refuseBulk,
+  routeDispatchedBulk,
   talkOver,
 } from '../switchboard/talk-layer.ts';
 import { discardTransport } from '../switchboard/waits.ts';
-import { type TalkChannel, type TalkOptions, talkOptions } from '../talk/contract.ts';
+import { type TalkOptions, talkOptions } from '../talk/contract.ts';
+import type { TalkChannel } from '../talk/talk-channel.ts';
 import type { FrameTransport, TransportConnector } from '../transport/contract.ts';
 import { AsyncQueue } from '../util/async-queue.ts';
 import { type Clock, systemClock, type TimerHandle } from '../util/clock.ts';
@@ -965,8 +966,9 @@ export class ReconnectingClient implements AsyncDisposable {
       return;
     }
     if (isBulkAddress(address)) {
-      // The payload of a Talk message of a channel without a Talk layer.
-      refuseBulk(channel);
+      // The payload of a Talk message of a channel of this connection; the
+      // Talk layer routes those before `incoming`.
+      routeDispatchedBulk(channel, address);
       return;
     }
     if (this.#incomingCancelled || this.#incoming.isEnded) {
