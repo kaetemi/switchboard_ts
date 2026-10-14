@@ -12,9 +12,11 @@ import { createHash } from 'node:crypto';
 import {
   ChannelAddress,
   hexBytes,
+  type MuxChannel,
   Name,
   nativeQuic,
   nativeQuicAvailability,
+  type Resolver,
   Status,
   StatusCode,
   Switchboard,
@@ -24,6 +26,7 @@ import {
 } from '../../../src/node/index.ts';
 import type { PeerContext } from './context.ts';
 import type { NodeIdentity } from './identity.ts';
+import { NamingCommands, namingOps } from './mesh.ts';
 import {
   ArgumentProblem,
   boolArg,
@@ -64,8 +67,11 @@ export class Client {
   readonly #ctx: PeerContext;
   #node: Switchboard | undefined;
 
+  readonly #naming: NamingCommands;
+
   constructor(ctx: PeerContext) {
     this.#ctx = ctx;
+    this.#naming = new NamingCommands(ctx, (resolver) => this.#newNode(resolver));
   }
 
   #identity: NodeIdentity | undefined;
@@ -75,33 +81,49 @@ export class Client {
     this.#identity = identity;
   }
 
+  /** Whether {@link command} answers [op]. */
+  static answers(op: string): boolean {
+    return (
+      (clientOps as readonly string[]).includes(op) || (namingOps as readonly string[]).includes(op)
+    );
+  }
+
   get #client(): Switchboard {
-    if (this.#node === undefined) {
-      const ctx = this.#ctx;
-      const identity = this.#identity;
-      this.#node = new Switchboard({
-        localConnections: false,
-        muxOptions: ctx.config.mux,
-        talkOptions: ctx.config.talk,
-        credential: identity?.credential,
-        holderKey: identity?.holderKey,
-        verifier: identity?.verifier,
-        identifyOutgoing: ctx.config.identity.identifyOutgoing,
-        identityTimeout: ctx.config.identity.identityTimeout,
-        // Dials quic:// and https:// (WebTransport) without verifying the
-        // listener's self-signed certificate, as the Dart peer does.
-        ...(nativeQuicAvailability().available
-          ? { quic: nativeQuic(), quicBinding: { webTransportCertificateVerified: false } }
-          : {}),
-        ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
-      });
-    }
+    this.#node ??= this.#newNode(undefined);
     return this.#node;
+  }
+
+  /** A client node, as the shared one is, resolving with [resolver]. */
+  #newNode(resolver: Resolver | undefined): Switchboard {
+    const ctx = this.#ctx;
+    const identity = this.#identity;
+    return new Switchboard({
+      resolver,
+      localConnections: false,
+      muxOptions: ctx.config.mux,
+      talkOptions: ctx.config.talk,
+      credential: identity?.credential,
+      holderKey: identity?.holderKey,
+      verifier: identity?.verifier,
+      identifyOutgoing: ctx.config.identity.identifyOutgoing,
+      identityTimeout: ctx.config.identity.identityTimeout,
+      // Dials quic:// and https:// (WebTransport) without verifying the
+      // listener's self-signed certificate, as the Dart peer does.
+      ...(nativeQuicAvailability().available
+        ? { quic: nativeQuic(), quicBinding: { webTransportCertificateVerified: false } }
+        : {}),
+      ...(ctx.logger === undefined ? {} : { logger: ctx.logger }),
+    });
   }
 
   /** Runs the client command [op]. */
   async command(op: string, cmd: Json): Promise<unknown> {
     const h = this.#ctx.handles;
+    if ((namingOps as readonly string[]).includes(op)) {
+      return this.#naming.command(op, cmd, (channel) =>
+        this.#adoptTalk(channel, this.#ctx.trackConnection(channel.connection)),
+      );
+    }
     switch (op) {
       case 'connect': {
         const intent = cmd['intent'];
@@ -212,6 +234,12 @@ export class Client {
       connection = ctx.trackConnection(c, this.#client);
     }
     const ch = ctx.handles.get(connection, 'c', 'connection').open(openPayload(cmd));
+    return this.#adoptTalk(ch, connection);
+  }
+
+  /** [ch] as a Talk channel handle on [connection]'s, its messages reported and its requests refused. */
+  #adoptTalk(ch: MuxChannel, connection: string): Json {
+    const ctx = this.#ctx;
     const channel = ctx.trackChannel(ch, false);
     const talk = new TalkChannel(ch, ctx.config.talk);
     const handle = ctx.handles.add('t', talk);

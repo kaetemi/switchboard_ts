@@ -19,6 +19,7 @@ import 'package:switchboard_quic/switchboard_quic_native.dart';
 
 import 'context.dart';
 import 'identity.dart';
+import 'mesh.dart';
 import 'protocol.dart';
 import 'services.dart' show pattern;
 
@@ -59,7 +60,13 @@ class Client {
     _identity = identity;
   }
 
-  Switchboard get _client => _node ??= Switchboard(
+  Switchboard get _client => _node ??= _newNode(null);
+
+  late final NamingCommands _naming = NamingCommands(ctx, _newNode);
+
+  /// A client node, as [_client] is, resolving with [resolver].
+  Switchboard _newNode(Resolver? resolver) => Switchboard(
+    resolver: resolver,
     localConnections: false,
     muxOptions: ctx.config.mux,
     talkOptions: ctx.config.talk,
@@ -76,9 +83,19 @@ class Client {
     ],
   );
 
+  /// Whether [command] answers [op].
+  static bool answers(String op) =>
+      ops.contains(op) || NamingCommands.ops.contains(op);
+
   /// Runs the client command [op].
   Future<Object?> command(String op, Map<String, Object?> cmd) async {
     final h = ctx.handles;
+    if (NamingCommands.ops.contains(op)) {
+      return _naming.command(op, cmd, (channel) async {
+        final node = channel.connection;
+        return _adoptTalk(channel, ctx.trackConnection(node));
+      });
+    }
     switch (op) {
       case 'connect':
         final intent = cmd['intent'];
@@ -274,6 +291,13 @@ class Client {
     final ch = h
         .get<MuxConnection>(connection, 'connection')
         .open(_openPayload(cmd));
+    return _adoptTalk(ch, connection);
+  }
+
+  /// [ch] as a Talk channel handle on [connection]'s, its messages reported
+  /// and its requests refused.
+  Map<String, Object?> _adoptTalk(MuxChannel ch, String connection) {
+    final h = ctx.handles;
     final channel = ctx.trackChannel(ch, listen: false);
     final talk = TalkChannel(ch, options: ctx.config.talk);
     final handle = h.add('t', talk);

@@ -100,7 +100,6 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `mux` | Dart defaults | `maxFrameSize`, `maxChannels`, `shortIdsOnly`, `keepAliveIntervalMs` (0 disables), `keepAliveTimeoutMs`, `goAwayGraceMs`, `announceLimits`, `closeConfirmTimeoutMs`, `identityTimeoutMs`, `requireNamedIdent`, `initialWindow`, `awaitPeerLimits` |
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
 | `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
-
 | `identity` | none | what the peer presents and verifies (below) |
 
 The options apply to the listeners' connections and to the connections the client commands make.

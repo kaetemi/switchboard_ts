@@ -37,7 +37,12 @@ void registerService(
     'forward' => (incoming) => _serveForward(incoming, spec, ctx, client),
     _ => throw ArgumentError('unknown service behaviour ${spec.behaviour}'),
   };
-  node.registerService(type, handler, instance: spec.instance);
+  node.registerService(
+    type,
+    handler,
+    instance: spec.instance,
+    acceptAnyInstance: spec.anyInstance,
+  );
 }
 
 /// `forward`: every message of the channel is forwarded with

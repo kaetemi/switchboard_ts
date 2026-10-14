@@ -19,6 +19,7 @@ import type {
 } from '../../../src/node/index.ts';
 import type { PeerConfig } from './config.ts';
 import { identityJson } from './identity.ts';
+import type { NamingHandle } from './mesh.ts';
 import { errorJson, Handles, hex, type Output, statusJson } from './protocol.ts';
 
 /** What the handles name, by prefix. */
@@ -31,6 +32,8 @@ export interface HandleKinds extends Record<string, object> {
   t: TalkChannel;
   /** Stream requests. */
   s: TalkStream;
+  /** Naming clients. */
+  n: NamingHandle;
 }
 
 const closeTimeoutMs = 2000;
@@ -170,6 +173,9 @@ export class PeerContext {
             break;
           case 's':
             (object as TalkStream).cancel();
+            break;
+          case 'n':
+            await within((object as NamingHandle).close(), closeTimeoutMs);
             break;
         }
       } catch {

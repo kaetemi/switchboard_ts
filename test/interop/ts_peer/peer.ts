@@ -18,10 +18,11 @@ import {
   Switchboard,
   selfSignedCertificate,
 } from '../../../src/node/index.ts';
-import { Client, clientOps } from './client.ts';
+import { Client } from './client.ts';
 import { type PeerConfig, peerConfig } from './config.ts';
 import { PeerContext } from './context.ts';
 import { channelPolicy, nodeIdentity } from './identity.ts';
+import { MeshServices } from './mesh.ts';
 import { decodeKind, encodeKind, oracleKinds } from './oracle.ts';
 import {
   ArgumentProblem,
@@ -129,6 +130,7 @@ class Peer {
   readonly #watchdogSeconds: number;
   readonly #client: Client;
   #node!: Switchboard;
+  #mesh: MeshServices | undefined;
   #ready: Json = {};
   #stopping = false;
 
@@ -178,6 +180,7 @@ class Peer {
     for (const s of this.#ctx.config.services) {
       registerService(this.#node, s, this.#ctx, this.#client);
     }
+    this.#mesh = new MeshServices(node, ctx.config.mesh);
     this.#ready = {
       protocol: peerProtocolVersion,
       implementation: 'ts',
@@ -185,6 +188,7 @@ class Peer {
       pid: process.pid,
       oracle: oracleKinds,
     };
+    this.#mesh.listening(ctx.endpoints);
     this.#ctx.out.line(`READY ${JSON.stringify(this.#ready)}`);
     for (const signal of ['SIGTERM', 'SIGINT'] as const) {
       process.on(signal, () => void this.#stop());
@@ -289,7 +293,7 @@ class Peer {
       case 'encode':
         return encodeKind(requiredString(cmd, 'kind'), objectArg(cmd, 'fields') ?? {});
       default:
-        if ((clientOps as readonly string[]).includes(op)) {
+        if (Client.answers(op)) {
           return this.#client.command(op, cmd);
         }
         throw new ArgumentProblem(`unknown op ${op}`);
@@ -305,6 +309,7 @@ class Peer {
     try {
       await this.#ctx.closeAll();
       await this.#client.close();
+      await this.#mesh?.close();
       await this.#node.close();
     } catch (e) {
       process.stderr.write(`ts_peer: shutdown: ${e instanceof Error ? e.stack : e}\n`);

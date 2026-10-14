@@ -44,7 +44,10 @@ export function registerService(
     sink: () => {},
     forward: (incoming) => serveForward(incoming, spec, ctx, client),
   };
-  node.registerService(spec.type, handlers[spec.behaviour], { instance: spec.instance });
+  node.registerService(spec.type, handlers[spec.behaviour], {
+    instance: spec.instance,
+    acceptAnyInstance: spec.anyInstance,
+  });
 }
 
 /** Calls [handler] for every message of [talk], not awaited; ends quietly with it. */

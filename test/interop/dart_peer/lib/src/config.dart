@@ -10,6 +10,7 @@ library;
 import 'package:switchboard/core.dart';
 
 import 'identity.dart';
+import 'mesh.dart';
 import 'protocol.dart';
 
 /// The transports a peer can listen on.
@@ -23,6 +24,7 @@ class ServiceSpec {
     this.type,
     this.behaviour, {
     this.instance = 0,
+    this.anyInstance = false,
     this.targetEndpoint,
     this.targetType,
     this.targetInstance = 0,
@@ -37,6 +39,10 @@ class ServiceSpec {
 
   /// The instance id; 0 registers the type's default handler.
   final int instance;
+
+  /// Whether it also serves every instance of its type no other
+  /// registration serves (an instance the naming service assigned).
+  final bool anyInstance;
 
   /// `forward`: the endpoint forwarded to; null for this peer's first
   /// listener.
@@ -60,6 +66,7 @@ class PeerConfig {
     this.talk = const TalkOptions(),
     this.services = defaultServices,
     IdentityConfig? identity,
+    this.mesh = const MeshConfig.none(),
   }) : identity = identity ?? IdentityConfig.none();
 
   /// `echo`, `raw` and `sink` at instance 1.
@@ -89,6 +96,7 @@ class PeerConfig {
       identity: objectArg(json, 'identity') == null
           ? null
           : IdentityConfig.fromJson(objectArg(json, 'identity')!),
+      mesh: MeshConfig.fromJson(json),
       services: services == null
           ? defaultServices
           : [
@@ -116,12 +124,16 @@ class PeerConfig {
   /// What the peer presents and verifies.
   final IdentityConfig identity;
 
+  /// The naming service, proxy and relay the node serves.
+  final MeshConfig mesh;
+
   static ServiceSpec _service(Map<String, Object?> s) {
     final target = objectArg(s, 'target') ?? const {};
     return ServiceSpec(
       requiredString(s, 'type'),
       stringArg(s, 'behaviour') ?? 'echo',
       instance: intArg(s, 'instance') ?? 0,
+      anyInstance: boolArg(s, 'anyInstance'),
       targetEndpoint: stringArg(target, 'endpoint'),
       targetType: stringArg(target, 'type'),
       targetInstance: intArg(target, 'instance') ?? 0,

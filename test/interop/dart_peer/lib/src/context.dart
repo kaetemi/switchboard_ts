@@ -15,6 +15,7 @@ import 'package:switchboard/switchboard.dart';
 
 import 'config.dart';
 import 'identity.dart';
+import 'mesh.dart';
 import 'protocol.dart';
 
 /// Shared state of one peer process.
@@ -133,6 +134,8 @@ class PeerContext {
             await c.close().timeout(_closeTimeout, onTimeout: () {});
           case final TalkStream s:
             s.cancel();
+          case final NamingHandle n:
+            await n.close().timeout(_closeTimeout, onTimeout: () {});
         }
       } on Object catch (_) {
         // Already closed or failing: nothing left to release.

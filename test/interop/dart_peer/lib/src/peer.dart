@@ -21,6 +21,7 @@ import 'client.dart';
 import 'config.dart';
 import 'context.dart';
 import 'identity.dart';
+import 'mesh.dart';
 import 'oracle.dart';
 import 'protocol.dart';
 import 'services.dart';
@@ -86,6 +87,7 @@ class _Peer {
   final Duration watchdog;
   final Client client;
   late final Switchboard node;
+  late final MeshServices mesh;
   final List<QuicSwitchboardListener> _quicListeners = [];
   final List<QuicListener> _rawListeners = [];
   late final Map<String, Object?> _ready;
@@ -127,6 +129,7 @@ class _Peer {
     for (final s in ctx.config.services) {
       registerService(node, s, ctx, client);
     }
+    mesh = MeshServices(node, ctx.config.mesh);
     _ready = {
       'protocol': peerProtocolVersion,
       'implementation': 'dart',
@@ -134,6 +137,7 @@ class _Peer {
       'pid': pid,
       'oracle': oracleKinds,
     };
+    mesh.listening(ctx.endpoints);
     ctx.out.line('READY ${jsonEncode(_ready)}');
     for (final signal in [ProcessSignal.sigterm, ProcessSignal.sigint]) {
       try {
@@ -249,7 +253,7 @@ class _Peer {
           objectArg(cmd, 'fields') ?? const {},
         );
       default:
-        if (Client.ops.contains(op)) {
+        if (Client.answers(op)) {
           return client.command(op, cmd);
         }
         throw ArgumentError('unknown op $op');
@@ -273,6 +277,7 @@ class _Peer {
     try {
       await ctx.closeAll();
       await client.close();
+      await mesh.close();
       for (final l in _quicListeners) {
         await l.close();
       }

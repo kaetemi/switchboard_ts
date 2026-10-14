@@ -56,6 +56,12 @@ export interface PeerConfig {
   services?: readonly ServiceConfig[];
   /** What the peer presents and verifies; default nothing. */
   identity?: IdentityConfig;
+  /** Serve a naming service as `_ns` instance 1; `assignmentHoldMs` defaults to 0. */
+  naming?: { assignmentHoldMs?: number };
+  /** Proxy [types] (default `echo`) to their instance 1 at [endpoint]. */
+  proxy?: { endpoint: string; types?: readonly string[]; revealOwners?: boolean };
+  /** Relay `_relay` channels for [types] (default `echo`) to their instance 1 at [endpoint]. */
+  relay?: { endpoint: string; types?: readonly string[] };
 }
 
 /** A credential a peer presents, issued at its start by one of the shared test authorities. */
@@ -126,6 +132,8 @@ export interface ServiceConfig {
   type: string;
   behaviour?: 'echo' | 'raw' | 'sink' | 'forward';
   instance?: number;
+  /** Also serve every instance of the type no other registration serves. */
+  anyInstance?: boolean;
   /** `forward`: the service forwarded to; the endpoint defaults to the peer's first listener. */
   target?: { endpoint?: string; type?: string; instance?: number };
 }

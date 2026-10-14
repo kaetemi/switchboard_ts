@@ -9,6 +9,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import type { MuxOptions, TalkOptions } from '../../../src/node/index.ts';
 import { type IdentityConfig, identityConfig } from './identity.ts';
+import { type MeshConfig, meshConfig } from './mesh.ts';
 import {
   ArgumentProblem,
   arrayArg,
@@ -47,6 +48,8 @@ export interface ServiceSpec {
   readonly behaviour: (typeof behaviours)[number];
   /** The instance id; 0 registers the type's default handler. */
   readonly instance: number;
+  /** Whether it also serves every instance of its type no other registration serves. */
+  readonly anyInstance: boolean;
   /** `forward`: what it forwards to. */
   readonly target: ForwardTarget;
 }
@@ -65,15 +68,17 @@ export interface PeerConfig {
   readonly services: readonly ServiceSpec[];
   /** What the peer presents and verifies. */
   readonly identity: IdentityConfig;
+  /** The naming service, proxy and relay the node serves. */
+  readonly mesh: MeshConfig;
 }
 
 const noTarget: ForwardTarget = { endpoint: undefined, type: undefined, instance: 0 };
 
 /** `echo`, `raw` and `sink` at instance 1. */
 export const defaultServices: readonly ServiceSpec[] = [
-  { type: 'echo', behaviour: 'echo', instance: 1, target: noTarget },
-  { type: 'raw', behaviour: 'raw', instance: 1, target: noTarget },
-  { type: 'sink', behaviour: 'sink', instance: 1, target: noTarget },
+  { type: 'echo', behaviour: 'echo', instance: 1, anyInstance: false, target: noTarget },
+  { type: 'raw', behaviour: 'raw', instance: 1, anyInstance: false, target: noTarget },
+  { type: 'sink', behaviour: 'sink', instance: 1, anyInstance: false, target: noTarget },
 ];
 
 /** Reads the JSON configuration; absent keys keep their defaults. */
@@ -94,6 +99,7 @@ export function peerConfig(json: Json): PeerConfig {
     mux: muxConfig(objectArg(json, 'mux') ?? {}),
     talk: talkConfig(objectArg(json, 'talk') ?? {}),
     identity: identityConfig(objectArg(json, 'identity')),
+    mesh: meshConfig(json),
     services:
       services === undefined
         ? defaultServices
@@ -108,6 +114,7 @@ export function peerConfig(json: Json): PeerConfig {
               type: requiredString(spec, 'type'),
               behaviour: behaviour as ServiceSpec['behaviour'],
               instance: intArg(spec, 'instance') ?? 0,
+              anyInstance: boolArg(spec, 'anyInstance'),
               target: {
                 endpoint: stringArg(target, 'endpoint'),
                 type: stringArg(target, 'type'),
