@@ -19,14 +19,38 @@ Information for the lead and the other threads, not instructions.
   memory transport and the Dart interop both ways need the node's Talk layer
   (it throws UNIMPLEMENTED until Talk lands).
 
+## Slot routing and SlotGate (branch claude/slot-routing)
+
+- `SlotGate`, `SlotLifecycle`, `SlotGateState`, `SlotGates` in
+  `src/core/naming/slot-gate.ts` (the design's layout puts the gate in the
+  naming layer; Dart has it in `switchboard/`). Dart's named parameters
+  of `load`/`drain` are options objects (`SlotLoadOptions`,
+  `SlotDrainOptions`); the gate takes an injectable `clock` and `logger`
+  (default the node's). Ports of `slot_gate_test.dart` (53) and
+  `slot_gate_credential_test.dart` (6), and the two sharding-client cases
+  that waited for the gate.
+- The node routes by slot (`openChannelToSlot`, `openTalkToSlot`,
+  `resolveSlotOwner`, slot-routed `selectAndConnect`) and the proxy
+  retries MOVED through `slot-layer.ts`; `isSlotResolver` moved to
+  `src/core/switchboard/resolver.ts`; `StaticResolver` is a
+  `SlotResolver`. `slot-routing.test.ts` runs the node's routing in full.
+- `SlotChannel` follows Talk's bulk route to its replacement itself
+  (`followBulkTarget`, Dart `BulkRoutes.follow`); the `onReplaced` option
+  is gone.
+- The naming tests run over real `TalkChannel`s
+  (`test/support/naming/talk-link.ts`); the fake pair stays for the four
+  `naming.test.ts` cases that need synchronous delivery.
+  `naming-bulk.test.ts` runs over nodes and checks `isBulk` again.
+- The node-side identity cases run over real nodes in
+  `naming-identity-nodes.test.ts`, with a test-local stand-in for
+  `MeshNode.join`/`publish` until `MeshNode` lands.
+
 ## Contract change for the lead (own commit 4d82321)
 
 - `SlotResolver extends Resolver` in `src/core/switchboard/contract.ts`:
   `slotTable(type)`, `slotOwner(type, slot)`, `slotOwners(type)`,
-  `slotEvents`, `locateSlot(type, slot)`. `isSlotResolver(resolver)` lives in
-  `src/core/naming/slot-reopen.ts`; the node thread may move it beside the
-  contract when it wires `openChannelToSlot` / slot-routed
-  `selectAndConnect`.
+  `slotEvents`, `locateSlot(type, slot)`. `isSlotResolver(resolver)` now
+  lives beside `isBrokeringResolver` in `src/core/switchboard/resolver.ts`.
 
 ## Seams other threads will meet
 
@@ -34,17 +58,10 @@ Information for the lead and the other threads, not instructions.
   MOVED retry Dart shares between `openChannelToSlot` and the proxy. It uses
   `switchboard.openSelected`, `resolver`, `clock`, `logger`,
   `slotRefreshTimeout`.
-- `SlotChannel` (a `MuxChannelCarrier`) takes `onReplaced(previous, next)`
-  where Dart calls `BulkRoutes.follow`; the Talk thread's bulk routes can
-  hook it until Talk PR 3 lands. Its held bytes default to
-  `defaultMuxOptions.initialWindow` (64 KiB) as in Dart.
-- `test/unit/naming/slot-routing.test.ts` has a test-local
-  `openChannelToSlot` standing in for the node's; the routing group is
-  `test.todo` until the node routes by slot.
-- The naming tests run over an in-memory Talk pair
-  (`test/support/naming/fake-talk.ts`) built to the landed Talk contract; it
-  has no item windows (`grant()` throws). Swap for the real pair when it
-  lands.
+- `SlotChannel` (a `MuxChannelCarrier`) calls Talk's `followBulkTarget`
+  when a replacement takes over, as Dart calls `BulkRoutes.follow`. Its
+  held bytes default to `defaultMuxOptions.initialWindow` (64 KiB) as in
+  Dart.
 - `TestClock` (`test/support/naming/test-clock.ts`) ports fake_async
   (`await clock.elapse(ms)`); the node thread's `SteppingClock` is similar,
   one could absorb the other later.
