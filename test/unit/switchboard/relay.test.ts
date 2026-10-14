@@ -741,7 +741,7 @@ describe('relaying', () => {
   it('openTalkToSlot reaches a slot owner through the relay', async () => {
     const mesh = new FakeMesh();
     await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     // A type without a slot table: the slot picks among the instances.
     const slotChannel = await c.openChannelToSlot(workerType, 5);
