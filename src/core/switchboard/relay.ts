@@ -114,7 +114,7 @@ export interface RelayServiceOptions {
  *   verifier,
  *   expectedIdentityFor: (endpoint) => (endpoint === namingEndpoint ? 'ns' : undefined),
  * });
- * await node.listenTcp({ host: '0.0.0.0', port: 9400, policy: ChannelPolicies.scoped() });
+ * await node.listenTcp('0.0.0.0', 9400, { policy: ChannelPolicies.scoped() }); // the Node entry's node
  * const mesh = MeshNode.join(node, namingEndpoint);
  * await mesh.publishRelay(new RelayService(node));
  * ```

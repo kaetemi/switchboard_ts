@@ -29,9 +29,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { afterAll, describe, expect, onTestFinished, test } from 'vitest';
 import { ChannelAddress } from '../../src/core/address/index.ts';
 import { bytesEqual, utf8Decode, utf8Encode } from '../../src/core/bytes.ts';
-import { CredentialKind, Right, type Scope } from '../../src/core/identity/contract.ts';
+import { CredentialKind, Right } from '../../src/core/identity/contract.ts';
 import { Credential } from '../../src/core/identity/credential.ts';
-import type { CredentialIssuer } from '../../src/core/identity/credential-issuer.ts';
+import { CredentialIssuer } from '../../src/core/identity/credential-issuer.ts';
 import { CredentialVerifier } from '../../src/core/identity/credential-verifier.ts';
 import { Ed25519HolderKey } from '../../src/core/identity/holder-key.ts';
 import { Scope as CredentialScope } from '../../src/core/identity/scope.ts';
@@ -52,6 +52,7 @@ import {
 } from '../../src/node/index.ts';
 import {
   authority,
+  authoritySeed,
   hmacAuthority,
   issueCredential,
   rogue,
@@ -478,31 +479,25 @@ describe.skipIf(!availability.available)(
     }
 
     test('the design example: identity, scoped policy, QUIC on Node', async () => {
-      // The free variables of the example: the mesh authority's issuer, the
-      // node's scopes and holder key, and a verifier of the authority.
-      const holderKey = await Ed25519HolderKey.generate();
-      const scopes: readonly Scope[] = [CredentialScope.of(Right.open, '*')];
-      const issuer = {
-        issueNode: (identity: string, scopes: readonly Scope[]) =>
-          authority.issue({
-            kind: CredentialKind.node,
-            identity,
-            scopes,
-            holderKey: holderKey.publicKey,
-          }),
-      };
-      const verifier = new CredentialVerifier();
-      await verifier.addIssuer(authority);
-
+      // The free variable of the example is the authority's seed (the fixture's).
       // docs/design.md section 2, "Identity, scoped policy, QUIC on Node":
+      const issuer = await CredentialIssuer.ed25519FromSeed('auth1', authoritySeed);
+      const holderKey = await Ed25519HolderKey.generate();
+      const verifier = new CredentialVerifier({ ed25519Keys: { auth1: await issuer.publicKey() } });
+
       const node = new Switchboard({
-        credential: await issuer.issueNode('edge-1', scopes),
+        credential: await issuer.issue({
+          kind: CredentialKind.node,
+          identity: 'edge-1',
+          scopes: [CredentialScope.of(Right.open, '*')],
+          holderKey: holderKey.publicKey,
+        }),
         holderKey,
         verifier,
         quic: nativeQuic(),
       });
       const quic = await node.listenQuic('0.0.0.0', 4433, {
-        certificate: await selfSignedCertificate('edge.example.com'),
+        certificate: selfSignedCertificate('edge.example.com'),
         policy: ChannelPolicies.scoped(),
       });
       // End of the example.
