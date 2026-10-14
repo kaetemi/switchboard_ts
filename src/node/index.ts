@@ -5,7 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 /**
- * `@polyverse/switchboard/node`: the server-runtime parts, for Node.js,
+ * `@kaetemi/switchboard/node`: the server-runtime parts, for Node.js,
  * Bun and Deno (through their `node:` compatibility): the TCP stream
  * transport, the WebSocket server transport, the `Switchboard` node and
  * its listeners, `MeshNode`, `PeerSet`, the proxy, the relay, the

@@ -13,7 +13,7 @@ import type { TalkChannel, TalkOptions } from '../talk/contract.ts';
 
 /**
  * What the Switchboard layer (wiki page "Polyverse Switchboard Addressing
- * and Dispatch") shares between the node (`@polyverse/switchboard/node`),
+ * and Dispatch") shares between the node (`@kaetemi/switchboard/node`),
  * the reconnecting client, the naming client and the proxies. The
  * `Switchboard` node itself is the "node, naming and sharding" thread's.
  */
