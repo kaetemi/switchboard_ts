@@ -11,10 +11,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // mux's flow control, LIMITS, close confirmation or output scheduler (and
 // the bulk payloads that go bulk by the channel's window) run over the
 // frame mux only.
-//
-// Not ported yet: the groups "proxyHandler with slot tables" and
-// "proxyHandler: channels without a shard slot" (Dart `proxy_test.dart`
-// from line 1338), which need the node's slot routing (`slot-layer.ts`).
+// The groups "proxyHandler with slot tables" and "proxyHandler: channels
+// without a shard slot" run over `mem` listeners where Dart uses TCP.
 
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
@@ -32,7 +30,13 @@ import {
   MuxLimits,
 } from '../../../src/core/mux/mux-frame.ts';
 import { Name } from '../../../src/core/name.ts';
-import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
+import {
+  MovedStatus,
+  SlotEntry,
+  SlotMode,
+  SlotSpace,
+  serviceRecord,
+} from '../../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, statusCodeName } from '../../../src/core/status.ts';
 import type {
   ChannelPolicy,
@@ -45,7 +49,9 @@ import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { TalkBulkOpen, TalkChannel, type TalkMessage } from '../../../src/core/talk/index.ts';
 import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
+import { systemClock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Frames, framesOf, nextText, Pull, pattern } from '../../support/node/channels.ts';
 import { GatedTransport } from '../../support/node/gated-transport.ts';
 import {
@@ -1195,9 +1201,14 @@ describe('proxyHandler authorize', () => {
     authorize: (
       incoming: IncomingChannel,
     ) => ChannelAddress | null | undefined | Promise<ChannelAddress | null | undefined>,
-    options: { authorizeTimeout?: number; budget?: number } = {},
+    options: { authorizeTimeout?: number; budget?: number; clock?: ManualClock } = {},
   ): Promise<void> {
-    const proxy = node();
+    // With [options.clock], the proxy's own timers (authorizeTimeout) run on
+    // it, its connections on the system clock.
+    const proxy =
+      options.clock === undefined
+        ? node()
+        : node({ clock: options.clock, muxOptions: { ...fast, clock: systemClock } });
     proxy.catchAll = proxyHandler(proxy, {
       authorize,
       authorizeTimeout: options.authorizeTimeout ?? 10_000,
@@ -1254,11 +1265,27 @@ describe('proxyHandler authorize', () => {
     const pending = new Promise<ChannelAddress>((resolve) => {
       answer = resolve;
     });
-    await start(() => pending, { authorizeTimeout: 30, budget: 1 });
+    // The timeout runs on the proxy's own clock (Dart: 30 ms of real time),
+    // so that the second channel always arrives while the first one is
+    // still being authorized.
+    const clock = new ManualClock();
+    let asked = 0;
+    await start(
+      () => {
+        asked++;
+        return pending;
+      },
+      { authorizeTimeout: 30, budget: 1, clock },
+    );
     const first = await client.openChannel(chat);
-    await pump();
+    await until(() => asked === 1);
     const second = await client.openChannel(chat);
     expectCode(await second.done, StatusCode.resourceExhausted);
+    expect(asked).toBe(1);
+    clock.advance(29);
+    await pump();
+    expect(first.state).toBe('open');
+    clock.advance(1);
     expectCode(await first.done, StatusCode.unauthenticated);
     // The late answer is ignored.
     answer(new ChannelAddress({ type: chat }));
@@ -1287,5 +1314,664 @@ describe('proxyHandler authorize', () => {
     await pump();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(atBackend).toHaveLength(0);
+  });
+});
+
+/**
+ * A static resolver whose `resolve` waits for [gate], if set: a resolver
+ * that has not synced yet. [waiting] resolves when a resolve waits.
+ */
+class Gated extends StaticResolver {
+  gate: Deferred<void> | undefined;
+  waiting = new Deferred<void>();
+
+  override async resolve(type: Name): Promise<ServiceRecord[]> {
+    const gate = this.gate;
+    if (gate !== undefined && !gate.isSettled) {
+      this.waiting.resolve();
+      await gate.promise;
+    }
+    return super.resolve(type);
+  }
+}
+
+/** A static resolver whose `LOCATE` answers are scripted, and whose `resolve` waits as {@link Gated}'s. */
+class Locating extends Gated {
+  readonly located: number[] = [];
+  answer: (slot: number) => SlotEntry | undefined | Promise<SlotEntry | undefined> = () =>
+    undefined;
+
+  override async locateSlot(_type: Name, slot: number): Promise<SlotEntry | undefined> {
+    this.located.push(slot);
+    return this.answer(slot);
+  }
+}
+
+/** Resolves with nothing once [channel] delivered a subframe or ended, whichever is first. */
+function firstOutcome(channel: MuxChannel): Promise<void> {
+  const reader = channel.readable.getReader();
+  return Promise.race([
+    reader.read().then(
+      () => {},
+      () => {},
+    ),
+    channel.done.then(() => {}),
+  ]);
+}
+
+describe('proxyHandler with slot tables', () => {
+  const zone = Name.of('zone');
+  let modes: Map<number, string>;
+  let opened: Map<number, ChannelAddress[]>;
+  let ended: Map<number, Status[]>;
+  let table: Locating;
+  let proxy: Switchboard;
+  let client: Switchboard;
+
+  /**
+   * The proxy, with [budget] channels per client connection, the other
+   * options of `proxyHandler` and [options] for its connections, and a
+   * client of it. With [clock], the proxy's own timers (the LOCATE budget,
+   * slot routing) run on it, its connections on the system clock.
+   */
+  async function startProxy(
+    init: {
+      budget?: number;
+      revealOwners?: boolean;
+      allowExplicitInstance?: boolean;
+      maxLocates?: number;
+      refill?: number;
+      options?: Partial<MuxOptions>;
+      clock?: ManualClock;
+    } = {},
+  ): Promise<void> {
+    const options = { ...fast, ...init.options };
+    proxy =
+      init.clock === undefined
+        ? node({ muxOptions: options, slotRefreshTimeout: 500 })
+        : node({
+            muxOptions: { ...options, clock: systemClock },
+            slotRefreshTimeout: 500,
+            clock: init.clock,
+          });
+    proxy.catchAll = proxyHandler(proxy, {
+      resolver: table,
+      maxChannelsPerConnection: init.budget ?? 256,
+      revealOwners: init.revealOwners ?? false,
+      allowExplicitInstance: init.allowExplicitInstance ?? false,
+      maxLocatesPerConnection: init.maxLocates ?? 32,
+      locateRefillInterval: init.refill ?? 1000,
+    });
+    const proxyUri = await proxy.listenMemory();
+    client = node({ resolver: new EndpointResolver(proxyUri), defaultPayload: bytes('player') });
+  }
+
+  /**
+   * A backend `zone/id` that, by its mode: greets (`<id> <shard>`) and
+   * echoes (`<id>:<data>`); rejects with MOVED at once
+   * (`moved:<owner>:<epoch>`, `moved:` naming none); opens a bulk channel,
+   * then rejects with MOVED (`bulkMoved:...`); rejects with MOVED once data
+   * arrived (`movedAfter:...`); greets, then rejects with MOVED
+   * (`greetMoved:...`); closes with RELOCATED once data arrived
+   * (`relocatedAfter:...`); answers Talk requests (`talk`).
+   */
+  async function backend(id: number): Promise<ServiceRecord> {
+    const sb = node();
+    const atBackend: ChannelAddress[] = [];
+    const endedAt: Status[] = [];
+    opened.set(id, atBackend);
+    ended.set(id, endedAt);
+    modes.set(id, 'greet');
+    sb.registerService(
+      zone,
+      (incoming) => {
+        atBackend.push(incoming.address);
+        const channel = incoming.channel;
+        void channel.done.then((status) => endedAt.push(status));
+        const [mode, ...rest] = (modes.get(id) ?? 'greet').split(':');
+        const fields =
+          rest.length === 2
+            ? new MovedStatus({ owner: Number(rest[0]), epoch: Number(rest[1]) })
+            : MovedStatus.unknown;
+        const moved = fields.toStatus();
+        switch (mode) {
+          case 'greet': {
+            void channel.send(bytes(`${id} ${incoming.address.shard}`));
+            void (async () => {
+              try {
+                for await (const d of channel.readable) {
+                  void channel.send(bytes(`${id}:${utf8Decode(d)}`)).catch(() => {});
+                }
+              } catch {
+                // The channel ended.
+              }
+            })();
+            break;
+          }
+          case 'moved':
+            void incoming.reject(moved);
+            break;
+          case 'bulkMoved':
+            channel.openAfter(new TalkBulkOpen(channel.id, 1).encode());
+            void (async () => {
+              await channel.connection.ping();
+              await pump();
+              await incoming.reject(moved);
+            })();
+            break;
+          case 'movedAfter':
+            void channel.readable
+              .getReader()
+              .read()
+              .then(() => incoming.reject(moved));
+            break;
+          case 'greetMoved':
+            void channel.send(bytes(`${id} ${incoming.address.shard}`));
+            void incoming.reject(moved);
+            break;
+          case 'relocatedAfter':
+            void channel.readable
+              .getReader()
+              .read()
+              .then(() => incoming.reject(fields.toStatus({ relocated: true })));
+            break;
+          case 'talk':
+            void incoming.talk().serve((m) => {
+              if (m.procedureName === 'BIG') {
+                void m.reply(pattern(200_000));
+              } else {
+                void m.reply(`${id} ${m.payload.length} ${m.isBulk}`);
+              }
+            });
+            break;
+        }
+      },
+      { instance: id },
+    );
+    const uri = await sb.listenMemory();
+    return serviceRecord(new ServiceAddress(zone, id), { endpoints: [uri] });
+  }
+
+  beforeEach(async () => {
+    modes = new Map();
+    opened = new Map();
+    ended = new Map();
+    table = new Locating([await backend(1), await backend(2)]);
+    onCleanup(() => table.close());
+    table.defineSlots(new SlotSpace(zone, { count: 8, mode: SlotMode.managed }));
+    await startProxy();
+  });
+
+  /** A plain channel through the proxy: the client does not retry. */
+  function open(slot: number): Promise<MuxChannel> {
+    return client.openChannel(new ServiceAddress(zone), { shard: slot });
+  }
+
+  function openedAt(id: number): ChannelAddress[] {
+    return opened.get(id) ?? [];
+  }
+
+  it('routes to the owner, the old owner while migrating', async () => {
+    table.setSlot(zone, 2, SlotEntry.owned(2, { epoch: 1 }));
+    table.setSlot(zone, 3, SlotEntry.migrating(1, 2, { epoch: 4 }));
+    const channel = await open(2);
+    expect(await nextText(channel)).toBe('2 2');
+    expect(openedAt(2).map((a) => a.instance)).toEqual([2]);
+    expect(openedAt(2)[0]?.payload).toEqual(bytes('player'));
+    await channel.close();
+    const migrating = await open(3);
+    expect(await nextText(migrating)).toBe('1 3');
+    await migrating.close();
+  });
+
+  it('a free slot: located in a managed space, UNAVAILABLE in a static one', async () => {
+    table.answer = () => SlotEntry.owned(2, { epoch: 1 });
+    const located = await open(5);
+    expect(await nextText(located)).toBe('2 5');
+    expect(table.located).toEqual([5]);
+    await located.close();
+    table.defineSlots(new SlotSpace(zone, { count: 8, mode: SlotMode.static }));
+    const refused = await open(5);
+    expectCode(await refused.done, StatusCode.unavailable);
+    expect(table.located).toEqual([5]);
+  });
+
+  it('MOVED before any data: retried once, unseen by the client', async () => {
+    await startProxy({ budget: 1 });
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'moved:2:2');
+    const channel = await open(4);
+    const answers = new Frames(channel);
+    expect(await answers.text()).toBe('2 4');
+    void channel.send(bytes('x'));
+    expect(await answers.text()).toBe('2:x');
+    expect(openedAt(1)).toHaveLength(1);
+    // The open payload is sent again, the instance set to the new owner.
+    expect(openedAt(2)).toHaveLength(1);
+    expect(openedAt(2)[0]?.instance).toBe(2);
+    expect(openedAt(2)[0]?.shard).toBe(4);
+    expect(openedAt(2)[0]?.payload).toEqual(bytes('player'));
+    // The retried channel is the same channel for the client's budget.
+    const second = await open(4);
+    expectCode(await second.done, StatusCode.resourceExhausted);
+    await channel.close();
+    expect((await channel.done).isOk).toBe(true);
+  });
+
+  if (overFrameMux()) {
+    it('bulk payloads through a slot channel', async () => {
+      table.setSlot(zone, 4, SlotEntry.owned(2, { epoch: 1 }));
+      modes.set(2, 'talk');
+      const talk = await client.openTalk(new ServiceAddress(zone), { shard: 4 });
+      expect(await ask(talk, 'PUT', pattern(150_000))).toBe('2 150000 true');
+      const big = await talk.request('BIG');
+      expect(big.isBulk).toBe(true);
+      expect(bytesEqual(await big.bytes(), pattern(200_000))).toBe(true);
+      await talk.close();
+    });
+  }
+
+  it('a bulk channel from the owner prevents a MOVED retry', async () => {
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'bulkMoved:2:2');
+    const channel = await open(4);
+    await firstOutcome(channel);
+    expect(openedAt(2)).toEqual([]);
+    expectCode(await channel.done, StatusCode.moved);
+  });
+
+  if (overFrameMux()) {
+    it('bulk payloads through a slot channel retried after MOVED', async () => {
+      table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+      modes.set(1, 'moved:2:2');
+      modes.set(2, 'talk');
+      const talk = await client.openTalk(new ServiceAddress(zone), { shard: 4 });
+      // The rejection and the retry happen before the first message.
+      await until(() => openedAt(2).length === 1, 5000);
+      expect(openedAt(2)).toHaveLength(1);
+      const answer = await talk.request('PUT', undefined, { bulk: [pattern(70_000)] });
+      expect(answer.text()).toBe('2 70000 true');
+      // A bulk payload the new owner opens comes back through the
+      // replacement channel.
+      const big = await talk.request('BIG');
+      expect(bytesEqual(await big.bytes(), pattern(200_000))).toBe(true);
+      await talk.close();
+    });
+  }
+
+  it('MOVED naming no owner: the proxy asks', async () => {
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    table.answer = () => SlotEntry.owned(2, { epoch: 2 });
+    modes.set(1, 'moved:');
+    const channel = await open(4);
+    expect(await nextText(channel)).toBe('2 4');
+    expect(table.located).toEqual([4]);
+  });
+
+  it('MOVED after data is forwarded to the client, owner hidden', async () => {
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'movedAfter:2:2');
+    const channel = await open(4);
+    void channel.send(bytes('x'));
+    const status = await channel.done;
+    expectCode(status, StatusCode.moved);
+    expect(MovedStatus.fromStatus(status).equals(MovedStatus.unknown)).toBe(true);
+    expect(status.encode()).toEqual(MovedStatus.unknown.encode());
+    expect(openedAt(2)).toEqual([]);
+
+    modes.set(1, 'greetMoved:2:2');
+    const greeted = await open(4);
+    expect((await framesOf(greeted)).map((frame) => utf8Decode(frame))).toEqual(['1 4']);
+    expectCode(await greeted.done, StatusCode.moved);
+    expect(openedAt(2)).toEqual([]);
+  });
+
+  it('RELOCATED reaches the client without its owner, never retried', async () => {
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'relocatedAfter:0xFFFFFFFFFF80:0x80000000');
+    const channel = await open(4);
+    void channel.send(bytes('x'));
+    const status = await channel.done;
+    expectCode(status, StatusCode.relocated);
+    expect(status.encode()).toEqual(MovedStatus.unknown.encode({ relocated: true }));
+    expect(openedAt(2)).toEqual([]);
+    // Not retried by a client either.
+    const slotChannel = await client.openChannelToSlot(zone, 4);
+    void slotChannel.send(bytes('y'));
+    expectCode(await slotChannel.done, StatusCode.relocated);
+    expect(slotChannel.retried).toBe(false);
+    expect(openedAt(1)).toHaveLength(2);
+  });
+
+  it('revealOwners: MOVED and RELOCATED byte for byte', async () => {
+    await startProxy({ revealOwners: true });
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'relocatedAfter:0xFFFFFFFFFF80:0x80000000');
+    const channel = await open(4);
+    void channel.send(bytes('x'));
+    expect((await channel.done).encode()).toEqual(
+      new MovedStatus({ owner: 0xffffffffff80, epoch: 0x80000000 }).encode({ relocated: true }),
+    );
+    modes.set(1, 'movedAfter:2:2');
+    const moved = await open(4);
+    void moved.send(bytes('x'));
+    const status = await moved.done;
+    expect(MovedStatus.fromStatus(status).equals(new MovedStatus({ owner: 2, epoch: 2 }))).toBe(
+      true,
+    );
+  });
+
+  it('an explicit instance is routed by the table unless allowed', async () => {
+    table.setSlot(zone, 4, SlotEntry.migrating(1, 2, { epoch: 4 }));
+    table.setSlot(zone, 5, SlotEntry.owned(1, { epoch: 2 }));
+    // The client names the instance that is taking the slot over.
+    const overtaking = await client.openChannel(new ServiceAddress(zone, 2), { shard: 4 });
+    expect(await nextText(overtaking)).toBe('1 4');
+    expect(openedAt(1).map((a) => a.instance)).toEqual([1]);
+    expect(openedAt(2)).toEqual([]);
+    await overtaking.close();
+    // No LOCATE for a slot with an owner.
+    expect(table.located).toEqual([]);
+    await startProxy({ allowExplicitInstance: true });
+    const explicit = await client.openChannel(new ServiceAddress(zone, 2), { shard: 5 });
+    expect(await nextText(explicit)).toBe('2 5');
+    expect(openedAt(2).map((a) => a.instance)).toEqual([2]);
+    await explicit.close();
+  });
+
+  it('a resolver still syncing: the table routes once it answered, the instance the client named ignored, LOCATEs counted', async () => {
+    await startProxy({ maxLocates: 1, refill: 0 });
+    table.answer = () => SlotEntry.owned(2, { epoch: 1 });
+    // Takes the only LOCATE token.
+    const located = await open(3);
+    expect(await nextText(located)).toBe('2 3');
+    await located.close();
+    // The resolver has not synced: no table yet.
+    table.removeSlots(zone);
+    const gate = new Deferred<void>();
+    table.gate = gate;
+    const named = await client.openChannel(new ServiceAddress(zone, 1), { shard: 1 });
+    await table.waiting.promise;
+    table.waiting = new Deferred<void>();
+    const free = await open(2);
+    await table.waiting.promise;
+    // It syncs: instance 2 owns slot 1, slot 2 is free.
+    table.defineSlots(new SlotSpace(zone, { count: 8, mode: SlotMode.managed }));
+    table.setSlot(zone, 1, SlotEntry.owned(2, { epoch: 1 }));
+    gate.resolve();
+    expect(await nextText(named)).toBe('2 1');
+    expect(openedAt(1)).toEqual([]);
+    expect(openedAt(2).map((a) => [a.instance, a.shard])).toEqual([
+      [2, 3],
+      [2, 1],
+    ]);
+    expectCode(await free.done, StatusCode.resourceExhausted);
+    expect(table.located).toEqual([3]);
+    await named.close();
+  });
+
+  if (overFrameMux()) {
+    it('what the client sends during a retry waits for credit: the proxy holds at most the window it grants', async () => {
+      await startProxy({ options: { initialWindow: 1000 } });
+      table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+      modes.set(1, 'moved:');
+      const asked = new Deferred<void>();
+      const answer = new Deferred<SlotEntry | undefined>();
+      onCleanup(() => answer.resolve(undefined));
+      table.answer = () => {
+        asked.resolve();
+        return answer.promise;
+      };
+      const channel = await open(4);
+      await asked.promise;
+      const messages = Array.from({ length: 250 }, (_, i) => bytes(`${i}`.padStart(300, '.')));
+      let taken = 0;
+      const sends = messages.map((message) => {
+        const sent = channel.send(message);
+        sent.then(
+          () => taken++,
+          () => {},
+        );
+        return sent;
+      });
+      await pump();
+      // The client sent what its window allows (1000 bytes, or 64 KiB if
+      // it opened the channel before the proxy's LIMITS arrived), each
+      // subframe costing its length plus 16; the proxy holds it and
+      // returns no credit, so the rest waits at the client.
+      expect(taken).toBeGreaterThan(0);
+      expect(taken * 316).toBeLessThanOrEqual(65_536);
+      expect(channel.canSend).toBe(true);
+      const frames = new Frames(channel);
+      const echoes = (async () => {
+        await frames.next();
+        const texts: string[] = [];
+        for (let i = 0; i < messages.length; i++) {
+          texts.push(await frames.text());
+        }
+        return texts;
+      })();
+      // The LOCATE answers: everything reaches the new owner, in order.
+      answer.resolve(SlotEntry.owned(2, { epoch: 2 }));
+      expect(await echoes).toEqual(messages.map((message) => `2:${utf8Decode(message)}`));
+      await Promise.all(sends);
+      expect(taken).toBe(messages.length);
+      expect(openedAt(2).map((a) => a.instance)).toEqual([2]);
+      await channel.close();
+    });
+  }
+
+  it('LOCATEs per client connection are bounded', async () => {
+    await startProxy({ maxLocates: 2, refill: 0 });
+    table.answer = () => SlotEntry.owned(2, { epoch: 1 });
+    for (const slot of [1, 2]) {
+      const located = await open(slot);
+      expect(await nextText(located)).toBe(`2 ${slot}`);
+      await located.close();
+    }
+    // The table still shows no owner: the next one would ask again.
+    const refused = await open(3);
+    expectCode(await refused.done, StatusCode.resourceExhausted);
+    expect(table.located).toEqual([1, 2]);
+    // A slot with an owner needs no LOCATE.
+    table.setSlot(zone, 3, SlotEntry.owned(1, { epoch: 1 }));
+    const owned = await open(3);
+    expect(await nextText(owned)).toBe('1 3');
+    await owned.close();
+    // Another client connection has its own budget.
+    const other = node({ resolver: client.resolver });
+    const fresh = await other.openChannel(new ServiceAddress(zone), { shard: 6 });
+    expect(await nextText(fresh)).toBe('2 6');
+    expect(table.located).toEqual([1, 2, 6]);
+  });
+
+  it('the LOCATE budget refills', async () => {
+    // On the proxy's own clock (Dart waits 150 ms of real time), so that a
+    // slow run cannot refill the bucket between the first two opens.
+    const clock = new ManualClock();
+    await startProxy({ maxLocates: 1, refill: 100, clock });
+    table.answer = () => SlotEntry.owned(2, { epoch: 1 });
+    expect(await nextText(await open(1))).toBe('2 1');
+    expectCode(await (await open(2)).done, StatusCode.resourceExhausted);
+    clock.advance(150);
+    expect(await nextText(await open(2))).toBe('2 2');
+    expect(table.located).toEqual([1, 2]);
+  });
+
+  it('a LOCATE that does not answer: UNAVAILABLE after slotRefreshTimeout', async () => {
+    const never = new Deferred<SlotEntry | undefined>();
+    onCleanup(() => never.resolve(undefined));
+    table.answer = () => never.promise;
+    const start = performance.now();
+    const channel = await open(1);
+    expectCode(await channel.done, StatusCode.unavailable);
+    expect(performance.now() - start).toBeGreaterThanOrEqual(450);
+    expect(table.located).toEqual([1]);
+  });
+
+  it('MOVED with nowhere else to go is forwarded', async () => {
+    table.setSlot(zone, 4, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'moved:');
+    table.answer = () => SlotEntry.owned(1, { epoch: 1 });
+    const channel = await open(4);
+    expectCode(await channel.done, StatusCode.moved);
+    // Only once.
+    modes.set(1, 'moved:2:2');
+    modes.set(2, 'moved:1:3');
+    const twice = await open(4);
+    expectCode(await twice.done, StatusCode.moved);
+    expect(openedAt(2)).toHaveLength(1);
+  });
+
+  it('a client reopening after MOVED reaches the owner', async () => {
+    table.setSlot(zone, 6, SlotEntry.owned(1, { epoch: 1 }));
+    modes.set(1, 'movedAfter:2:2');
+    const channel = await client.openChannelToSlot(zone, 6);
+    void channel.send(bytes('x'));
+    expectCode(await channel.done, StatusCode.moved);
+    expect(channel.retried).toBe(false);
+    // The client opens again; the proxy's table is still stale, and the
+    // proxy's own retry takes it to the owner the rejection names.
+    modes.set(1, 'moved:2:2');
+    table.setSlot(zone, 6, SlotEntry.owned(1, { epoch: 1 }));
+    const again = await client.openChannelToSlot(zone, 6);
+    expect(await nextText(again)).toBe('2 6');
+  });
+});
+
+describe('proxyHandler: channels without a shard slot', () => {
+  // Table-routed: zone and room (allowed by the proxy below), lobby (its
+  // allowNoSlot throws). No table: plain.
+  const zone = Name.of('zone');
+  const room = Name.of('room');
+  const lobby = Name.of('lobby');
+  const plain = Name.of('plain');
+  let opened: ChannelAddress[];
+  let table: Gated;
+  let client: Switchboard;
+
+  /** Instance [id] of every type: greets with `<type> <instance> <shard>` and closes. */
+  async function backend(id: number): Promise<ServiceRecord[]> {
+    const sb = node();
+    const uri = await sb.listenMemory();
+    return [zone, room, lobby, plain].map((type) => {
+      sb.registerService(
+        type,
+        (incoming) => {
+          const a = incoming.address;
+          opened.push(a);
+          void incoming.channel.send(bytes(`${a.type} ${a.instance} ${a.shard ?? 'null'}`));
+          void incoming.channel.close();
+        },
+        { instance: id },
+      );
+      return serviceRecord(new ServiceAddress(type, id), { endpoints: [uri] });
+    });
+  }
+
+  /** A proxy with [allowNoSlot] and [authorize], and {@link client} of it. */
+  async function startProxy(
+    init: {
+      allowNoSlot?: (type: Name) => boolean;
+      authorize?: (incoming: IncomingChannel) => ChannelAddress | undefined;
+    } = {},
+  ): Promise<void> {
+    const proxy = node();
+    proxy.catchAll = proxyHandler(proxy, {
+      resolver: table,
+      allowNoSlot: init.allowNoSlot,
+      authorize: init.authorize,
+    });
+    const proxyUri = await proxy.listenMemory();
+    client = node({ resolver: new EndpointResolver(proxyUri) });
+  }
+
+  beforeEach(async () => {
+    opened = [];
+    table = new Gated([...(await backend(1)), ...(await backend(2))]);
+    onCleanup(() => table.close());
+    for (const type of [zone, room, lobby]) {
+      table.defineSlots(new SlotSpace(type, { count: 8, mode: SlotMode.static }));
+      table.setSlot(type, 5, SlotEntry.owned(2, { epoch: 1 }));
+    }
+  });
+
+  /** The greeting of a new channel to [type] through the proxy, or its close status. */
+  async function greeting(
+    type: Name,
+    init: { instance?: number; shard?: number } = {},
+  ): Promise<string> {
+    const channel = await client.openChannel(new ServiceAddress(type, init.instance ?? 0), {
+      shard: init.shard,
+    });
+    const frames = await framesOf(channel);
+    if (frames.length > 0) {
+      return utf8Decode(frames[0] as Uint8Array);
+    }
+    const status = await channel.done;
+    return `closed ${codeOf(status)} ${status.reason}`;
+  }
+
+  const denied = 'closed permissionDenied permission denied';
+
+  it('refused unless allowNoSlot admits the type; an admitted one goes round robin with the instance filled in', async () => {
+    await startProxy({
+      allowNoSlot: (type) => {
+        if (type.equals(lobby)) throw new Error('broken filter');
+        return type.equals(room);
+      },
+    });
+    expect(await greeting(zone)).toBe(denied);
+    expect(await greeting(zone, { instance: 2 })).toBe(denied);
+    expect(await greeting(lobby)).toBe(denied);
+    expect(opened).toEqual([]);
+    const rooms: string[] = [];
+    for (let i = 0; i < 4; i++) rooms.push(await greeting(room));
+    expect(rooms).toEqual(['room 1 null', 'room 2 null', 'room 1 null', 'room 2 null']);
+    // An instance in the address is honoured, as for a type without a slot
+    // table.
+    expect(await greeting(room, { instance: 2 })).toBe('room 2 null');
+    // With a slot, every type is routed by its table.
+    expect(await greeting(zone, { shard: 5 })).toBe('zone 2 5');
+    expect(await greeting(lobby, { shard: 5 })).toBe('lobby 2 5');
+    expect(await greeting(plain)).toBe('plain 1 null');
+  });
+
+  it('the default refuses every table-routed type', async () => {
+    await startProxy();
+    expect(await greeting(zone)).toBe(denied);
+    expect(await greeting(room)).toBe(denied);
+    expect(opened).toEqual([]);
+    expect(await greeting(room, { shard: 5 })).toBe('room 2 5');
+    // Types without a slot table are not concerned.
+    expect(await greeting(plain)).toBe('plain 1 null');
+    expect(await greeting(plain)).toBe('plain 2 null');
+  });
+
+  it('a slot set by authorize routes the channel by the table', async () => {
+    await startProxy({
+      authorize: (incoming) =>
+        incoming.address.type?.equals(zone) === true
+          ? incoming.address.with({ shard: 5 })
+          : incoming.address,
+    });
+    // The client sends no slot; the address authorize returns has one.
+    expect(await greeting(zone)).toBe('zone 2 5');
+    expect(opened.map((a) => a.shard)).toEqual([5]);
+    expect(await greeting(room)).toBe(denied);
+  });
+
+  it('the table is looked at once the resolver answers', async () => {
+    await startProxy({ allowNoSlot: (type) => type.equals(room) });
+    table.removeSlots(zone);
+    const gate = new Deferred<void>();
+    table.gate = gate;
+    const pending = greeting(zone);
+    await table.waiting.promise;
+    // The resolver syncs, with a slot table for zone.
+    table.defineSlots(new SlotSpace(zone, { count: 8, mode: SlotMode.static }));
+    gate.resolve();
+    expect(await pending).toBe(denied);
+    expect(opened).toEqual([]);
   });
 });

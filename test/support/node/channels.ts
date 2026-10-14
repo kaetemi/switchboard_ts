@@ -5,7 +5,11 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { utf8Decode } from '../../../src/core/bytes.ts';
-import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+
+/** What these helpers read: a mux channel, or a channel carrying one (a slot channel). */
+export interface Readable {
+  readonly readable: ReadableStream<Uint8Array>;
+}
 
 /**
  * Reading raw channels and async iterables in tests, one value at a time,
@@ -39,7 +43,7 @@ export class Pull<T> {
 export class Frames {
   readonly #reader: ReadableStreamDefaultReader<Uint8Array>;
 
-  constructor(channel: MuxChannel) {
+  constructor(channel: Readable) {
     this.#reader = channel.readable.getReader();
   }
 
@@ -70,7 +74,7 @@ export class Frames {
 }
 
 /** The first subframe of [channel] as text, the reader released after. */
-export async function nextText(channel: MuxChannel): Promise<string> {
+export async function nextText(channel: Readable): Promise<string> {
   const reader = channel.readable.getReader();
   try {
     const { value } = await reader.read();
@@ -84,7 +88,7 @@ export async function nextText(channel: MuxChannel): Promise<string> {
 }
 
 /** Every subframe of [channel] until its end. */
-export function framesOf(channel: MuxChannel): Promise<Uint8Array[]> {
+export function framesOf(channel: Readable): Promise<Uint8Array[]> {
   return new Frames(channel).rest();
 }
 

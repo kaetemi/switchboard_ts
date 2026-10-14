@@ -5,8 +5,8 @@
 // the frame mux and the binding, and the ends of connections. A port of
 // `switchboard_quic`'s `test/switchboard_test.dart` and
 // `review_switchboard_test.dart`; the nodes' `mem://` sides run over the
-// frame mux, as Dart's do. The man in the middle group and SlotChannel at
-// record cost are not ported yet (todo).
+// frame mux, as Dart's do. The man in the middle group is not ported yet
+// (todo).
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { ReconnectingClient } from '../../../src/core/client/reconnecting-client.ts';
@@ -17,6 +17,7 @@ import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.t
 import { MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import { Name } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
+import { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
 import { QuicBindingChannel } from '../../../src/core/quic/quic-binding-channel.ts';
 import type { QuicBindingConnection } from '../../../src/core/quic/quic-binding-connection.ts';
 import { quicConnector } from '../../../src/core/quic/quic-dial.ts';
@@ -61,6 +62,7 @@ import {
   bytes,
   collect,
   concat,
+  connectionPair,
   expectCode,
   expectStatus,
   fast,
@@ -945,5 +947,29 @@ describe('review cases', () => {
     expect(text(await ask(ready[1] as TalkChannel, bytes('two')))).toBe('two');
   });
 
-  test.todo('SlotChannel accounts held sends at QUIC record cost (needs SlotChannel)');
+  test('SlotChannel accounts held sends at QUIC record cost', async () => {
+    const [a, b] = await connectionPair();
+    void (async () => {
+      for await (const channel of b.incoming) {
+        void channel.close(Status.of(StatusCode.moved));
+      }
+    })();
+    const first = a.open(echoAddress().encode());
+    let reopen = (_channel: MuxChannel | undefined): void => {};
+    const reopened = new Promise<MuxChannel | undefined>((resolve) => {
+      reopen = resolve;
+    });
+    onCleanup(() => reopen(undefined));
+    // The internal seam behind the public slot-opening API.
+    const slot = new SlotChannel(echo, 3, first, () => reopened, { maxHeldBytes: 100 });
+    expect((await within(first.done)).code).toBe(StatusCode.moved);
+    // Two records of 40 bytes fit in 100 at record cost (the frame mux
+    // would charge 56 each).
+    const sends = [slot.send(new Uint8Array(40)), slot.send(new Uint8Array(40))];
+    await expectCode(slot.send(new Uint8Array(40)), StatusCode.resourceExhausted);
+    expect((await within(slot.done)).code).toBe(StatusCode.resourceExhausted);
+    for (const sending of sends) {
+      await expectCode(sending, StatusCode.failedPrecondition);
+    }
+  });
 });
