@@ -76,7 +76,8 @@ The addon calls the shim Rust to Rust, which needs the `rlib` crate type that `s
 `native/sbq/Cargo.toml` does not declare (it builds `cdylib` and `staticlib`). Until that line
 lands upstream, `native/sbq-vendor/` is a copy of `native/sbq` at the commit in
 `native/sbq-vendor.commit`, without `target/` and `prebuilt/`, and with one change: `"rlib"` added
-to `crate-type`. Nothing else in the copy is edited; fixes go upstream first.
+to `crate-type`. Nothing else in the copy is edited, and the pin lives outside it, so that the
+copy can move as it is to a shim repository shared with the Dart package; fixes go upstream first.
 
 ```sh
 node tool/sync-sbq.mjs [<switchboard_quic checkout>]          # copy again at the pin
@@ -87,7 +88,8 @@ node tool/sync-sbq.mjs --check [<checkout>]                   # exit 1 when the 
 The checkout defaults to `$SWITCHBOARD_QUIC`, else `../switchboard_quic`; it only needs to
 contain the pinned commit. CI checks out `kaetemi/switchboard_quic` at the pin and runs
 `--check`, so the copy cannot drift; the job's `ref` must change with the pin. Once upstream
-builds an `rlib`, the copy gives way to a git dependency at the same commit.
+builds an `rlib` (or the shim has a repository of its own), the copy gives way to a git
+dependency at the same commit.
 
 ## The addon's JavaScript surface
 
