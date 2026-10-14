@@ -118,6 +118,10 @@ describe('channels', () => {
     expect(b.isInitiator).toBe(false);
 
     const ca = a.open(hexBytes('AA'));
+    // A writable hands a chunk to the channel once it has started, a turn
+    // after it is made: taken early, so that its write below goes between
+    // the two sends around it, as Dart's synchronous sink.add does.
+    const sink = ca.writable.getWriter();
     expect(ca.id).toBe(2);
     expect(ca.isLocallyOpened).toBe(true);
     expect(ca.connection).toBe(a);
@@ -137,7 +141,7 @@ describe('channels', () => {
     const raData = new Subframes(ra);
     const caData = new Subframes(ca);
     void ca.send(hexBytes('01'));
-    void ca.writable.getWriter().write(hexBytes('02 03'));
+    void sink.write(hexBytes('02 03'));
     void ca.send(empty);
     void ra.send(hexBytes('04'));
     expect(await raData.nextHex()).toBe('01');
