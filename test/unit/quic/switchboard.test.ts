@@ -5,8 +5,8 @@
 // the frame mux and the binding, and the ends of connections. A port of
 // `switchboard_quic`'s `test/switchboard_test.dart` and
 // `review_switchboard_test.dart`; the nodes' `mem://` sides run over the
-// frame mux, as Dart's do. The man in the middle group and SlotChannel at
-// record cost are not ported yet (todo).
+// frame mux, as Dart's do. The man in the middle group is in
+// `mitm.test.ts`; SlotChannel at record cost is not ported yet (todo).
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { ReconnectingClient } from '../../../src/core/client/reconnecting-client.ts';
@@ -659,10 +659,6 @@ describe('identity', () => {
     });
     await expectCode(wrong.connect(listener.endpoint), StatusCode.unavailable);
   });
-
-  test.todo(
-    'a man in the middle: relayed HELLOs fail, stripped EXPORTER flags fail, and only without the rules does the identification pass (not ported yet)',
-  );
 });
 
 describe('the proxy between the frame mux and the binding', () => {
