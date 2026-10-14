@@ -7,13 +7,19 @@ import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
-import { MuxCommand, MuxControlType, type MuxFrame } from '../../../src/core/mux/mux-frame.ts';
+import {
+  MuxCommand,
+  MuxControlType,
+  MuxCredit,
+  type MuxFrame,
+} from '../../../src/core/mux/mux-frame.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { stubCredential } from '../../support/identity/stub-verifier.ts';
 import {
   collect,
   creditHex,
+  dataHex,
   empty,
   expectCode,
   expectRejectsStatus,
@@ -92,6 +98,67 @@ describe('the readable of a channel', () => {
     expectStatus(await channel.done, Status.of(StatusCode.notFound, 'x'));
     expect((await collect(channel)).map(hexString)).toEqual(['AA', 'BB']);
     await mux.close();
+  });
+});
+
+describe('for await over a channel', () => {
+  test('takes its subframes in order, returning their credit, until it ends', async () => {
+    const [mux, raw] = rawPair();
+    raw.send('12 03 00');
+    const channel = await firstIncoming(mux);
+    for (let i = 0; i < 3; i++) {
+      raw.send(dataHex(3, 30000));
+    }
+    raw.send('22 03 00');
+    const sizes: number[] = [];
+    for await (const subframe of channel) {
+      sizes.push(subframe.length);
+    }
+    expect(sizes).toEqual([30000, 30000, 30000]);
+    // Delivery returned the credit of the first two, half the window.
+    const credit = await raw.nextControl(MuxControlType.credit);
+    expect(`${MuxCredit.decode(credit.payload)}`).toBe(`${new MuxCredit(3, 2 * 30016)}`);
+    expect(await raw.nextHex()).toBe('22 03 00');
+    expectStatus(await channel.done, Status.ok);
+    await mux.close();
+  });
+
+  test('break discards what arrives, and the channel stays open', async () => {
+    const [a, b] = muxPair();
+    const ca = a.open(empty);
+    const cb = await firstIncoming(b);
+    void ca.send(hexBytes('01'));
+    for await (const subframe of cb) {
+      expect(hexString(subframe)).toBe('01');
+      break;
+    }
+    expect(cb.state).toBe('open');
+    expect(cb.hasListener).toBe(false);
+    for (let i = 0; i < 10; i++) {
+      await ca.send(new Uint8Array(30000));
+    }
+    await a.ping();
+    expect(cb.bufferedBytes).toBe(0);
+    await ca.close();
+    expectStatus(await cb.done, Status.ok);
+    await a.close();
+  });
+
+  test('an exception out of the loop stops it the same way', async () => {
+    const [a, b] = muxPair();
+    const ca = a.open(empty);
+    const cb = await firstIncoming(b);
+    void ca.send(hexBytes('01'));
+    const loop = (async () => {
+      for await (const _ of cb) {
+        throw new Error('handler bug');
+      }
+    })();
+    expect(((await rejection(loop)) as Error).message).toBe('handler bug');
+    expect(cb.state).toBe('open');
+    // The readable was cancelled: iterating again ends at once.
+    expect((await cb[Symbol.asyncIterator]().next()).done).toBe(true);
+    await a.close();
   });
 });
 
