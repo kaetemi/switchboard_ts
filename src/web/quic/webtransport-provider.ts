@@ -562,10 +562,12 @@ export class WebTransportSession implements QuicSession {
   // Streams.
   readonly #streams = new Set<StreamControl>();
   readonly #receiveStreams = new Set<ReceiveControl>();
-  readonly #opens: Deferred<QuicStream>[] = [];
+  readonly #opens: Deferred<WebTransportStream>[] = [];
   #opening = false;
-  readonly #incoming = new PullSource<QuicStream>(() => this.#pumpIncoming());
-  readonly #unidirectional = new PullSource<QuicReceiveStream>(() => this.#pumpUnidirectional());
+  readonly #incoming = new PullSource<WebTransportStream>(() => this.#pumpIncoming());
+  readonly #unidirectional = new PullSource<WebTransportReceiveStream>(() =>
+    this.#pumpUnidirectional(),
+  );
   #incomingReader: ReadableStreamDefaultReader<unknown> | undefined;
   #unidirectionalReader: ReadableStreamDefaultReader<unknown> | undefined;
   #incomingPumping = false;
@@ -629,7 +631,7 @@ export class WebTransportSession implements QuicSession {
   }
 
   /** The server's bidirectional streams, taken from the browser only while iterated. Ends with the session. */
-  get incomingStreams(): AsyncIterable<QuicStream> {
+  get incomingStreams(): AsyncIterable<WebTransportStream> {
     return this.#incoming;
   }
 
@@ -637,7 +639,7 @@ export class WebTransportSession implements QuicSession {
    * The server's unidirectional streams, from the session's `incomingUnidirectionalStreams`, for
    * the application to stop. Ends with the session.
    */
-  get incomingUnidirectionalStreams(): AsyncIterable<QuicReceiveStream> {
+  get incomingUnidirectionalStreams(): AsyncIterable<WebTransportReceiveStream> {
     return this.#unidirectional;
   }
 
@@ -700,10 +702,10 @@ export class WebTransportSession implements QuicSession {
    * asks again, the first waiting call first, at growing intervals (5 to 200 ms) until the browser
    * gives a stream or the session ends.
    */
-  openStream(): Promise<QuicStream> {
+  openStream(): Promise<WebTransportStream> {
     const error = this.#endError;
     if (error !== undefined) return rejected(error);
-    const d = new Deferred<QuicStream>();
+    const d = new Deferred<WebTransportStream>();
     this.#opens.push(d);
     void this.#openNext();
     return d.promise;

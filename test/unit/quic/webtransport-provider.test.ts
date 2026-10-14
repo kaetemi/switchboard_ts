@@ -1220,7 +1220,7 @@ describe('codes and priorities', () => {
     expect(WebTransportProvider.sendOrderOf(0)).toBe(0);
     expect(WebTransportProvider.sendOrderOf(-3)).toBe(-3);
     const chromium = await open();
-    const plain = (await chromium.session.openStream()) as WebTransportStream;
+    const plain = await chromium.session.openStream();
     expect(plain.hasSendOrder).toBe(false);
     expect(chromium.session.hasSendGroups).toBe(false);
     plain.priority = 2;
@@ -1230,9 +1230,9 @@ describe('codes and priorities', () => {
     }).toThrow(RangeError);
     const { session, fake } = await open({ sendGroups: true, sendOrder: true });
     expect(session.hasSendGroups).toBe(true);
-    const control = (await session.openStream()) as WebTransportStream;
-    const ordinary = (await session.openStream()) as WebTransportStream;
-    const bulk = (await session.openStream()) as WebTransportStream;
+    const control = await session.openStream();
+    const ordinary = await session.openStream();
+    const bulk = await session.openStream();
     expect(control.hasSendOrder).toBe(true);
     control.priority = 2;
     ordinary.priority = 1;
