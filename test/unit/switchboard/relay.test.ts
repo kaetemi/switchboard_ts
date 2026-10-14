@@ -20,6 +20,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import { type Credential, type PeerIdentity, Right } from '../../../src/core/identity/contract.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import { type MuxChannel, type MuxConnection, muxOptions } from '../../../src/core/mux/contract.ts';
 import { Name, type NameLike } from '../../../src/core/name.ts';
 import { MovedStatus, Services, serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
@@ -42,7 +43,7 @@ import { TalkChannel } from '../../../src/core/talk/index.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { Frames, nextText } from '../../support/node/channels.ts';
-import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
+import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import { FakeMesh, type MeshResolver } from '../../support/node/fake-mesh.ts';
 import {
   fast,
@@ -61,7 +62,7 @@ const naming = Services.naming;
 const workerType = Name.of('worker-g');
 const otherType = Name.of('worker-d');
 
-const key = fakeHolderKey(new Uint8Array(32).fill(9));
+const key = await Ed25519HolderKey.fromSeed(new Uint8Array(32).fill(9));
 
 type Scopes = readonly (readonly [Right, string])[];
 
@@ -77,8 +78,8 @@ const relayScopes: Scopes = [
   [Right.broker, 'worker-*'],
 ];
 
-function issue(identity: string, scopes: Scopes, expiresAt = 0): Credential {
-  return fakeCredential({ identity, holderKey: key.publicKey, scopes, expiresAt });
+function issue(identity: string, scopes: Scopes, expiresAt = 0): Promise<Credential> {
+  return issueCredential({ identity, holderKey: key.publicKey, scopes, expiresAt });
 }
 
 function bytes(text: string): Uint8Array {
@@ -129,7 +130,7 @@ function newNode(options: NodeOptions = {}): Switchboard {
     muxOptions: { requireNamedIdent: options.requireNamedIdent ?? false },
     credential: options.credential,
     holderKey: options.credential === undefined ? undefined : key,
-    verifier: new FakeVerifier(),
+    verifier: new TestVerifier(),
     identifyOutgoing: options.identifyOutgoing ?? true,
     identityTimeout: options.identityTimeout ?? limit,
     relay: options.relay,
@@ -169,8 +170,11 @@ class Worker {
     this.id = mesh.publish(node, type, (incoming) => this.#serve(incoming), { endpoints: [] });
   }
 
-  static start(mesh: FakeMesh, options: { identity?: string; type?: Name } = {}): Worker {
-    const n = newNode({ credential: issue(options.identity ?? 'worker-a1', workerScopes) });
+  static async start(
+    mesh: FakeMesh,
+    options: { identity?: string; type?: Name } = {},
+  ): Promise<Worker> {
+    const n = newNode({ credential: await issue(options.identity ?? 'worker-a1', workerScopes) });
     return new Worker(n, mesh, options.type ?? workerType);
   }
 
@@ -246,7 +250,7 @@ class Relay {
   static async start(mesh: FakeMesh, options: RelayOptions = {}): Promise<Relay> {
     const identity = options.identity ?? 'relay-1';
     const n = meshNode(mesh, {
-      credential: issue(identity, options.scopes ?? relayScopes),
+      credential: await issue(identity, options.scopes ?? relayScopes),
       requireNamedIdent: true,
       identityTimeout: options.identityTimeout ?? limit,
       logger: options.logger,
@@ -318,7 +322,7 @@ async function consumer(
   } = {},
 ): Promise<Switchboard> {
   const c = meshNode(mesh, {
-    credential: issue(options.identity ?? 'consumer-1', options.scopes ?? consumerScopes),
+    credential: await issue(options.identity ?? 'consumer-1', options.scopes ?? consumerScopes),
     relay: (options.useRelay ?? true) ? (options.relay ?? new RelayConfig()) : undefined,
     expectedIdentityFor: options.expectedIdentityFor,
   });
@@ -440,11 +444,11 @@ it('scoped() admits _relay and _ns for every identified peer', async () => {
   // The relay listener's policy lets a consumer with no `open` scope for
   // `_relay` through; the relay checks the inner type.
   const relay = await Relay.start(mesh, { policy: ChannelPolicies.scoped() });
-  const worker = Worker.start(mesh);
+  const worker = await Worker.start(mesh);
   const c = await consumer(mesh);
   expect(await run(c, worker.address, 'job')).toContain(`by ${worker.id}`);
   expect(relay.node.listeningEndpoints).not.toHaveLength(0);
-  const dummy = newNode({ credential: issue('x', []) });
+  const dummy = newNode({ credential: await issue('x', []) });
   const connection = await dummy.dial(relay.uri, { receiver: 'relay-1' });
   // No `open` scope at all: the policy admits the channel, the relay
   // refuses the inner type.
@@ -461,7 +465,7 @@ describe('relaying', () => {
   it("a channel through the relay: request and reply end to end; the instance sees the relay's identity and the consumer's payload, the relay the consumer's", async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     expect(c.canBroker).toBe(false);
     const mux = await c.openChannel(worker.address, { payload: bytes('token') });
@@ -490,7 +494,7 @@ describe('relaying', () => {
     it('bulk payloads through the relay, both ways', async () => {
       const mesh = new FakeMesh();
       await Relay.start(mesh);
-      const worker = Worker.start(mesh);
+      const worker = await Worker.start(mesh);
       const c = await consumer(mesh);
       const mux = await c.openChannel(worker.address, { payload: bytes('token') });
       const channel = new TalkChannel(mux);
@@ -519,7 +523,7 @@ describe('relaying', () => {
     expect(relays[0]?.address.type.equals(relayType)).toBe(true);
     expect(utf8Decode(relays[0]?.metadata ?? new Uint8Array(0))).toBe('relay-7');
     expect(relays[0]?.endpoints).toEqual([relay.uri]);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     // A connection the relay accepted from the consumer: identified, naming relay-7.
     const identities: PeerIdentity[] = [];
     void (async () => {
@@ -539,7 +543,7 @@ describe('relaying', () => {
   it('explicit relay endpoints with an identity', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
       relay: new RelayConfig({ endpoints: [relay.uri], identity: 'relay-1' }),
     });
@@ -568,7 +572,7 @@ describe('relaying', () => {
   it('an expectedIdentityFor that throws fails that relay: the next is tried', async () => {
     const mesh = new FakeMesh();
     const relays = [await Relay.start(mesh), await Relay.start(mesh, { identity: 'relay-2' })];
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     // The first relay asked about fails, the other one carries the open.
     const asked: string[] = [];
     const c = await consumer(mesh, {
@@ -616,15 +620,15 @@ describe('relaying', () => {
     ).toThrow(RangeError);
   });
 
-  it('a relay on a node that accepts unnamed IDENTs is warned about', () => {
+  it('a relay on a node that accepts unnamed IDENTs is warned about', async () => {
     const { logger, messages } = logged('warn');
-    const lax = newNode({ credential: issue('relay-1', relayScopes), logger });
+    const lax = newNode({ credential: await issue('relay-1', relayScopes), logger });
     new RelayService(lax);
     expect(messages).toHaveLength(1);
     expect(messages[0]).toContain('requireNamedIdent');
     messages.length = 0;
     const strict = newNode({
-      credential: issue('relay-1', relayScopes),
+      credential: await issue('relay-1', relayScopes),
       requireNamedIdent: true,
       logger,
     });
@@ -635,7 +639,7 @@ describe('relaying', () => {
   it('one brokered connection shared by two consumers', async () => {
     const mesh = new FakeMesh();
     await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const a = await consumer(mesh);
     const b = await consumer(mesh, { identity: 'consumer-2' });
     const results = await Promise.all([
@@ -653,7 +657,7 @@ describe('relaying', () => {
   it('a node that can broker never relays', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
       scopes: [...consumerScopes, [Right.broker, 'worker-*']],
       listen: true,
@@ -672,13 +676,13 @@ describe('relaying', () => {
   it('without a relay, a node that cannot broker fails as before; a record with endpoints is dialled directly', async () => {
     const mesh = new FakeMesh();
     await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh, { useRelay: false });
     const error = await rejectsWith(c.openChannel(worker.address), StatusCode.unavailable);
     expect(error.status.reason).toContain('no listener');
     await rejectsWith(c.resolveRelays(), StatusCode.failedPrecondition);
     // A worker that listens is reached directly by a consumer with a relay.
-    const lister = newNode({ credential: issue('worker-b2', workerScopes) });
+    const lister = newNode({ credential: await issue('worker-b2', workerScopes) });
     const listerUri = await lister.listenMemory({ policy: ChannelPolicies.scoped() });
     const listed = mesh.publish(
       lister,
@@ -704,7 +708,7 @@ describe('relaying', () => {
   it('a lost connection on either side reaches the other as UNAVAILABLE; the relay brokers again', async () => {
     const mesh = new FakeMesh();
     await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     // The worker side goes: the consumer's channel ends UNAVAILABLE.
     const first = await c.openChannel(worker.address, { payload: bytes('hold') });
@@ -725,7 +729,7 @@ describe('relaying', () => {
   it('MOVED is relayed with its fields byte for byte', async () => {
     const mesh = new FakeMesh();
     await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     const channel = await c.openChannel(worker.address, { payload: bytes('moved') });
     const status = await channel.done;
@@ -741,7 +745,7 @@ describe('relaying', () => {
 describe('refusals', () => {
   it('an unidentified consumer: UNAUTHENTICATED, after the hold; one whose OPEN overtakes its IDENT is held, then admitted', async () => {
     const mesh = new FakeMesh();
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const relay = await Relay.start(mesh, { identityTimeout: 200 });
     const anonymous = newNode();
     const connection = await anonymous.connect(relay.uri);
@@ -752,7 +756,7 @@ describe('refusals', () => {
     // A consumer whose OPEN overtakes its IDENT is held, then admitted.
     const overtaken = await anonymous.dial(relay.uri);
     const held = openRelayed(overtaken, innerOf(workerType, worker.id, 'p'));
-    await overtaken.identify(issue('consumer-1', consumerScopes), {
+    await overtaken.identify(await issue('consumer-1', consumerScopes), {
       holderKey: key,
       receiver: 'relay-1',
     });
@@ -762,10 +766,13 @@ describe('refusals', () => {
 
   it('a channel that ends while held for identity is dropped without a refusal and does not count toward the bound', async () => {
     const mesh = new FakeMesh();
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const { logger, messages } = logged('debug');
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 1, logger });
-    const c = newNode({ credential: issue('consumer-1', consumerScopes), identifyOutgoing: false });
+    const c = newNode({
+      credential: await issue('consumer-1', consumerScopes),
+      identifyOutgoing: false,
+    });
     const connection = await c.dial(relay.uri);
     const dropped = openRelayed(connection, innerOf(workerType, worker.id, 'dropped'));
     await until(() => messages.some((m) => m.includes('held until')));
@@ -787,7 +794,7 @@ describe('refusals', () => {
 
   it('without requireIdentity: an unidentified consumer is admitted unchecked after the hold, an identified one held to its scopes', async () => {
     const mesh = new FakeMesh();
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const hold = 300;
     const lenient = await Relay.start(mesh, {
       identity: 'relay-2',
@@ -803,7 +810,7 @@ describe('refusals', () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(hold - 5);
     await channel.close();
     // An identified consumer is held to its scopes all the same.
-    const scoped = newNode({ credential: issue('consumer-4', [[Right.open, 'x']]) });
+    const scoped = newNode({ credential: await issue('consumer-4', [[Right.open, 'x']]) });
     const identified = await scoped.dial(lenient.uri, { receiver: 'relay-2' });
     expectCode(
       await refusal(identified, innerOf(workerType, worker.id)),
@@ -814,11 +821,11 @@ describe('refusals', () => {
 
   it('without requireIdentity: an OPEN that overtakes the IDENT is checked under the identity the IDENT establishes', async () => {
     const mesh = new FakeMesh();
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const lenient = await Relay.start(mesh, { identity: 'relay-2', requireIdentity: false });
     // A credential without `open` for the type, presented only after the OPEN.
     const sneaky = newNode({
-      credential: issue('consumer-4', [[Right.open, 'x']]),
+      credential: await issue('consumer-4', [[Right.open, 'x']]),
       identifyOutgoing: false,
     });
     const connection = await sneaky.dial(lenient.uri);
@@ -828,7 +835,7 @@ describe('refusals', () => {
     expect(worker.seen).toHaveLength(0);
     // The same order with `open` for the type: relayed.
     const honest = newNode({
-      credential: issue('consumer-1', consumerScopes),
+      credential: await issue('consumer-1', consumerScopes),
       identifyOutgoing: false,
     });
     const second = await honest.dial(lenient.uri);
@@ -842,7 +849,7 @@ describe('refusals', () => {
     const mesh = new FakeMesh();
     // A worker that listens, which the relay finds through a resolver that
     // answers only once the consumer has identified again.
-    const lister = newNode({ credential: issue('worker-b2', workerScopes) });
+    const lister = newNode({ credential: await issue('worker-b2', workerScopes) });
     const listerUri = await lister.listenMemory({ policy: ChannelPolicies.scoped() });
     const listedType = Name.of('worker-l');
     const opened: MuxChannel[] = [];
@@ -854,13 +861,13 @@ describe('refusals', () => {
     ]);
     const relay = await Relay.start(mesh, { allowEndpoints: true, resolver: gate });
     const accepted = collect(relay.node);
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     const connection = await relayConnection(c, relay.uri);
     const channel = openRelayed(connection, innerOf(listedType, 1));
     // Past the scope check, resolving: the consumer identifies again, with
     // a credential that may not open the type.
     await gate.asked;
-    await connection.identify(issue('consumer-5', [[Right.open, 'other-*']]), {
+    await connection.identify(await issue('consumer-5', [[Right.open, 'other-*']]), {
       holderKey: key,
       receiver: 'relay-1',
     });
@@ -894,9 +901,9 @@ describe('refusals', () => {
       resolver: gate,
       maxChannelsPerConnection: 1,
     });
-    const credential = (): Credential =>
+    const credential = (): Promise<Credential> =>
       issue('consumer-1', consumerScopes, Math.floor(Date.now() / 1000) + 60);
-    const c = newNode({ credential: credential() });
+    const c = newNode({ credential: await credential() });
     const connection = await relayConnection(c, relay.uri);
     const inner = innerOf(workerType, 1);
     const channel = openRelayed(connection, inner);
@@ -908,7 +915,7 @@ describe('refusals', () => {
     await until(() => opened.length > 0);
     expectCode(await (opened[0] as MuxChannel).done, StatusCode.cancelled);
     // Renewed, the consumer has the one channel its bound allows.
-    await c.updateCredential(credential());
+    await c.updateCredential(await credential());
     const again = openRelayed(connection, inner);
     expect(await nextText(again)).toBe('private greeting');
     await again.close();
@@ -917,7 +924,7 @@ describe('refusals', () => {
   it('a consumer that identifies without naming the relay is refused by requireNamedIdent', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     await rejectsWith(c.connect(relay.uri), StatusCode.unauthenticated);
     await rejectsWith(c.dial(relay.uri, { receiver: 'someone-else' }), StatusCode.unauthenticated);
     const named = await c.dial(relay.uri, { receiver: 'relay-1' });
@@ -927,8 +934,8 @@ describe('refusals', () => {
   it('malformed, untyped, host hints, reserved types and chains: INVALID_ARGUMENT', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
-    const c = newNode({ credential: issue('consumer-1', [[Right.open, '*']]) });
+    const worker = await Worker.start(mesh);
+    const c = newNode({ credential: await issue('consumer-1', [[Right.open, '*']]) });
     const connection = await relayConnection(c, relay.uri);
     const cases: Record<string, Uint8Array> = {
       'reserved flag bit': Uint8Array.of(0x10),
@@ -958,7 +965,7 @@ describe('refusals', () => {
   it('a consumer without `open` for the inner type: PERMISSION_DENIED', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
       scopes: [
         [Right.watch, '*'],
@@ -975,8 +982,8 @@ describe('refusals', () => {
   it('the per-connection bound: RESOURCE_EXHAUSTED', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 2 });
-    const worker = Worker.start(mesh);
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const worker = await Worker.start(mesh);
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     const connection = await relayConnection(c, relay.uri);
     const hold = innerOf(workerType, worker.id, 'hold');
     const first = openRelayed(connection, hold);
@@ -1003,8 +1010,8 @@ describe('refusals', () => {
   it('maxChannelsPerConnection 0: no bound', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 0 });
-    const worker = Worker.start(mesh);
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const worker = await Worker.start(mesh);
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     const connection = await relayConnection(c, relay.uri);
     const hold = innerOf(workerType, worker.id, 'hold');
     const channels = Array.from({ length: 5 }, () => openRelayed(connection, hold));
@@ -1017,8 +1024,8 @@ describe('refusals', () => {
   it('no record: NOT_FOUND; a record with endpoints: FAILED_PRECONDITION, relayed with allowEndpoints', async () => {
     const mesh = new FakeMesh();
     const relay = await Relay.start(mesh);
-    const worker = Worker.start(mesh);
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const worker = await Worker.start(mesh);
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     const connection = await relayConnection(c, relay.uri);
     expectCode(
       await refusal(connection, innerOf(workerType, worker.id + 100)),
@@ -1026,7 +1033,7 @@ describe('refusals', () => {
     );
     expectCode(await refusal(connection, innerOf('worker-z')), StatusCode.notFound);
     // A worker that listens.
-    const lister = newNode({ credential: issue('worker-b2', workerScopes) });
+    const lister = newNode({ credential: await issue('worker-b2', workerScopes) });
     const listerUri = await lister.listenMemory({ policy: ChannelPolicies.scoped() });
     const listedType = Name.of('worker-l');
     const listed = mesh.publish(
@@ -1059,10 +1066,10 @@ describe('refusals', () => {
     const { logger, messages } = logged('warn', null);
     const relay = await Relay.start(mesh, { allowEndpoints: true, logger });
     // A record of a worker claiming to listen where the relay does.
-    const misdirected = newNode({ credential: issue('worker-c3', workerScopes) });
+    const misdirected = newNode({ credential: await issue('worker-c3', workerScopes) });
     const selfType = Name.of('worker-s');
     const id = mesh.publish(misdirected, selfType, () => {}, { endpoints: [relay.uri] });
-    const c = newNode({ credential: issue('consumer-1', consumerScopes) });
+    const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     const connection = await relayConnection(c, relay.uri);
     const connections = collect(relay.node);
     expectCode(await refusal(connection, innerOf(selfType, id)), StatusCode.unavailable);
@@ -1079,7 +1086,7 @@ describe('refusals', () => {
         [Right.open, 'worker-*'],
       ],
     });
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     const channel = await c.openChannel(worker.address);
     expectCode(await channel.done, StatusCode.unavailable);
@@ -1096,7 +1103,7 @@ describe('refusals', () => {
         [Right.broker, 'worker-*'],
       ],
     });
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     const channel = await c.openChannel(worker.address);
     expectCode(await channel.done, StatusCode.permissionDenied);
@@ -1109,7 +1116,7 @@ describe('PeerSet', () => {
   it('a peer without endpoints is connected through the relay, and comes back through the other relay when its relay goes', async () => {
     const mesh = new FakeMesh();
     const first = await Relay.start(mesh, { identity: 'relay-1' });
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
     const set = PeerSet.watch(c, workerType, {
       channel: new ChannelAddress({ type: workerType }),
@@ -1159,7 +1166,7 @@ describe('PeerSet', () => {
 
   it('a node that can neither broker nor relay reports the brokering failure', async () => {
     const mesh = new FakeMesh();
-    const worker = Worker.start(mesh);
+    const worker = await Worker.start(mesh);
     const c = await consumer(mesh, { useRelay: false });
     const set = PeerSet.watch(c, workerType, {
       channel: new ChannelAddress({ type: workerType }),

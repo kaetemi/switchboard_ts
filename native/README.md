@@ -14,7 +14,7 @@ native/
   build.mjs                `npm run build:native`: cargo build, then the copy to sbq-node.node
   sbq-vendor/              switchboard_quic's native/sbq at the pinned commit (see below)
   sbq-vendor.commit        that commit
-  npm/<target>/            per-platform package manifests, published as optionalDependencies (to come)
+  npm/<target>/            the per-platform packages' manifests (optionalDependencies of the package)
 ```
 
 ## Building locally
@@ -25,6 +25,7 @@ You need Rust (`switchboard_quic` and CI use 1.99.0; the crate needs at least 1.
 npm run build:native            # cargo build --release --locked, then native/sbq-node.node
 node native/build.mjs --debug   # the dev profile: faster to build, much slower to run
 node native/build.mjs --target aarch64-unknown-linux-gnu --out /tmp/sbq-node.node
+node native/build.mjs --dry-run --target x86_64-pc-windows-msvc   # prints the cargo command and the copy
 ```
 
 `build.mjs` copies what cargo wrote (`libsbq_node.so`, `libsbq_node.dylib` or `sbq_node.dll`,
@@ -70,6 +71,51 @@ CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" np
 
 On musl Linux the loader looks for `-linux-<arch>-musl`, for which nothing is prebuilt; build it
 locally. Only Linux x64 is built and tested in CI (the `native` job).
+
+## The per-platform packages
+
+`native/npm/<target>/package.json` is the manifest of `@kaetemi/switchboard-quic-<target>`, one
+per row of the table above, the directory named as the loader names the package
+(`linux-x64-gnu`, `darwin-arm64`, `win32-x64-msvc`, ...). Each holds one file, `sbq-node.node`
+(its `main`, which the loader `require`s by the package name), and declares `os`, `cpu` and, on
+Linux, `libc: ["glibc"]`, so that npm installs only the one for the platform. Their version is the
+package's, and `package.json` lists all five as `optionalDependencies` pinned to it;
+`test/unit/quic/packages.test.ts` checks that the manifests, this table, the loader's prefix,
+`optionalDependencies` and the release workflow agree. To put an addon in place by hand:
+
+```sh
+node native/build.mjs --target x86_64-unknown-linux-gnu --out native/npm/linux-x64-gnu/sbq-node.node
+```
+
+Until the packages are on the registry, `npm ci` and `npm install` look them up and drop them (a
+failed optional dependency is not an error). Once they are published, run
+`npm install --package-lock-only` and commit the lock file, or `npm ci` refuses the lock that
+lacks them.
+
+## Releases
+
+`.github/workflows/release.yml` runs only by hand (`workflow_dispatch`, never on a push), on a tag
+or commit, with `publish` off by default:
+
+1. **check**: the manifests and the vendored shim (`tool/sync-sbq.mjs --check` against
+   `switchboard_quic` at the pin), and the version of the release;
+2. **build**, one job per target on a runner of that platform, as `switchboard_quic`'s release
+   workflow builds its shim (Linux x64 and arm64 on `ubuntu-latest` and `ubuntu-24.04-arm`, macOS
+   arm64 and x64 on `macos-latest` and `macos-15-intel`, Windows x64 on `windows-latest` with
+   `+crt-static`), Rust 1.99.0: `node native/build.mjs --target <triple> --out
+   native/npm/<target>/sbq-node.node`, then the native provider's loopback tests against that
+   file (`SWITCHBOARD_QUIC_ADDON`, `SWITCHBOARD_NATIVE=required`), and the library's glibc floor
+   or macOS minimum printed;
+3. **pack**: the five addons into their packages (with `LICENSE`) and the package itself
+   (`npm run build`), as tarballs kept as an artifact of the run;
+4. **publish**, only with `publish` set: `npm publish --provenance --access public` of the five
+   tarballs, then of the package, under the `dist-tag` input (`next` by default), from the `npm`
+   environment with its `NPM_TOKEN` secret (or npm's trusted publishing, which needs no token).
+
+A Linux addon needs a glibc at least as new as the newest `GLIBC_` symbol version it references,
+which the build step prints: 2.34 for a Linux x64 addon built against glibc 2.39 (Ubuntu
+24.04). Publishing is the
+maintainer's decision: nothing publishes without `publish` set by hand.
 
 ## How `sbq` is reused
 

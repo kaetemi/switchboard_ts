@@ -1,0 +1,243 @@
+# Polyverse Switchboard
+# Microservice Network Architecture
+# Copyright (C) 2018-2026  Jan BOON (Kaetemi)
+#
+# A release of @kaetemi/switchboard and its prebuilt QUIC addons, by hand
+# only (workflow_dispatch; never on a push): the N-API addon built with cargo
+# for the five targets of native/README.md, each on a runner of its platform
+# as switchboard_quic's release workflow builds its shim, and tested there
+# against the loopback; the five per-platform packages
+# (@kaetemi/switchboard-quic-<target>, native/npm/<target>/) and the package
+# itself packed as tarballs; and, only when the `publish` input is set,
+# published with `npm publish --provenance`. Publishing is the maintainer's
+# call: a run without `publish` builds, tests and packs, and keeps the
+# tarballs as an artifact.
+#
+# Builds run with read-only repository access; only the publish job asks for
+# an OIDC token (provenance, trusted publishing), from the `npm` environment
+# whose NPM_TOKEN secret it uses when the registry has no trusted publisher
+# for the packages.
+
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: The tag or commit to release (the version is its package.json's)
+        required: true
+        type: string
+      publish:
+        description: Publish to npm (otherwise build, test and pack only)
+        required: false
+        type: boolean
+        default: false
+      dist-tag:
+        description: The npm dist-tag to publish under
+        required: false
+        type: string
+        default: next
+
+permissions:
+  contents: read
+
+# A second run for the same ref must not race the first one's publish.
+concurrency:
+  group: release-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      shim: ${{ steps.source.outputs.shim }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Pin the source for every job
+        id: source
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          echo "shim=$(grep -v '^#' native/sbq-vendor.commit | head -n 1 | tr -d '[:space:]')" >> "$GITHUB_OUTPUT"
+
+      # The commit native/sbq-vendor.commit pins: the vendored shim must match it.
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard_quic
+          ref: ${{ steps.source.outputs.shim }}
+          path: switchboard_quic
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: node tool/sync-sbq.mjs --check switchboard_quic
+      # The manifests, native/README.md, the loader, optionalDependencies and
+      # this workflow agree.
+      - run: npx vitest run --project unit test/unit/quic/packages.test.ts
+
+  build:
+    needs: check
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64-gnu, triple: x86_64-unknown-linux-gnu, runner: ubuntu-latest }
+          - { target: linux-arm64-gnu, triple: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+          - { target: darwin-arm64, triple: aarch64-apple-darwin, runner: macos-latest }
+          # An available Intel macOS image (macos-13 is retired).
+          - { target: darwin-x64, triple: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: win32-x64-msvc, triple: x86_64-pc-windows-msvc, runner: windows-latest }
+    defaults:
+      run:
+        shell: bash
+    env:
+      # The C runtime linked statically: the addon needs no Visual C++
+      # redistributable (as switchboard_quic's shim).
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.check.outputs.commit }}
+          persist-credentials: false
+
+      # The action's ref would select the toolchain; the input pins it. Bump
+      # it together with the native job of ci.yml.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+          targets: ${{ matrix.triple }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build the addon
+        run: node native/build.mjs --target ${{ matrix.triple }} --out native/npm/${{ matrix.target }}/sbq-node.node
+
+      - name: Describe it
+        run: |
+          addon="native/npm/${{ matrix.target }}/sbq-node.node"
+          ls -l "$addon"
+          if command -v file > /dev/null; then file "$addon" || true; fi
+          case "${{ matrix.target }}" in
+            linux-*) echo "glibc symbols up to $(objdump -T "$addon" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -n 1)" || true ;;
+            darwin-*) otool -l "$addon" | grep -A 4 -E 'LC_BUILD_VERSION|LC_VERSION_MIN_MACOSX' || true ;;
+          esac
+
+      # The provider end to end over the loopback, with exactly this file.
+      - name: Test it
+        run: npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts
+        env:
+          SWITCHBOARD_QUIC_ADDON: ${{ github.workspace }}/native/npm/${{ matrix.target }}/sbq-node.node
+          SWITCHBOARD_NATIVE: required
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.target }}
+          path: native/npm/${{ matrix.target }}/sbq-node.node
+          if-no-files-found: error
+          retention-days: 7
+
+  pack:
+    needs: [check, build]
+    name: Pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.check.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: addon-*
+          path: addons
+
+      - name: Pack the five packages and the package
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          targets=(linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64 win32-x64-msvc)
+          # Exactly the five addons: no platform missing, nothing stale.
+          [ "$(find addons -type f | wc -l)" -eq 5 ] || { echo "expected 5 addons" >&2; exit 1; }
+          mkdir -p dist-packages
+          for target in "${targets[@]}"; do
+            dir="native/npm/$target"
+            cp "addons/addon-$target/sbq-node.node" "$dir/sbq-node.node"
+            cp LICENSE "$dir/LICENSE"
+            [ "$(node -p "require('./$dir/package.json').version")" = "$VERSION" ] || { echo "$dir is not $VERSION" >&2; exit 1; }
+            (cd "$dir" && npm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages")
+          done
+          npm run build
+          npm pack --pack-destination dist-packages
+          ls -l dist-packages
+          (cd dist-packages && sha256sum -- *.tgz | tee SHA256SUMS)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist-packages/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [check, pack]
+    if: inputs.publish
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm
+    permissions:
+      contents: read
+      # npm provenance (and trusted publishing) sign with the run's OIDC token.
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist-packages
+
+      - name: Publish the five packages, then the package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.check.outputs.version }}
+          DIST_TAG: ${{ inputs.dist-tag }}
+        run: |
+          cd dist-packages
+          sha256sum -c SHA256SUMS
+          for target in linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64 win32-x64-msvc; do
+            npm publish "kaetemi-switchboard-quic-$target-$VERSION.tgz" --provenance --access public --tag "$DIST_TAG"
+          done
+          # Last, so that its optionalDependencies resolve when it appears.
+          npm publish "kaetemi-switchboard-$VERSION.tgz" --provenance --access public --tag "$DIST_TAG"

@@ -285,14 +285,6 @@ const node = {
     return new sb.TalkChannel(connection.open(node.address(service).encode()));
   },
 
-  /**
-   * [channel] in a Talk channel: what `ReconnectingClient.openTalk` and `openPersistentTalk` do,
-   * which wait for the node's Talk seam (`talk-layer.ts`) to be wired.
-   */
-  talkOn(channel: sb.MuxChannel): sb.TalkChannel {
-    return new sb.TalkChannel(channel);
-  },
-
   /** A ReconnectingClient of the node over WebTransport, closed after the test. */
   client(): sb.ReconnectingClient {
     const s = currentServer();

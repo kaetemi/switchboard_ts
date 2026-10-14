@@ -1808,8 +1808,11 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    *   `receiver` is given, proving that identity) has verified; the channels
    *   opened meanwhile wait for it. The wait counts toward `timeout`.
    *
-   * @throws {TypeError} for a holder key missing, not the credential's, or
-   * given with a bearer credential.
+   * A holder key given with a bearer credential is ignored: a bearer
+   * credential carries no proof (as in Dart, and as the frame mux does).
+   *
+   * @throws {TypeError} for a holder-key credential whose holder key is
+   * missing or not the one it names.
    * @throws {RangeError} for an intent, receiver or credential too long for
    * an `IDENT`.
    */
@@ -1823,8 +1826,6 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       if (!bytesEqual(holderKey.publicKey, holder)) {
         throw new TypeError('not the holder key the credential names');
       }
-    } else if (holderKey !== undefined) {
-      throw new TypeError('a bearer credential carries no proof: no holder key');
     }
     const intent = options.intent === undefined ? new Uint8Array(0) : options.intent.slice();
     const receiver = options.receiver;

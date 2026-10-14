@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import { type Credential, Right } from '../../../src/core/identity/contract.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import type { MuxChannel, MuxConnection } from '../../../src/core/mux/contract.ts';
 import { Name, type NameLike } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
@@ -27,7 +28,12 @@ import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
-import { FakeVerifier, fakeCredential, fakeHolderKey } from '../../support/node/fake-identity.ts';
+import {
+  hmacAuthority,
+  issueCredential,
+  rogue,
+  TestVerifier,
+} from '../../support/node/fake-identity.ts';
 import {
   codeOf,
   currentRuntime,
@@ -42,13 +48,13 @@ const npc = Name.of('npc');
 const chat = Name.of('chat');
 const naming = Name.of('_ns');
 
-const npcKey = fakeHolderKey(new Uint8Array(32).fill(1));
-const gateKey = fakeHolderKey(new Uint8Array(32).fill(2));
-const workerKey = fakeHolderKey(new Uint8Array(32).fill(3));
+const npcKey = await Ed25519HolderKey.fromSeed(new Uint8Array(32).fill(1));
+const gateKey = await Ed25519HolderKey.fromSeed(new Uint8Array(32).fill(2));
+const workerKey = await Ed25519HolderKey.fromSeed(new Uint8Array(32).fill(3));
 
 /** `npc-7`, which may open `npc` and nothing else. */
-function npcCredential(): Credential {
-  return fakeCredential({
+function npcCredential(): Promise<Credential> {
+  return issueCredential({
     identity: 'npc-7',
     holderKey: npcKey.publicKey,
     scopes: [[Right.open, 'npc']],
@@ -56,8 +62,8 @@ function npcCredential(): Credential {
 }
 
 /** A worker: may register its type, open nothing. */
-function workerCredential(expiresAt = 0): Credential {
-  return fakeCredential({
+function workerCredential(expiresAt = 0): Promise<Credential> {
+  return issueCredential({
     identity: 'worker-a1',
     holderKey: workerKey.publicKey,
     scopes: [[Right.register, 'worker-*']],
@@ -65,17 +71,14 @@ function workerCredential(expiresAt = 0): Credential {
   });
 }
 
-/** A credential no verifier knows (another authority's, or forged). */
-function unknownCredential(): Credential {
-  const genuine = npcCredential();
-  return {
-    ...genuine,
-    isBearer: genuine.isBearer,
-    holderKey: genuine.holderKey,
-    allows: (right, name) => genuine.allows(right, name),
-    isExpired: (now) => genuine.isExpired(now),
-    encode: () => utf8Encode('forged'),
-  };
+/** A credential no verifier knows: another key pair's, claiming the authority's key id. */
+function unknownCredential(): Promise<Credential> {
+  return issueCredential({
+    identity: 'npc-7',
+    holderKey: npcKey.publicKey,
+    scopes: [[Right.open, 'npc']],
+    by: rogue,
+  });
 }
 
 interface NodeOptions {
@@ -97,7 +100,7 @@ function node(options: NodeOptions = {}): Switchboard {
   return harnessNode({
     credential: options.credential,
     holderKey: options.holderKey,
-    verifier: (options.verify ?? true) ? new FakeVerifier() : undefined,
+    verifier: (options.verify ?? true) ? new TestVerifier() : undefined,
     identifyOutgoing: options.identifyOutgoing,
     identifyFor: options.identifyFor,
     identityTimeout: options.identityTimeout ?? 5000,
@@ -171,7 +174,7 @@ describe('brokering', () => {
   test('a pooled brokered connection is reused only while its peer carries the identity it was brokered as', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     const credential = () => workerCredential(Math.floor(Date.now() / 1000) + 60);
-    const worker = node({ credential: credential(), holderKey: workerKey });
+    const worker = node({ credential: await credential(), holderKey: workerKey });
     worker.registerService(npc, answer, { instance: 1 });
     const dialled: MuxConnection[] = [];
     let asked = 0;
@@ -188,7 +191,7 @@ describe('brokering', () => {
     expect(dialled).toHaveLength(1);
     // Renewed in time: the connection is reused past the first expiry.
     vi.setSystemTime(Date.now() + 40_000);
-    await worker.updateCredential(credential());
+    await worker.updateCredential(await credential());
     vi.setSystemTime(Date.now() + 40_000);
     expect(await openNpc()).toBe('npc for nobody');
     expect(dialled).toHaveLength(1);
@@ -205,7 +208,7 @@ describe('brokering', () => {
   });
 
   test('a dial-back arriving before CONNECT fails is sent GOAWAY', async () => {
-    const worker = node({ credential: workerCredential(), holderKey: workerKey });
+    const worker = node({ credential: await workerCredential(), holderKey: workerKey });
     let dialled: MuxConnection | undefined;
     const resolver = new BrokerResolver(async (endpoint, intent) => {
       dialled = await worker.dial(endpoint, { intent });
@@ -220,13 +223,13 @@ describe('brokering', () => {
   });
 
   test('broker identifies back, names the instance and is not pooled', async () => {
-    const worker = node({ credential: workerCredential(), holderKey: workerKey });
+    const worker = node({ credential: await workerCredential(), holderKey: workerKey });
     worker.registerService(npc, answer, { instance: 1 });
     const resolver = new BrokerResolver(async (endpoint, intent) => {
       await worker.dial(endpoint, { intent });
       return 'worker-a1';
     });
-    const consumer = node({ resolver, credential: npcCredential(), holderKey: npcKey });
+    const consumer = node({ resolver, credential: await npcCredential(), holderKey: npcKey });
     await consumer.listenMemory();
     const connection = await consumer.broker('npc/1');
     expect(connection.isInitiator).toBe(false);
@@ -253,7 +256,7 @@ describe('brokering', () => {
   });
 
   test('an instance that never dials back is unavailable; its late connection is sent GOAWAY', async () => {
-    const worker = node({ credential: workerCredential(), holderKey: workerKey });
+    const worker = node({ credential: await workerCredential(), holderKey: workerKey });
     let request: { endpoint: string; intent: Uint8Array } | undefined;
     const resolver = new BrokerResolver(async (endpoint, intent) => {
       request = { endpoint, intent };
@@ -261,7 +264,7 @@ describe('brokering', () => {
     });
     const consumer = harnessNode({
       resolver,
-      verifier: new FakeVerifier(),
+      verifier: new TestVerifier(),
       connectTimeout: 50,
     });
     await consumer.listenMemory();
@@ -288,7 +291,7 @@ describe('brokering', () => {
   });
 
   test('a connection that is not the instance is refused UNAUTHENTICATED', async () => {
-    const worker = node({ credential: workerCredential(), holderKey: workerKey });
+    const worker = node({ credential: await workerCredential(), holderKey: workerKey });
     const resolver = new BrokerResolver(async (endpoint, intent) => {
       await worker.dial(endpoint, { intent });
       return 'someone-else';
@@ -302,7 +305,7 @@ describe('brokering', () => {
 describe('over mem', () => {
   test('mutual identity', async () => {
     const { s: b, uri } = await server({
-      credential: fakeCredential({
+      credential: await issueCredential({
         identity: 'gate',
         holderKey: gateKey.publicKey,
         scopes: [[Right.open, '*']],
@@ -317,7 +320,7 @@ describe('over mem', () => {
         void connection.identityRequested.then(() => b.identifyOn(connection));
       }
     })();
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     const connection = await a.connect(uri);
     // connect() returned after the server confirmed the IDENT.
     expect(accepted[0]?.peerIdentity?.identity).toBe('npc-7');
@@ -330,7 +333,7 @@ describe('over mem', () => {
 
   test('a scoped policy admits open-scoped types only', async () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped() });
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     expect(await open(a, uri, npc)).toBe('npc for npc-7');
     expect(await open(a, uri, chat)).toBe('closed permissionDenied');
     // The naming service checks the credential itself.
@@ -339,7 +342,7 @@ describe('over mem', () => {
 
   test('a worker, identified, can open nothing', async () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped() });
-    const w = node({ credential: workerCredential(), holderKey: workerKey });
+    const w = node({ credential: await workerCredential(), holderKey: workerKey });
     expect(await open(w, uri, npc)).toBe('closed permissionDenied');
     expect(await open(w, uri, chat)).toBe('closed permissionDenied');
     expect(await open(w, uri, naming)).toBe('_ns for worker-a1');
@@ -348,7 +351,11 @@ describe('over mem', () => {
   test('a bearer credential works', async () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped() });
     const a = node({
-      credential: fakeCredential({ identity: 'npc-8', scopes: [[Right.open, 'npc']] }),
+      credential: await issueCredential({
+        identity: 'npc-8',
+        scopes: [[Right.open, 'npc']],
+        by: hmacAuthority,
+      }),
     });
     expect(await open(a, uri, npc)).toBe('npc for npc-8');
     expect(await open(a, uri, chat)).toBe('closed permissionDenied');
@@ -358,7 +365,7 @@ describe('over mem', () => {
     const { s: b, uri } = await server({ policy: ChannelPolicies.scoped() });
     const ended: Promise<unknown>[] = [];
     const accepted = collect(b);
-    const a = node({ credential: unknownCredential(), holderKey: npcKey });
+    const a = node({ credential: await unknownCredential(), holderKey: npcKey });
     await rejectsWith(a.connect(uri), StatusCode.unauthenticated);
     await rejectsWith(
       a.openChannelAt(uri, new ChannelAddress({ type: npc })),
@@ -373,7 +380,7 @@ describe('over mem', () => {
 
   test('a forged IDENT gets GOAWAY UNAUTHENTICATED', async () => {
     const { uri } = await server();
-    const a = node({ credential: unknownCredential(), holderKey: npcKey });
+    const a = node({ credential: await unknownCredential(), holderKey: npcKey });
     const dialled = collect(a);
     await rejectsWith(a.connect(uri), StatusCode.unauthenticated);
     const connection = dialled[0] as MuxConnection;
@@ -385,7 +392,11 @@ describe('over mem', () => {
 describe('holding', () => {
   test('a channel arriving before IDENT is held, then admitted', async () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped() });
-    const a = node({ credential: npcCredential(), holderKey: npcKey, identifyOutgoing: false });
+    const a = node({
+      credential: await npcCredential(),
+      holderKey: npcKey,
+      identifyOutgoing: false,
+    });
     const connection = await a.connect(uri);
     const channel = a.openChannelOn(connection, new ChannelAddress({ type: npc }));
     const answered = answerOf(channel);
@@ -429,7 +440,11 @@ describe('holding', () => {
 
   test('several held channels are admitted by one identification', async () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped() });
-    const a = node({ credential: npcCredential(), holderKey: npcKey, identifyOutgoing: false });
+    const a = node({
+      credential: await npcCredential(),
+      holderKey: npcKey,
+      identifyOutgoing: false,
+    });
     const connection = await a.connect(uri);
     const answers = [npc, npc, chat].map((type) =>
       answerOf(a.openChannelOn(connection, new ChannelAddress({ type }))),
@@ -452,7 +467,7 @@ describe('policies', () => {
         ChannelPolicies.requireIdentity(),
       ]),
     });
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     expect(await open(a, uri, chat)).toBe('chat for npc-7');
     expect(await open(a, uri, naming)).toBe('closed permissionDenied');
   });
@@ -461,7 +476,7 @@ describe('policies', () => {
     const { uri } = await server({ policy: ChannelPolicies.scoped({ requireIdentity: false }) });
     const anonymous = node();
     expect(await open(anonymous, uri, chat)).toBe('chat for nobody');
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     expect(await open(a, uri, chat)).toBe('closed permissionDenied');
   });
 
@@ -475,7 +490,7 @@ describe('policies', () => {
     // The consumer dials the worker and identifies; the worker identifies
     // when asked; its channels back are checked by the consumer's
     // outgoing policy.
-    const w = node({ credential: workerCredential(), holderKey: workerKey });
+    const w = node({ credential: await workerCredential(), holderKey: workerKey });
     const pushed: Promise<string>[] = [];
     void (async () => {
       for await (const connection of w.connections) {
@@ -487,7 +502,7 @@ describe('policies', () => {
     })();
     const workerUri = await w.listenMemory();
     const consumer = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       outgoingPolicy: ChannelPolicies.scoped(),
     });
@@ -505,7 +520,7 @@ describe('identifying', () => {
     const { uri: outside } = await server();
     const asked: string[] = [];
     const a = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identifyFor: (endpoint) => {
         asked.push(endpoint);
@@ -519,10 +534,14 @@ describe('identifying', () => {
 
   test('identifyOutgoing false, and a hook that throws', async () => {
     const { uri } = await server();
-    const quiet = node({ credential: npcCredential(), holderKey: npcKey, identifyOutgoing: false });
+    const quiet = node({
+      credential: await npcCredential(),
+      holderKey: npcKey,
+      identifyOutgoing: false,
+    });
     expect(await open(quiet, uri, npc)).toBe('npc for nobody');
     const failing = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identifyFor: () => {
         throw new Error('no');
@@ -535,7 +554,7 @@ describe('identifying', () => {
     const b = node({ verify: false });
     b.registerService(npc, answer);
     const uri = await b.listenMemory();
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     expect(await open(a, uri, npc)).toBe('npc for nobody');
   });
 
@@ -543,7 +562,7 @@ describe('identifying', () => {
     // A peer that reads and ignores every frame.
     const runtime = currentRuntime();
     const a = harnessNode({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identityTimeout: 100,
       runtime: {
@@ -564,9 +583,9 @@ describe('identifying', () => {
   test('the credential can be replaced; identifyOn presents it', async () => {
     const { s: b, uri } = await server({ policy: ChannelPolicies.scoped() });
     const accepted = collect(b);
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     const connection = await a.connect(uri);
-    a.credential = fakeCredential({
+    a.credential = await issueCredential({
       identity: 'npc-7',
       holderKey: npcKey.publicKey,
       scopes: [
@@ -579,7 +598,7 @@ describe('identifying', () => {
     expect(accepted[0]?.peerIdentity?.scopes).toHaveLength(2);
     expect(await open(a, uri, chat)).toBe('chat for npc-7');
     expect(connection.localIdentity).toBe('npc-7');
-    const other = workerCredential();
+    const other = await workerCredential();
     expect(() => {
       a.credential = other;
     }).toThrow(RangeError);
@@ -593,14 +612,15 @@ describe('identifying', () => {
 
   test('expectedIdentityFor names the receiver', async () => {
     const { uri } = await server({
-      credential: fakeCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
+      credential: await issueCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
       holderKey: gateKey,
       requireNamedIdent: true,
     });
     const asked: [string, ServiceRecord | undefined][] = [];
+    const credential = await npcCredential();
     const client = (expected: string | undefined) =>
       node({
-        credential: npcCredential(),
+        credential,
         holderKey: npcKey,
         expectedIdentityFor: (endpoint, record) => {
           asked.push([endpoint, record]);
@@ -620,7 +640,7 @@ describe('identifying', () => {
     expect(connection.isOpen).toBe(true);
     // A hook that throws fails the connection (see below).
     const failing = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       expectedIdentityFor: () => {
         throw new Error('no');
@@ -633,7 +653,7 @@ describe('identifying', () => {
     // A host that accepts an IDENT naming nobody: the hook's failure must
     // not fall back to one.
     const { s: lenient, uri } = await server({
-      credential: fakeCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
+      credential: await issueCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
       holderKey: gateKey,
     });
     const accepted = collect(lenient);
@@ -647,7 +667,7 @@ describe('identifying', () => {
       throw new TypeError('vault sealed');
     };
     const failing = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       expectedIdentityFor: sealed,
       logger,
@@ -674,7 +694,7 @@ describe('identifying', () => {
     // identifyOn fails the same way, without an IDENT, and leaves the
     // connection as it is.
     const quiet = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identifyFor: () => false,
       expectedIdentityFor: sealed,
@@ -687,14 +707,14 @@ describe('identifying', () => {
 
   test('dial with an intent and a receiver; updateCredential presents the renewed credential where the node identified', async () => {
     const { s: b, uri: bUri } = await server({
-      credential: fakeCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
+      credential: await issueCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
       holderKey: gateKey,
     });
     const { s: c, uri: cUri } = await server({ policy: ChannelPolicies.scoped() });
     const atB = collect(b);
     const atC = collect(c);
     const a = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identifyFor: (endpoint) => endpoint === bUri,
     });
@@ -711,7 +731,7 @@ describe('identifying', () => {
     const identified = (atB[0] as MuxConnection).peerIdentity;
     expect(identified?.intent).toEqual(Uint8Array.of(7));
     expect(identified?.receiver).toBe('gate');
-    const renewed = fakeCredential({
+    const renewed = await issueCredential({
       identity: 'npc-7',
       holderKey: npcKey.publicKey,
       scopes: [
@@ -722,7 +742,8 @@ describe('identifying', () => {
     await a.updateCredential(renewed);
     expect(a.credential).toBe(renewed);
     const after = (atB[0] as MuxConnection).peerIdentity;
-    expect(after?.credential).toBe(renewed);
+    // The peer decoded it: equal by its bytes, as Dart's == compares.
+    expect(renewed.equals(after?.credential)).toBe(true);
     expect(after?.intent).toEqual(Uint8Array.of(7));
     expect(after?.receiver).toBe('gate');
     expect((atC[0] as MuxConnection).peerIdentity).toBeUndefined();
@@ -733,7 +754,7 @@ describe('identifying', () => {
   test('updateCredential while the node is identifying on a connection: the renewed credential is presented there once done', async () => {
     const { s: b, uri } = await server();
     const accepted = collect(b);
-    const renewed = fakeCredential({
+    const renewed = await issueCredential({
       identity: 'npc-7',
       holderKey: npcKey.publicKey,
       scopes: [
@@ -742,14 +763,14 @@ describe('identifying', () => {
       ],
     });
     // A new pooled connection: connect identifies on it before returning it.
-    const a = node({ credential: npcCredential(), holderKey: npcKey });
+    const a = node({ credential: await npcCredential(), holderKey: npcKey });
     const connecting = a.connect(uri);
     await a.updateCredential(renewed);
     await connecting;
-    expect(accepted[0]?.peerIdentity?.credential).toBe(renewed);
+    expect(renewed.equals(accepted[0]?.peerIdentity?.credential)).toBe(true);
     // identifyOn.
     const quiet = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       identifyFor: () => false,
     });
@@ -759,7 +780,7 @@ describe('identifying', () => {
     const identifying = quiet.identifyOn(connection);
     await quiet.updateCredential(renewed);
     await identifying;
-    expect(accepted[1]?.peerIdentity?.credential).toBe(renewed);
+    expect(renewed.equals(accepted[1]?.peerIdentity?.credential)).toBe(true);
   });
 
   test('PeerSet connections identify', async () => {
@@ -779,7 +800,7 @@ describe('identifying', () => {
     const uri = await b.listenMemory();
     const records: (ServiceRecord | undefined)[] = [];
     const consumer = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       outgoingPolicy: ChannelPolicies.denyAll,
       resolver: new StaticResolver([
@@ -809,7 +830,7 @@ describe('identifying', () => {
     const uri = await b.listenMemory();
     let calls = 0;
     const consumer = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       outgoingPolicy: ChannelPolicies.denyAll,
       resolver: new StaticResolver([
@@ -856,7 +877,7 @@ describe('identifying', () => {
 
   test('an open through the resolver tells the hook its record', async () => {
     const gate = node({
-      credential: fakeCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
+      credential: await issueCredential({ identity: 'gate', holderKey: gateKey.publicKey }),
       holderKey: gateKey,
       requireNamedIdent: true,
     });
@@ -864,7 +885,7 @@ describe('identifying', () => {
     const uri = await gate.listenMemory();
     const records: (ServiceRecord | undefined)[] = [];
     const client = node({
-      credential: npcCredential(),
+      credential: await npcCredential(),
       holderKey: npcKey,
       resolver: new StaticResolver([
         serviceRecord(new ServiceAddress(npc, 5), { endpoints: [uri] }),

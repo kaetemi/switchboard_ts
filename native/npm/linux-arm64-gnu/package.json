@@ -1,0 +1,23 @@
+{
+  "name": "@kaetemi/switchboard-quic-linux-arm64-gnu",
+  "version": "3.0.0-dev.1",
+  "description": "The native QUIC addon of @kaetemi/switchboard for Linux arm64 with glibc (aarch64-unknown-linux-gnu).",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kaetemi/switchboard_ts.git",
+    "directory": "native/npm/linux-arm64-gnu"
+  },
+  "homepage": "https://github.com/kaetemi/switchboard_ts/tree/main/native#readme",
+  "main": "sbq-node.node",
+  "files": ["sbq-node.node"],
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "libc": ["glibc"],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

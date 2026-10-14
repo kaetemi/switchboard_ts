@@ -1,82 +1,55 @@
-// Credentials, a verifier and a holder key for the binding's identity
-// tests. The core's credential codecs and verifiers are not ported yet, so
-// a credential here is a readable byte string the fake verifier accepts;
-// the holder key is real Ed25519 over WebCrypto, so proofs of possession
-// are signed and verified as they will be.
-import { hexBytes, hexString } from '../../../src/core/bytes.ts';
+// The binding tests' identity, as `switchboard_quic`'s `binding_test.dart`
+// has it: real credentials of an Ed25519 test authority (`auth1`, from the
+// seed 7 * i), bearer ones of an HMAC issuer (`k1`, 32 zero bytes), real
+// verifiers that know both, and a verifier whose answer the test gives
+// (Dart's `HeldVerifier`). Holder keys are `Ed25519HolderKey`s.
 import type {
   Credential,
-  CredentialVerifier,
-  HolderKey,
+  CredentialVerifier as Verifier,
 } from '../../../src/core/identity/contract.ts';
-import { CredentialKind, SignatureKind } from '../../../src/core/identity/contract.ts';
-import { Name } from '../../../src/core/name.ts';
-import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { CredentialKind } from '../../../src/core/identity/contract.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import { CredentialVerifier } from '../../../src/core/identity/credential-verifier.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-const prefix = 'fake-credential:';
+/** The authority's Ed25519 seed (`binding_test.dart`). */
+const authoritySeed = Uint8Array.from({ length: 32 }, (_, i) => 7 * i);
 
-/** An Ed25519 holder key over WebCrypto. */
-export async function generateHolderKey(): Promise<HolderKey> {
-  const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
-    'sign',
-    'verify',
-  ])) as CryptoKeyPair;
-  const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
-  return {
-    publicKey,
-    async sign(message: Uint8Array): Promise<Uint8Array> {
-      return new Uint8Array(
-        await crypto.subtle.sign('Ed25519', pair.privateKey, message as Uint8Array<ArrayBuffer>),
-      );
-    },
-  };
+/** The HMAC key of the bearer credentials (`binding_test.dart`'s `k1`). */
+export const bearerKey: Uint8Array = new Uint8Array(32);
+
+/** The test authority: Ed25519, key id `auth1`. */
+export const authority: CredentialIssuer = await CredentialIssuer.ed25519FromSeed(
+  'auth1',
+  authoritySeed,
+);
+
+/** The issuer of bearer credentials: HMAC-SHA256, key id `k1`. */
+export const bearerIssuer: CredentialIssuer = CredentialIssuer.hmac('k1', bearerKey);
+
+const authorityKey = await authority.publicKey();
+
+/** A verifier of the {@link authority}'s credentials and the {@link bearerIssuer}'s. */
+export function verifier(): CredentialVerifier {
+  return new CredentialVerifier({
+    ed25519Keys: { auth1: authorityKey },
+    hmacKeys: { k1: bearerKey },
+  });
 }
 
-/** A credential the fake verifier accepts: a holder-key one with [holderKey], a bearer one without. */
-export function fakeCredential(identity: string, holderKey?: Uint8Array): Credential {
-  const key = holderKey === undefined ? 'bearer' : hexString(holderKey).replaceAll(' ', '');
-  const bytes = encoder.encode(`${prefix}${identity}:${key}`);
-  return {
-    version: 1,
-    kind: CredentialKind.node,
-    keyId: Name.of('fake'),
-    identity,
-    issuedAt: 0,
-    expiresAt: 0,
-    holderKey,
-    scopes: [],
-    signatureKind: holderKey === undefined ? SignatureKind.hmacSha256 : SignatureKind.ed25519,
-    signature: new Uint8Array(0),
-    isBearer: holderKey === undefined,
-    isExpired: () => false,
-    allows: () => false,
-    signedBytes: bytes,
-    encode: () => bytes.slice(),
-  };
-}
-
-/** Verifies the credentials of {@link fakeCredential}; anything else is invalid. */
-export class FakeVerifier implements CredentialVerifier {
-  calls = 0;
-
-  async verify(bytes: Uint8Array): Promise<Credential> {
-    this.calls++;
-    const text = decoder.decode(bytes);
-    const split = text.lastIndexOf(':');
-    if (!text.startsWith(prefix) || split < prefix.length) {
-      throw SwitchboardError.of(StatusCode.unauthenticated, 'invalid credential');
-    }
-    const identity = text.slice(prefix.length, split);
-    const key = text.slice(split + 1);
-    return fakeCredential(identity, key === 'bearer' ? undefined : hexBytes(key));
-  }
+/**
+ * A node credential of [identity]: the {@link authority}'s naming
+ * [holderKey], or without one a bearer credential of the
+ * {@link bearerIssuer}.
+ */
+export function credentialOf(identity: string, holderKey?: Uint8Array): Promise<Credential> {
+  return holderKey === undefined
+    ? bearerIssuer.issue({ kind: CredentialKind.node, identity })
+    : authority.issue({ kind: CredentialKind.node, identity, holderKey });
 }
 
 /** A verifier whose answer the test gives. */
-export class HeldVerifier implements CredentialVerifier {
+export class HeldVerifier implements Verifier {
   readonly result = new Deferred<Credential>();
   calls = 0;
 

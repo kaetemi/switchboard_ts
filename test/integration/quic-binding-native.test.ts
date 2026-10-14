@@ -11,15 +11,16 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // self-signed certificate; the dialler does not verify it, so the
 // identification rules of the binding page apply (QuicIdentityRules.initiator
 // and .listener). The connection-level cases of switchboard_quic's
-// test/native_integration_test.dart; its node-level cases (Talk, policies,
-// the proxy) wait for the node.
+// test/native_integration_test.dart; its cases between nodes (Talk,
+// policies, the proxy, throughput) are in quic-node-native.test.ts.
 //
 // Without the addon (`npm run build:native`) the file is skipped with the
 // reason; with SWITCHBOARD_NATIVE=required (CI) a missing addon fails it.
 
 import { afterAll, beforeAll, describe, expect, onTestFinished, test } from 'vitest';
 import { bytesEqual } from '../../src/core/bytes.ts';
-import type { HolderKey } from '../../src/core/identity/contract.ts';
+import type { Credential, HolderKey } from '../../src/core/identity/contract.ts';
+import { Ed25519HolderKey } from '../../src/core/identity/holder-key.ts';
 import type { MuxChannel, MuxOptions } from '../../src/core/mux/contract.ts';
 import {
   type QuicListener,
@@ -41,7 +42,7 @@ import {
   nativeQuicAvailability,
   selfSignedCertificate,
 } from '../../src/node/quic/index.ts';
-import { FakeVerifier, fakeCredential, generateHolderKey } from '../unit/quic/identity-fixtures.ts';
+import { credentialOf, verifier } from '../unit/quic/identity-fixtures.ts';
 
 const availability = nativeQuicAvailability();
 if (!availability.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {
@@ -135,7 +136,7 @@ interface ServerOptions {
   /** Echo every channel's chunks back, then close in turn (the default); false: deliver to [channels]. */
   echo?: boolean;
   /** Identifies in return, naming the peer, once the peer's exporter-bound IDENT verified. */
-  identity?: { credential: ReturnType<typeof fakeCredential>; holderKey: HolderKey };
+  identity?: { credential: Credential; holderKey: HolderKey };
 }
 
 /** A listener of the binding over the native provider, with what it accepted. */
@@ -272,8 +273,8 @@ describe.skipIf(!availability.available)(
   () => {
     beforeAll(async () => {
       cert = selfSignedCertificate('localhost');
-      clientKey = await generateHolderKey();
-      serverKey = await generateHolderKey();
+      clientKey = await Ed25519HolderKey.generate();
+      serverKey = await Ed25519HolderKey.generate();
     });
 
     afterAll(() => {
@@ -284,22 +285,22 @@ describe.skipIf(!availability.available)(
       describe(mode.label, () => {
         test('connections identify both ways with exporter-bound proofs over the TLS exporter both ends derived', async () => {
           const server = await listen(mode, {
-            options: { identityVerifier: new FakeVerifier() },
+            options: { identityVerifier: verifier() },
             localIdentity: 'server-1',
             identity: {
-              credential: fakeCredential('server-1', serverKey.publicKey),
+              credential: await credentialOf('server-1', serverKey.publicKey),
               holderKey: serverKey,
             },
           });
           const initiated = await dial(server, {
-            options: { identityVerifier: new FakeVerifier() },
+            options: { identityVerifier: verifier() },
             localIdentity: 'npc-7',
           });
           expect(initiated.quicOptions.identity.awaitPeerIdentity).toBe(true);
           // Opened at once, the channel waits for the listener's identity.
           const channel = initiated.open(bytes('npc'));
           await within(
-            initiated.identify(fakeCredential('npc-7', clientKey.publicKey), {
+            initiated.identify(await credentialOf('npc-7', clientKey.publicKey), {
               holderKey: clientKey,
               receiver: 'server-1',
             }),
@@ -338,9 +339,9 @@ describe.skipIf(!availability.available)(
         });
 
         test("a dialler awaiting the listener's identity, which never comes, opens nothing and gives up at its identity timeout; one without a credential is served", async () => {
-          const server = await listen(mode, { options: { identityVerifier: new FakeVerifier() } });
+          const server = await listen(mode, { options: { identityVerifier: verifier() } });
           const waiting = await dial(server, {
-            options: { identityVerifier: new FakeVerifier(), identityTimeout: 500 },
+            options: { identityVerifier: verifier(), identityTimeout: 500 },
             localIdentity: 'npc-7',
           });
           expect(waiting.quicOptions.identity.awaitPeerIdentity).toBe(true);
@@ -348,7 +349,7 @@ describe.skipIf(!availability.available)(
           void channel.send(bytes('early')).catch(() => {});
           const error = await within(
             waiting
-              .identify(fakeCredential('npc-7', clientKey.publicKey), { holderKey: clientKey })
+              .identify(await credentialOf('npc-7', clientKey.publicKey), { holderKey: clientKey })
               .catch((e: unknown) => e),
           );
           expect(error).toBeInstanceOf(SwitchboardError);
@@ -500,19 +501,19 @@ describe.skipIf(!availability.available)(
 
       test('the exporter the proofs signed is the session’s, with the label switchboard-ident', async () => {
         const server = await listen(mode, {
-          options: { identityVerifier: new FakeVerifier() },
+          options: { identityVerifier: verifier() },
           localIdentity: 'server-1',
           identity: {
-            credential: fakeCredential('server-1', serverKey.publicKey),
+            credential: await credentialOf('server-1', serverKey.publicKey),
             holderKey: serverKey,
           },
         });
         const initiated = await dial(server, {
-          options: { identityVerifier: new FakeVerifier() },
+          options: { identityVerifier: verifier() },
           localIdentity: 'npc-7',
         });
         await within(
-          initiated.identify(fakeCredential('npc-7', clientKey.publicKey), {
+          initiated.identify(await credentialOf('npc-7', clientKey.publicKey), {
             holderKey: clientKey,
           }),
         );

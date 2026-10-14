@@ -10,7 +10,8 @@
 // identification pass through the relay.
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/index.ts';
-import { type HolderKey, Right } from '../../../src/core/identity/contract.ts';
+import { type Credential, type HolderKey, Right } from '../../../src/core/identity/contract.ts';
+import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
 import { Name } from '../../../src/core/name.ts';
 import { type QuicStream, QuicStreamReset } from '../../../src/core/quic/contract.ts';
 import { QuicHello } from '../../../src/core/quic/hello.ts';
@@ -24,10 +25,9 @@ import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import { FakeQuicNetwork } from '../../../src/testing/fake-quic-provider.ts';
-import { FakeVerifier, fakeCredential } from '../../support/node/fake-identity.ts';
+import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import { node as harnessNode, onCleanup, tagOf } from '../../support/node/harness.ts';
 import { bytes, expectCode, fast } from './harness.ts';
-import { generateHolderKey } from './identity-fixtures.ts';
 
 const npc = Name.of('npc');
 const npcAddress = (): ChannelAddress => new ChannelAddress({ type: npc });
@@ -35,15 +35,19 @@ const mitmEndpoint = 'quic://mitm:4433';
 
 let clientKey: HolderKey;
 let serverKey: HolderKey;
+let clientCredential: Credential;
+let serverCredential: Credential;
 
 beforeAll(async () => {
-  clientKey = await generateHolderKey();
-  serverKey = await generateHolderKey();
+  clientKey = await Ed25519HolderKey.generate();
+  serverKey = await Ed25519HolderKey.generate();
+  clientCredential = await credential('npc-7', clientKey);
+  serverCredential = await credential('server-1', serverKey);
 });
 
 /** A node credential of [identity] for [key], allowed to open anything. */
-function credential(identity: string, key: HolderKey) {
-  return fakeCredential({ identity, holderKey: key.publicKey, scopes: [[Right.open, '*']] });
+function credential(identity: string, key: HolderKey): Promise<Credential> {
+  return issueCredential({ identity, holderKey: key.publicKey, scopes: [[Right.open, '*']] });
 }
 
 /** A node closed after the test, with the binding tests' options. */
@@ -134,8 +138,8 @@ async function target(
   identityRules: QuicIdentityRules = QuicIdentityRules.listener,
 ): Promise<string> {
   const server = node({
-    verifier: new FakeVerifier(),
-    credential: credential('server-1', serverKey),
+    verifier: new TestVerifier(),
+    credential: serverCredential,
     holderKey: serverKey,
   });
   server.registerService(npc, answer);
@@ -157,8 +161,8 @@ function victim(network: FakeQuicNetwork, identityRules?: QuicIdentityRules): Sw
         identityRules === undefined ? {} : { identityRules },
       ),
     ],
-    verifier: new FakeVerifier(),
-    credential: credential('npc-7', clientKey),
+    verifier: new TestVerifier(),
+    credential: clientCredential,
     holderKey: clientKey,
     expectedIdentityFor: () => 'server-1',
   });

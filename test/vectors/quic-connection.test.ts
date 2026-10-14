@@ -3,15 +3,24 @@
 // connection state: a port of the connection half of `switchboard_quic`'s
 // `test/vectors_test.dart`, each vector written by a raw peer into a
 // connection of the binding. The codecs byte for byte (and the exporter
-// equal at both ends of a session) are in `quic-records.test.ts`.
+// equal at both ends of a session) are in `quic-records.test.ts`. The
+// wiki's vectors are read by id (`test/support/vectors.ts`); a record the
+// wiki gives as it arrives on a channel's stream follows the OPEN record of
+// channel 2 here.
 import { describe, expect, test } from 'vitest';
-import { hexBytes, hexString } from '../../src/core/bytes.ts';
+import { concatBytes, hexBytes, hexString } from '../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection } from '../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../src/core/mux/mux-frame.ts';
 import type { QuicStream } from '../../src/core/quic/contract.ts';
 import { quicHelloType } from '../../src/core/quic/hello.ts';
+import { encodeOpenRecord } from '../../src/core/quic/records.ts';
 import { StatusCode } from '../../src/core/status.ts';
+import { wikiBytes, wikiVector } from '../support/vectors.ts';
 import { bindingAndRaw, expectStatus, within } from '../unit/quic/harness.ts';
+
+/** The OPEN record of channel 2 to the default service, then [record]: a stream of a channel. */
+const onChannel2 = (record: Uint8Array): Uint8Array =>
+  concatBytes(encodeOpenRecord(2, Uint8Array.of(0)), record);
 
 /** Takes every channel [connection] delivers, handing each to [onChannel] (Dart's `incoming.listen`). */
 function acceptAll(connection: MuxConnection, onChannel: (channel: MuxChannel) => void): void {
@@ -38,20 +47,45 @@ function drainChannel(channel: MuxChannel): void {
 describe('records', () => {
   describe('negative (protocol error)', () => {
     // Through a connection: each ends it with PROTOCOL_ERROR.
+    const firstData = wikiVector(
+      'quic-binding/test-vectors/records/a-stream-whose-first-record-is-data',
+    );
     for (const [name, vector] of [
-      ['command 3', '06 00 00 40 02 00 00 00 00 00 00 00 00 C0'],
-      ['CLOSE with a one-byte body', '06 00 00 40 02 00 00 00 00 00 01 00 00 80 00'],
-      ['a stream whose first record is DATA', '00 00 00 00'],
-      ['OPEN with a truncated channel id', '05 00 00 40 02 00 00 00 00'],
-      ['OPEN of reserved channel 1', '06 00 00 40 01 00 00 00 00 00'],
-      ['OPEN of reserved channel 0xFFFF', '06 00 00 40 FF FF 00 00 00 00'],
-      ['a record after a CLOSE record', '06 00 00 40 02 00 00 00 00 00 00 00 00 80 00 00 00 00'],
-      ['a second OPEN record', '06 00 00 40 02 00 00 00 00 00 06 00 00 40 04 00 00 00 00 00'],
+      ['command 3', onChannel2(wikiBytes('quic-binding/test-vectors/records/command-3'))],
+      [
+        'CLOSE with a one-byte body',
+        onChannel2(wikiBytes('quic-binding/test-vectors/records/close-with-a-one-byte-body')),
+      ],
+      // `00 00 00 00` as its first record.
+      [
+        'a stream whose first record is DATA',
+        hexBytes(/`([^`]+)`/.exec(firstData.text)?.[1] ?? ''),
+      ],
+      [
+        'OPEN with a truncated channel id',
+        wikiBytes('quic-binding/test-vectors/records/open-with-a-truncated-channel-id'),
+      ],
+      [
+        'OPEN of reserved channel 1',
+        wikiBytes('quic-binding/test-vectors/records/open-of-reserved-channel-1'),
+      ],
+      [
+        'OPEN of reserved channel 0xFFFF',
+        wikiBytes('quic-binding/test-vectors/records/open-of-reserved-channel-0xffff'),
+      ],
+      [
+        'a record after a CLOSE record',
+        onChannel2(wikiBytes('quic-binding/test-vectors/records/a-record-after-a-close-record')),
+      ],
+      [
+        'a second OPEN record',
+        hexBytes('06 00 00 40 02 00 00 00 00 00 06 00 00 40 04 00 00 00 00 00'),
+      ],
     ] as const) {
       test(`${name} ends the connection`, async () => {
         const [connection, raw] = await bindingAndRaw();
         acceptAll(connection, () => {});
-        const stream = await raw.openRaw(hexBytes(vector));
+        const stream = await raw.openRaw(vector);
         if (name === 'a record after a CLOSE record') {
           await stream.finish();
         }
@@ -90,31 +124,71 @@ describe('records', () => {
 describe('control stream', () => {
   describe('negative (protocol error)', () => {
     for (const [name, vector] of [
-      ['a HELLO of 8 bytes', '09 00 00 00 08 F0 7F 00 00 00 00 00 00'],
-      ['a HELLO with a record limit of 1024', '0A 00 00 00 08 00 04 00 00 00 00 00 00 00'],
-      ['an empty control record', '00 00 00 00'],
-      ['a control message before HELLO', '03 00 00 00 01 DE AD'],
+      [
+        'a HELLO of 8 bytes',
+        wikiBytes(
+          'quic-binding/test-vectors/control-stream/prose-09-00-00-00-08-f0-7f-00-00-00-00-00-00',
+        ),
+      ],
+      [
+        'a HELLO with a record limit of 1024',
+        wikiBytes(
+          'quic-binding/test-vectors/control-stream/prose-0a-00-00-00-08-00-04-00-00-00-00-00-00-00',
+        ),
+      ],
+      [
+        'an empty control record',
+        wikiBytes('quic-binding/test-vectors/control-stream/prose-00-00-00-00'),
+      ],
+      [
+        'a control message before HELLO',
+        wikiBytes('quic-binding/test-vectors/control-stream/ping-payload-de-ad'),
+      ],
     ] as const) {
       test(`${name} as the first message ends the connection`, async () => {
         const [connection, raw] = await bindingAndRaw({ rawControl: false });
         await raw.openControl({ sendHello: false });
-        await (raw.control as QuicStream).write(hexBytes(vector));
+        await (raw.control as QuicStream).write(vector);
         expectStatus(await within(connection.done), StatusCode.protocolError);
         expect((await raw.end).code).toBe(StatusCode.protocolError);
       });
     }
 
     for (const [name, vector] of [
-      ['LIMITS', '0D 00 00 00 04 00 04 00 00 04 00 00 00 00 00 01 00'],
-      ['CREDIT', '0B 00 00 00 07 02 00 00 00 00 00 00 80 00 00'],
-      ['an empty control record', '00 00 00 00'],
-      ['a second HELLO', '0A 00 00 00 08 F0 7F 00 00 00 00 00 00 00'],
-      ['a CLOSE record on the control stream', '00 00 00 80'],
-      ['a control payload over 1024 bytes', `02 04 00 00 01 ${Array(1025).fill('00').join(' ')}`],
+      [
+        'LIMITS',
+        wikiBytes(
+          'quic-binding/test-vectors/control-stream/prose-0d-00-00-00-04-00-04-00-00-04-00-00-00-00-00-01-00',
+        ),
+      ],
+      [
+        'CREDIT',
+        wikiBytes(
+          'quic-binding/test-vectors/control-stream/prose-0b-00-00-00-07-02-00-00-00-00-00-00-80-00-00',
+        ),
+      ],
+      [
+        'an empty control record',
+        wikiBytes('quic-binding/test-vectors/control-stream/prose-00-00-00-00'),
+      ],
+      [
+        'a second HELLO',
+        wikiBytes(
+          'quic-binding/test-vectors/control-stream/hello-record-limit-32752-no-stated-channel-limit-no-flags',
+        ),
+      ],
+      [
+        'a CLOSE record on the control stream',
+        wikiBytes('quic-binding/test-vectors/records/close-no-status-payload-ok'),
+      ],
+      [
+        'a control payload over 1024 bytes',
+        hexBytes(`02 04 00 00 01 ${Array(1025).fill('00').join(' ')}`),
+      ],
     ] as const) {
       test(`${name} after HELLO ends the connection`, async () => {
         const [connection, raw] = await bindingAndRaw();
-        await (raw.control as QuicStream).write(hexBytes(vector));
+        await (raw.control as QuicStream).write(vector);
         expectStatus(await within(connection.done), StatusCode.protocolError);
       });
     }

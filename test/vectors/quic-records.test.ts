@@ -3,10 +3,11 @@
 // "Example", as codecs byte for byte: a port of the codec half of
 // `switchboard_quic`'s `test/vectors_test.dart`. The negative vectors that
 // need connection state run through a connection of the binding in
-// `test/unit/quic/`. The control messages of the core (PING, PONG, GOAWAY,
-// NONCE, IDENT) are checked here as the records that carry them; their
-// codecs are the core's and are checked again against these bytes once
-// they land. Test names carry the vector ids of `wiki-vectors.json`.
+// `quic-connection.test.ts`. The control messages of the core (PING, PONG,
+// GOAWAY, NONCE, IDENT) are checked here as the records that carry them.
+// The wiki's vectors are read from `wiki-vectors.json` by id (through
+// `test/support/vectors.ts`), so `coverage.test.ts` checks every table of
+// the page; test names carry the ids.
 import { describe, expect, test } from 'vitest';
 import { ChannelAddress } from '../../src/core/address/channel-address.ts';
 import { concatBytes, hexBytes, hexString } from '../../src/core/bytes.ts';
@@ -41,6 +42,7 @@ import {
 } from '../../src/core/quic/index.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
 import { FakeQuicSession } from '../../src/testing/fake-quic-provider.ts';
+import { type WikiVector, wikiBytes, wikiVector, wikiVectors } from '../support/vectors.ts';
 
 /** C1 of the page "Polyverse Switchboard Test Vectors". */
 const c1 =
@@ -95,29 +97,39 @@ const control = (type: number, payload: Uint8Array): Uint8Array =>
 
 describe('records', () => {
   test('quic-binding/test-vectors/records/data-subframe-01-02-03', async () => {
-    expect(hex(encodeDataRecord([1, 2, 3]))).toBe('03 00 00 00 01 02 03');
-    const record = await decode('03 00 00 00 01 02 03');
+    const vector = hex(wikiBytes('quic-binding/test-vectors/records/data-subframe-01-02-03'));
+    expect(hex(encodeDataRecord([1, 2, 3]))).toBe(vector);
+    const record = await decode(vector);
     expect(record?.command).toBe(QuicRecordCommand.data);
     expect([...(record?.body ?? [])]).toEqual([1, 2, 3]);
   });
 
   test('quic-binding/test-vectors/records/data-empty-subframe', async () => {
-    expect(hex(encodeDataRecord([]))).toBe('00 00 00 00');
-    const record = await decode('00 00 00 00');
+    const vector = hex(wikiBytes('quic-binding/test-vectors/records/data-empty-subframe'));
+    expect(hex(encodeDataRecord([]))).toBe(vector);
+    const record = await decode(vector);
     expect(record?.command).toBe(QuicRecordCommand.data);
     expect(record?.body.length).toBe(0);
   });
 
   test('quic-binding/test-vectors/records/data-header-of-a-32752-byte-subframe', () => {
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/records/data-header-of-a-32752-byte-subframe'),
+    );
     const header = new Uint8Array(4);
     writeQuicRecordHeader(header, 0, QuicRecordCommand.data, 32752);
-    expect(hex(header)).toBe('F0 7F 00 00');
+    expect(hex(header)).toBe(vector);
     expect(hex(encodeDataRecord(new Uint8Array(32752)).subarray(0, 4))).toBe(hex(header));
   });
 
   test('quic-binding/test-vectors/records/open-channel-0-the-control-stream-empty-open-payload', async () => {
-    expect(hex(encodeOpenRecord(0, []))).toBe('06 00 00 40 00 00 00 00 00 00');
-    const record = await decode('06 00 00 40 00 00 00 00 00 00');
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/records/open-channel-0-the-control-stream-empty-open-payload',
+      ),
+    );
+    expect(hex(encodeOpenRecord(0, []))).toBe(vector);
+    const record = await decode(vector);
     expect(record?.command).toBe(QuicRecordCommand.open);
     const { id, openPayload } = decodeOpenBody(record?.body ?? new Uint8Array(0));
     expect(id).toBe(0);
@@ -125,14 +137,19 @@ describe('records', () => {
   });
 
   test('quic-binding/test-vectors/records/open-channel-2-open-payload-00-default-service', () => {
-    expect(hex(encodeOpenRecord(2, new ChannelAddress().encode()))).toBe(
-      '07 00 00 40 02 00 00 00 00 00 00',
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/records/open-channel-2-open-payload-00-default-service'),
     );
+    expect(hex(encodeOpenRecord(2, new ChannelAddress().encode()))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/records/open-channel-3-service-api-application-payload-01-02', async () => {
     const payload = new ChannelAddress({ type: 'api', payload: Uint8Array.of(1, 2) }).encode();
-    const vector = '11 00 00 40 03 00 00 00 00 00 01 61 70 69 00 00 00 00 00 01 02';
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/records/open-channel-3-service-api-application-payload-01-02',
+      ),
+    );
     expect(hex(encodeOpenRecord(3, payload))).toBe(vector);
     const record = await decode(vector);
     const { id, openPayload } = decodeOpenBody(record?.body ?? new Uint8Array(0));
@@ -143,37 +160,43 @@ describe('records', () => {
   });
 
   test('quic-binding/test-vectors/records/open-channel-0x1234567890ab-empty-open-payload', async () => {
-    expect(hex(encodeOpenRecord(0x1234567890ab, []))).toBe('06 00 00 40 AB 90 78 56 34 12');
-    const record = await decode('06 00 00 40 AB 90 78 56 34 12');
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/records/open-channel-0x1234567890ab-empty-open-payload'),
+    );
+    expect(hex(encodeOpenRecord(0x1234567890ab, []))).toBe(vector);
+    const record = await decode(vector);
     expect(decodeOpenBody(record?.body ?? new Uint8Array(0)).id).toBe(0x1234567890ab);
   });
 
   test('quic-binding/test-vectors/records/close-no-status-payload-ok', async () => {
-    expect(hex(encodeCloseRecord(Status.ok))).toBe('00 00 00 80');
-    const record = await decode('00 00 00 80');
+    const vector = hex(wikiBytes('quic-binding/test-vectors/records/close-no-status-payload-ok'));
+    expect(hex(encodeCloseRecord(Status.ok))).toBe(vector);
+    const record = await decode(vector);
     expect(record?.command).toBe(QuicRecordCommand.close);
     expect(decodeCloseBody(record?.body ?? new Uint8Array(0)).equals(Status.ok)).toBe(true);
   });
 
   test('quic-binding/test-vectors/records/close-ok-no-reason', async () => {
-    expect(hex(encodeQuicRecord(QuicRecordCommand.close, Status.ok.encode()))).toBe(
-      '02 00 00 80 00 00',
-    );
-    const record = await decode('02 00 00 80 00 00');
+    const vector = hex(wikiBytes('quic-binding/test-vectors/records/close-ok-no-reason'));
+    expect(hex(encodeQuicRecord(QuicRecordCommand.close, Status.ok.encode()))).toBe(vector);
+    const record = await decode(vector);
     expect(decodeCloseBody(record?.body ?? new Uint8Array(0)).isOk).toBe(true);
   });
 
   test('quic-binding/test-vectors/records/close-not-found-reason-x', async () => {
+    const vector = hex(wikiBytes('quic-binding/test-vectors/records/close-not-found-reason-x'));
     const status = Status.of(StatusCode.notFound, 'x');
-    expect(hex(encodeCloseRecord(status))).toBe('03 00 00 80 05 00 78');
-    const record = await decode('03 00 00 80 05 00 78');
+    expect(hex(encodeCloseRecord(status))).toBe(vector);
+    const record = await decode(vector);
     expect(decodeCloseBody(record?.body ?? new Uint8Array(0)).equals(status)).toBe(true);
   });
 
   test('quic-binding/test-vectors/records/close-moved-owner-0x1a2b-epoch-7', async () => {
     // MOVED with its fixed fields (u48 owner 0x1A2B, u32 epoch 7) and no reason.
     const status = Status.decode(hexBytes('25 00 2B 1A 00 00 00 00 07 00 00 00'));
-    const vector = '0C 00 00 80 25 00 2B 1A 00 00 00 00 07 00 00 00';
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/records/close-moved-owner-0x1a2b-epoch-7'),
+    );
     expect(hex(encodeCloseRecord(status))).toBe(vector);
     const decoded = decodeCloseBody((await decode(vector))?.body ?? new Uint8Array(0));
     expect(decoded.known).toBe(StatusCode.moved);
@@ -182,11 +205,11 @@ describe('records', () => {
 
   test('FF FF FF 3F is DATA of 1073741823 bytes, over every limit, and FF FF FF 7F OPEN of as many; the body is not read', async () => {
     for (const [vector, command] of [
-      ['FF FF FF 3F', QuicRecordCommand.data],
-      ['FF FF FF 7F', QuicRecordCommand.open],
+      [wikiBytes('quic-binding/test-vectors/records/prose-ff-ff-ff-3f'), QuicRecordCommand.data],
+      [wikiBytes('quic-binding/test-vectors/records/prose-ff-ff-ff-7f'), QuicRecordCommand.open],
     ] as const) {
-      const stream = new ScriptedStream(hexBytes(`${vector} 01 02 03`));
-      const header = readQuicRecordHeader(hexBytes(vector));
+      const stream = new ScriptedStream(concatBytes(vector, [1, 2, 3]));
+      const header = readQuicRecordHeader(vector);
       expect(quicHeaderCommand(header)).toBe(command);
       expect(quicHeaderLength(header)).toBe(1073741823);
       const error = await new RecordReader(stream).next(quicMaxRecordLength - 1).catch((e) => e);
@@ -234,16 +257,21 @@ describe('records', () => {
 
   describe('negative (protocol error)', () => {
     test('quic-binding/test-vectors/records/command-3', async () => {
-      await expect(decode('00 00 00 C0')).rejects.toBeInstanceOf(ProtocolError);
+      const vector = hex(wikiBytes('quic-binding/test-vectors/records/command-3'));
+      await expect(decode(vector)).rejects.toBeInstanceOf(ProtocolError);
     });
 
     test('quic-binding/test-vectors/records/close-with-a-one-byte-body', async () => {
-      const record = await decode('01 00 00 80 00');
+      const vector = hex(wikiBytes('quic-binding/test-vectors/records/close-with-a-one-byte-body'));
+      const record = await decode(vector);
       expect(() => decodeCloseBody(record?.body ?? new Uint8Array(0))).toThrow(ProtocolError);
     });
 
     test('quic-binding/test-vectors/records/open-with-a-truncated-channel-id', async () => {
-      const record = await decode('05 00 00 40 02 00 00 00 00');
+      const vector = hex(
+        wikiBytes('quic-binding/test-vectors/records/open-with-a-truncated-channel-id'),
+      );
+      const record = await decode(vector);
       expect(() => decodeOpenBody(record?.body ?? new Uint8Array(0))).toThrow(ProtocolError);
     });
 
@@ -285,7 +313,11 @@ describe('records', () => {
 describe('control stream', () => {
   test('quic-binding/test-vectors/control-stream/hello-record-limit-32752-no-stated-channel-limit-no-flags', () => {
     const hello = new QuicHello();
-    const vector = '0A 00 00 00 08 F0 7F 00 00 00 00 00 00 00';
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/control-stream/hello-record-limit-32752-no-stated-channel-limit-no-flags',
+      ),
+    );
     expect(hex(encodeDataRecord(hello.encodeMessage()))).toBe(vector);
     expect(QuicHello.decode(hexBytes(vector).subarray(5)).equals(hello)).toBe(true);
     expect(hexBytes(vector)[4]).toBe(quicHelloType);
@@ -293,15 +325,20 @@ describe('control stream', () => {
 
   test('quic-binding/test-vectors/control-stream/hello-record-limit-1-mib-100-channels-exporter', () => {
     const hello = new QuicHello({ recordLimit: 1 << 20, channels: 100, exporter: true });
-    const vector = '0A 00 00 00 08 00 00 10 00 64 00 00 00 01';
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/control-stream/hello-record-limit-1-mib-100-channels-exporter',
+      ),
+    );
     expect(hex(encodeDataRecord(hello.encodeMessage()))).toBe(vector);
     expect(QuicHello.decode(hexBytes(vector).subarray(5)).equals(hello)).toBe(true);
   });
 
   test('quic-binding/test-vectors/control-stream/hello-with-a-further-field-aa-ignored', () => {
-    const decoded = QuicHello.decode(
-      hexBytes('0B 00 00 00 08 F0 7F 00 00 00 00 00 00 00 AA').subarray(5),
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/control-stream/hello-with-a-further-field-aa-ignored'),
     );
+    const decoded = QuicHello.decode(hexBytes(vector).subarray(5));
     expect(decoded.equals(new QuicHello())).toBe(true);
   });
 
@@ -319,20 +356,27 @@ describe('control stream', () => {
   });
 
   test('quic-binding/test-vectors/control-stream/ping-payload-de-ad and pong-payload-de-ad', () => {
-    expect(hex(encodeDataRecord(control(0x01, hexBytes('DE AD'))))).toBe('03 00 00 00 01 DE AD');
-    expect(hex(encodeDataRecord(control(0x02, hexBytes('DE AD'))))).toBe('03 00 00 00 02 DE AD');
+    expect(hex(encodeDataRecord(control(0x01, hexBytes('DE AD'))))).toBe(
+      hex(wikiBytes('quic-binding/test-vectors/control-stream/ping-payload-de-ad')),
+    );
+    expect(hex(encodeDataRecord(control(0x02, hexBytes('DE AD'))))).toBe(
+      hex(wikiBytes('quic-binding/test-vectors/control-stream/pong-payload-de-ad')),
+    );
   });
 
   test('quic-binding/test-vectors/control-stream/goaway-going-away-no-reason', () => {
+    const vector = hex(
+      wikiBytes('quic-binding/test-vectors/control-stream/goaway-going-away-no-reason'),
+    );
     expect(hex(encodeDataRecord(control(0x03, Status.of(StatusCode.goingAway).encode())))).toBe(
-      '03 00 00 00 03 21 00',
+      vector,
     );
   });
 
   test('quic-binding/test-vectors/control-stream/nonce-32-bytes-of-11', () => {
-    expect(hex(encodeDataRecord(control(0x05, new Uint8Array(32).fill(0x11))))).toBe(
-      `21 00 00 00 05 ${Array(32).fill('11').join(' ')}`,
-    );
+    const vector = hex(wikiBytes('quic-binding/test-vectors/control-stream/nonce-32-bytes-of-11'));
+    expect(vector).toBe(`21 00 00 00 05 ${Array(32).fill('11').join(' ')}`);
+    expect(hex(encodeDataRecord(control(0x05, new Uint8Array(32).fill(0x11))))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/control-stream/ident-credential-c1-of-test-vectors-no-intent-no-receiver-no-proof', () => {
@@ -343,63 +387,100 @@ describe('control stream', () => {
       credential,
       Uint8Array.of(0, 0),
     );
-    expect(hex(encodeDataRecord(control(0x06, payload)))).toBe(`5B 00 00 00 06 56 00 ${c1} 00 00`);
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/control-stream/ident-credential-c1-of-test-vectors-no-intent-no-receiver-no-proof',
+      ),
+    );
+    expect(vector).toBe(`5B 00 00 00 06 56 00 ${c1} 00 00`);
+    expect(hex(encodeDataRecord(control(0x06, payload)))).toBe(vector);
   });
 
   test('negative HELLOs: 8 bytes, a record limit of 1024', () => {
-    expect(() =>
-      QuicHello.decode(hexBytes('09 00 00 00 08 F0 7F 00 00 00 00 00 00').subarray(5)),
-    ).toThrow(ProtocolError);
-    expect(() =>
-      QuicHello.decode(hexBytes('0A 00 00 00 08 00 04 00 00 00 00 00 00 00').subarray(5)),
-    ).toThrow(ProtocolError);
+    for (const vector of wikiVectors(
+      'quic-binding/test-vectors/control-stream/prose-09-00-00-00-08-f0-7f-00-00-00-00-00-00',
+      'quic-binding/test-vectors/control-stream/prose-0a-00-00-00-08-00-04-00-00-00-00-00-00-00',
+    )) {
+      expect(() => QuicHello.decode(hexBytes(vector.hex ?? '').subarray(5))).toThrow(ProtocolError);
+    }
   });
 });
 
 describe('bulk channels', () => {
   test('quic-binding/test-vectors/bulk-channels/open-channel-3-bulk-for-parent-channel-2-bulk-number-1', () => {
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/bulk-channels/open-channel-3-bulk-for-parent-channel-2-bulk-number-1',
+      ),
+    );
     // The `_bulk` open payload of the page "Test Vectors", unchanged.
     const payload = new ChannelAddress({
       type: '_bulk',
       payload: hexBytes('02 00 00 00 00 00 01 00 00 00'),
     }).encode();
-    expect(hex(encodeOpenRecord(3, payload))).toBe(
-      '19 00 00 40 03 00 00 00 00 00 01 5F 62 75 6C 6B 00 00 00 02 00 00 00 00 00 01 00 00 00',
-    );
+    expect(hex(encodeOpenRecord(3, payload))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/bulk-channels/open-channel-4-bulk-for-parent-channel-2-bulk-number-2', () => {
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/bulk-channels/open-channel-4-bulk-for-parent-channel-2-bulk-number-2',
+      ),
+    );
     const payload = new ChannelAddress({
       type: '_bulk',
       payload: hexBytes('02 00 00 00 00 00 02 00 00 00'),
     }).encode();
-    expect(hex(encodeOpenRecord(4, payload))).toBe(
-      '19 00 00 40 04 00 00 00 00 00 01 5F 62 75 6C 6B 00 00 00 02 00 00 00 00 00 02 00 00 00',
-    );
+    expect(hex(encodeOpenRecord(4, payload))).toBe(vector);
   });
 });
 
 describe('status codes', () => {
-  const table: [number, string, number, string, string][] = [
-    [0, '00', 0x52e4a40fa8db, 'C0 00 52 E4 A4 0F A8 DB', '0-ok'],
-    [1, '01', 0x52e4a40fa8dc, 'C0 00 52 E4 A4 0F A8 DC', '1-cancelled'],
-    [5, '05', 0x52e4a40fa8e0, 'C0 00 52 E4 A4 0F A8 E0', '5-not-found'],
-    [8, '08', 0x52e4a40fa8e3, 'C0 00 52 E4 A4 0F A8 E3', '8-resource-exhausted'],
-    [14, '0E', 0x52e4a40fa8e9, 'C0 00 52 E4 A4 0F A8 E9', '14-unavailable'],
-    [16, '10', 0x52e4a40fa8eb, 'C0 00 52 E4 A4 0F A8 EB', '16-unauthenticated'],
-    [32, '20', 0x52e4a40fa8fc, 'C0 00 52 E4 A4 0F A8 FC', '32-protocol-error'],
-    [33, '21', 0x52e4a40fa8fd, 'C0 00 52 E4 A4 0F A8 FD', '33-going-away'],
-    [35, '23', 0x52e4a40fa8ff, 'C0 00 52 E4 A4 0F A8 FF', '35-frame-too-large'],
-    [36, '24', 0x52e4a40fa900, 'C0 00 52 E4 A4 0F A9 00', '36-unsupported'],
-    [37, '25', 0x52e4a40fa901, 'C0 00 52 E4 A4 0F A9 01', '37-moved'],
-    [255, '40 FF', 0x52e4a40fa9e2, 'C0 00 52 E4 A4 0F A9 E2', '255-the-largest-sent'],
+  const table: [number, string, number, WikiVector][] = [
+    [0, '00', 0x52e4a40fa8db, wikiVector('quic-binding/test-vectors/status-codes/0-ok')],
+    [1, '01', 0x52e4a40fa8dc, wikiVector('quic-binding/test-vectors/status-codes/1-cancelled')],
+    [5, '05', 0x52e4a40fa8e0, wikiVector('quic-binding/test-vectors/status-codes/5-not-found')],
+    [
+      8,
+      '08',
+      0x52e4a40fa8e3,
+      wikiVector('quic-binding/test-vectors/status-codes/8-resource-exhausted'),
+    ],
+    [14, '0E', 0x52e4a40fa8e9, wikiVector('quic-binding/test-vectors/status-codes/14-unavailable')],
+    [
+      16,
+      '10',
+      0x52e4a40fa8eb,
+      wikiVector('quic-binding/test-vectors/status-codes/16-unauthenticated'),
+    ],
+    [
+      32,
+      '20',
+      0x52e4a40fa8fc,
+      wikiVector('quic-binding/test-vectors/status-codes/32-protocol-error'),
+    ],
+    [33, '21', 0x52e4a40fa8fd, wikiVector('quic-binding/test-vectors/status-codes/33-going-away')],
+    [
+      35,
+      '23',
+      0x52e4a40fa8ff,
+      wikiVector('quic-binding/test-vectors/status-codes/35-frame-too-large'),
+    ],
+    [36, '24', 0x52e4a40fa900, wikiVector('quic-binding/test-vectors/status-codes/36-unsupported')],
+    [37, '25', 0x52e4a40fa901, wikiVector('quic-binding/test-vectors/status-codes/37-moved')],
+    [
+      255,
+      '40 FF',
+      0x52e4a40fa9e2,
+      wikiVector('quic-binding/test-vectors/status-codes/255-the-largest-sent'),
+    ],
   ];
-  for (const [status, raw, http3, wire, id] of table) {
-    test(`quic-binding/test-vectors/status-codes/${id}`, () => {
+  for (const [status, raw, http3, vector] of table) {
+    test(vector.id, () => {
       expect(quicErrorCode(new Status(status))).toBe(status);
       expect(hex(encodeQuicVarint(status))).toBe(raw);
       expect(webTransportCodeToHttp3(status)).toBe(http3);
-      expect(hex(encodeQuicVarint(http3))).toBe(wire);
+      expect(hex(encodeQuicVarint(http3))).toBe(vector.hex);
       expect(webTransportCodeFromHttp3(http3)).toBe(status);
       expect(statusOfQuicErrorCode(status).code).toBe(status);
     });
@@ -442,21 +523,30 @@ describe('status codes', () => {
 
 describe('exporter', () => {
   test('quic-binding/test-vectors/exporter/webtransport-tls-exporter-label-exporter-webtransport-21-bytes', () => {
-    expect(hex(new TextEncoder().encode(webTransportTlsExporterLabel))).toBe(
-      '45 58 50 4F 52 54 45 52 2D 57 65 62 54 72 61 6E 73 70 6F 72 74',
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/exporter/webtransport-tls-exporter-label-exporter-webtransport-21-bytes',
+      ),
     );
+    expect(hex(new TextEncoder().encode(webTransportTlsExporterLabel))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/exporter/webtransport-tls-exporter-context-session-id-0-27-bytes', () => {
-    expect(hex(webTransportExporterContext(0))).toBe(
-      '00 00 00 00 00 00 00 00 11 73 77 69 74 63 68 62 6F 61 72 64 2D 69 64 65 6E 74 00',
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/exporter/webtransport-tls-exporter-context-session-id-0-27-bytes',
+      ),
     );
+    expect(hex(webTransportExporterContext(0))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/exporter/webtransport-tls-exporter-context-session-id-4', () => {
-    expect(hex(webTransportExporterContext(4))).toBe(
-      '00 00 00 00 00 00 00 04 11 73 77 69 74 63 68 62 6F 61 72 64 2D 69 64 65 6E 74 00',
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/exporter/webtransport-tls-exporter-context-session-id-4',
+      ),
     );
+    expect(hex(webTransportExporterContext(4))).toBe(vector);
     expect(hex(webTransportExporterContext(2 ** 40 + 4).subarray(0, 8))).toBe(
       '00 00 01 00 00 00 00 04',
     );
@@ -465,9 +555,12 @@ describe('exporter', () => {
   });
 
   test('quic-binding/test-vectors/exporter/raw-quic-tls-exporter-label-exporter-channel-binding-24-bytes-empty-context', () => {
-    expect(hex(new TextEncoder().encode(rawQuicExporterLabel))).toBe(
-      '45 58 50 4F 52 54 45 52 2D 43 68 61 6E 6E 65 6C 2D 42 69 6E 64 69 6E 67',
+    const vector = hex(
+      wikiBytes(
+        'quic-binding/test-vectors/exporter/raw-quic-tls-exporter-label-exporter-channel-binding-24-bytes-empty-context',
+      ),
     );
+    expect(hex(new TextEncoder().encode(rawQuicExporterLabel))).toBe(vector);
   });
 
   test('both ends of a session derive the same exporter, two sessions different ones', async () => {
