@@ -148,6 +148,7 @@ export class StreamTransport implements FrameTransport {
   #lingering = false;
   #lingerTimer: TimerHandle | undefined;
   #changed: Deferred<void> | undefined;
+  #readerWake: Deferred<void> | undefined;
 
   // Output.
   readonly #outQueue = new Fifo<Uint8Array>();
@@ -311,9 +312,14 @@ export class StreamTransport implements FrameTransport {
         }, 0);
         return;
       }
-      // A change (the transport ending) wakes the reader even while a read of
-      // the input is still pending.
-      await Promise.race([this.#pumpOnce(), this.#nextChange()]);
+      // The transport ending wakes the reader even while a read of the input
+      // is still pending. A waker of its own per wait: racing a long-lived
+      // promise would pile reactions onto it.
+      const wake = new Deferred<void>();
+      this.#readerWake = wake;
+      void this.#pumpOnce().then(() => wake.resolve());
+      await wake.promise;
+      this.#readerWake = undefined;
     }
   }
 
@@ -513,6 +519,7 @@ export class StreamTransport implements FrameTransport {
       this.#changed = undefined;
       changed.resolve();
     }
+    this.#readerWake?.resolve();
   }
 
   // Output ------------------------------------------------------------------
