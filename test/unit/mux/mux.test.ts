@@ -27,6 +27,7 @@ import {
   collect,
   elapseUntil,
   empty,
+  expectBytes,
   expectCode,
   expectRejectsStatus,
   expectStatus,
@@ -39,6 +40,7 @@ import {
   memoryPair,
   muxPair,
   outcome,
+  pattern,
   quiet,
   RawPeer,
   rawOptions,
@@ -1361,13 +1363,13 @@ describe('real transports', () => {
     void channel.send(hexBytes('01 02'));
     void channel.send(big);
     expect(await replies.nextHex()).toBe('01 02');
-    expect(await replies.next()).toEqual(big);
+    expectBytes(await replies.next(), big);
     // A bulk payload of 1 MB, in chunks, paced by the window.
     const back = server.open(hexBytes('BB'));
     back.priority = 'bulk';
     expect(back.id).toBe(3);
     const backAtClient = await firstIncoming(client);
-    const bulk = Uint8Array.from({ length: 1000000 }, (_, i) => (i * 13) & 0xff);
+    const bulk = pattern(1000000, 13);
     const received = (async () => {
       const out = new Uint8Array(bulk.length);
       let at = 0;
@@ -1381,7 +1383,7 @@ describe('real transports', () => {
       return out;
     })();
     await back.send(bulk);
-    expect(hexString(await received) === hexString(bulk)).toBe(true);
+    expectBytes(await received, bulk);
     await channel.close(Status.of(StatusCode.cancelled));
     expectCode(await accepted.done, StatusCode.cancelled);
     await echo;

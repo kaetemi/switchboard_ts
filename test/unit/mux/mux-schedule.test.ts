@@ -30,6 +30,7 @@ import {
   creditHex,
   elapseUntil,
   empty,
+  expectBytes,
   expectCode,
   expectRejectsStatus,
   expectStatus,
@@ -42,6 +43,7 @@ import {
   limitsHex,
   memoryPair,
   muxPair,
+  pattern,
   quiet,
   RawPeer,
   rawOptions,
@@ -352,7 +354,7 @@ describe('bulk channels', () => {
     const channel = a.open(empty);
     channel.priority = 'bulk';
     const atB = new Subframes(await firstIncoming(b));
-    const payload = Uint8Array.from({ length: 200000 }, (_, i) => (i * 31) & 0xff);
+    const payload = pattern(200000, 31);
     // The window takes it all: handed over at once.
     await channel.send(payload);
     const received = await atB.take(4);
@@ -363,7 +365,7 @@ describe('bulk channels', () => {
       joined.set(chunk, at);
       at += chunk.length;
     }
-    expect(joined).toEqual(payload);
+    expectBytes(joined, payload);
     // An empty one is one empty subframe.
     await channel.send(empty);
     expect(await atB.next()).toHaveLength(0);
@@ -386,7 +388,7 @@ describe('bulk channels', () => {
     wide.priority = 'bulk';
     const wideAtB = await atB.next();
     const total = 300000;
-    const payload = Uint8Array.from({ length: total }, (_, i) => (i * 7) & 0xff);
+    const payload = pattern(total, 7);
     const sent = wide.send(payload);
     const received = new Uint8Array(total);
     let length = 0;
@@ -400,7 +402,7 @@ describe('bulk channels', () => {
       }
     }
     await sent;
-    expect(received).toEqual(payload);
+    expectBytes(received, payload);
     for (const size of sizes) {
       expect(size).toBeLessThanOrEqual(997);
     }

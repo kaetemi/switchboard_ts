@@ -26,7 +26,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // that rely on that say how they are adapted where they are.
 
 import { expect } from 'vitest';
-import { hexBytes, hexString } from '../../../src/core/bytes.ts';
+import { bytesEqual, hexBytes, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
 import {
   FrameMuxConnection,
@@ -484,6 +484,33 @@ export function expectCode(status: Status, code: StatusCode): void {
 export function expectStatus(actual: Status, expected: Status): void {
   expect(`${actual}`).toBe(`${expected}`);
   expect(actual.equals(expected), `${actual} equals ${expected}`).toBe(true);
+}
+
+/**
+ * [actual] holds the bytes of [expected]. For large payloads, where a deep
+ * equality takes seconds; reports the first difference.
+ */
+export function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
+  if (bytesEqual(actual, expected)) {
+    return;
+  }
+  let at = 0;
+  while (at < actual.length && at < expected.length && actual[at] === expected[at]) {
+    at++;
+  }
+  expect.fail(
+    `${actual.length} bytes, ${expected.length} expected; first difference at ${at}: ` +
+      `${actual[at]} for ${expected[at]}`,
+  );
+}
+
+/** [length] bytes of a pattern varied by [seed]: `(i * step + seed) & 0xFF`. */
+export function pattern(length: number, step = 31, seed = 0): Uint8Array {
+  const out = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    out[i] = (i * step + seed) & 0xff;
+  }
+  return out;
 }
 
 /** Dart's `throwsStatus`: [fn] throws a {@link SwitchboardError} with [code]. */
