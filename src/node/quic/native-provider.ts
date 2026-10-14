@@ -41,7 +41,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  * The addon is loaded on first use, never at import: `$SWITCHBOARD_QUIC_ADDON` when set (the path
  * of a `.node` file, and nothing else is tried), else `native/sbq-node.node` of this package (what
  * `npm run build:native` writes), else the per-platform package
- * `@polyverse/switchboard-quic-<platform>-<arch>[-gnu|-musl|-msvc]`. Without it, connecting
+ * `@kaetemi/switchboard-quic-<platform>-<arch>[-gnu|-musl|-msvc]`. Without it, connecting
  * rejects and listening fails with a {@link QuicError} of kind 'unsupportedScheme' that names the
  * package to install.
  */
@@ -252,7 +252,7 @@ function reportUncaught(error: unknown): void {
 // --- Loading the addon -------------------------------------------------------------------------
 
 /** The prefix of the per-platform packages that carry a prebuilt addon. */
-const packagePrefix = '@polyverse/switchboard-quic';
+const packagePrefix = '@kaetemi/switchboard-quic';
 
 type Loaded =
   | { readonly addon: SbqAddon; readonly path: string }

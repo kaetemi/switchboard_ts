@@ -1,6 +1,6 @@
 # Polyverse Switchboard for TypeScript
 
-`@polyverse/switchboard` is the TypeScript implementation of the Switchboard protocol: multiplexed channels with credit-based flow control, Talk message chains (requests, streams, bulk transfers), service addressing, connection identity, a naming service with sharding, proxying and relaying, over WebSocket, TCP, QUIC and WebTransport. It is a port of the Dart reference implementation ([`kaetemi/switchboard`](https://github.com/kaetemi/switchboard), [`kaetemi/switchboard_quic`](https://github.com/kaetemi/switchboard_quic)) and is wire-compatible with it.
+`@kaetemi/switchboard` is the TypeScript implementation of the Switchboard protocol: multiplexed channels with credit-based flow control, Talk message chains (requests, streams, bulk transfers), service addressing, connection identity, a naming service with sharding, proxying and relaying, over WebSocket, TCP, QUIC and WebTransport. It is a port of the Dart reference implementation ([`kaetemi/switchboard`](https://github.com/kaetemi/switchboard), [`kaetemi/switchboard_quic`](https://github.com/kaetemi/switchboard_quic)) and is wire-compatible with it.
 
 - ES modules only, Node.js 22 or newer, Bun, Deno and browsers.
 - `for await` over channels and messages, Web Streams for bytes, `AbortSignal` for cancellation, `await using` for lifetimes.
@@ -11,14 +11,14 @@
 ## Install
 
 ```sh
-npm install @polyverse/switchboard
+npm install @kaetemi/switchboard
 npm install ws          # Node only, for WebSocket servers
 ```
 
 ## A service and a client
 
 ```ts
-import { EndpointResolver, Switchboard } from '@polyverse/switchboard/node';
+import { EndpointResolver, Switchboard } from '@kaetemi/switchboard/node';
 
 const server = new Switchboard();
 server.registerService('echo', async (incoming) => {
@@ -37,10 +37,10 @@ console.log((await talk.request('UPPER', 'hello')).text()); // HELLO
 
 | Import | Runtime | Contents |
 | --- | --- | --- |
-| `@polyverse/switchboard` | any | the runtime-neutral core: codecs, mux, Talk, identity, naming, the node, the QUIC binding |
-| `@polyverse/switchboard/node` | Node, Bun, Deno | the core plus TCP and WebSocket listeners and the native QUIC provider |
-| `@polyverse/switchboard/web` | browsers | the core plus the WebTransport provider |
-| `@polyverse/switchboard/testing` | tests | a manual clock, the fake QUIC provider, harness helpers |
+| `@kaetemi/switchboard` | any | the runtime-neutral core: codecs, mux, Talk, identity, naming, the node, the QUIC binding |
+| `@kaetemi/switchboard/node` | Node, Bun, Deno | the core plus TCP and WebSocket listeners and the native QUIC provider |
+| `@kaetemi/switchboard/web` | browsers | the core plus the WebTransport provider |
+| `@kaetemi/switchboard/testing` | tests | a manual clock, the fake QUIC provider, harness helpers |
 
 ## Developing
 

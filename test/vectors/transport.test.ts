@@ -3,6 +3,7 @@
 // Transport" page. Ports `test/vectors/transport_vectors_test.dart`.
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../src/core/bytes.ts';
+import { MuxCommand, MuxFrame } from '../../src/core/mux/mux-frame.ts';
 import { ProtocolError, StatusCode, SwitchboardError } from '../../src/core/status.ts';
 import { StreamFrameDecoder, StreamFraming } from '../../src/core/transport/stream-framing.ts';
 
@@ -58,6 +59,7 @@ describe('transport, stream binding', () => {
     expect(decodeStream(`${preamble} 0C 00 00 00 12 02 00 01 64 65 76 00 00 00 00 00`)).toEqual([
       '12 02 00 01 64 65 76 00 00 00 00 00',
     ]);
+    expect(MuxFrame.decode(open).command).toBe(MuxCommand.open);
   });
 
   test('preamble flags are ignored', () => {

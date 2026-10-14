@@ -5,7 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 /**
- * The QUIC parts of `@polyverse/switchboard/node`: the native QUIC provider (raw QUIC and
+ * The QUIC parts of `@kaetemi/switchboard/node`: the native QUIC provider (raw QUIC and
  * WebTransport, client and listener, over the N-API addon in `native/`), its certificates, and
  * the check whether the addon is available here. The QUIC listener and binding for nodes join
  * them here.

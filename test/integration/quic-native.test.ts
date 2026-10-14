@@ -454,7 +454,7 @@ describe('native provider without its addon', () => {
       for (const endpoint of ['quic://127.0.0.1:9', 'https://127.0.0.1:9/sb']) {
         const error = await failureOf(m.nativeQuic().connect(endpoint, clientConfig()));
         expect(error).toMatchObject(unsupported);
-        expect((error as Error).message).toContain(`@polyverse/switchboard-quic-${target}`);
+        expect((error as Error).message).toContain(`@kaetemi/switchboard-quic-${target}`);
       }
       const server = {
         alpn: [quicAlpn],

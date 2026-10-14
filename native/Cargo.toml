@@ -7,7 +7,7 @@ name = "sbq-node"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-description = "N-API addon of @polyverse/switchboard: the sbq QUIC shim's C ABI for Node.js, Bun and Deno"
+description = "N-API addon of @kaetemi/switchboard: the sbq QUIC shim's C ABI for Node.js, Bun and Deno"
 license = "BSD-3-Clause"
 publish = false
 

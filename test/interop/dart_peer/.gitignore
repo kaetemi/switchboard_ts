@@ -1,0 +1,4 @@
+# Written by tool/dart-peer.mjs when the Dart checkouts are not siblings.
+pubspec_overrides.yaml
+# Checkouts of the pinned commits made by `tool/dart-peer.mjs fetch`.
+.deps/

@@ -4,7 +4,7 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-//! `sbq-node`: the N-API addon of `@polyverse/switchboard`. It mirrors the C ABI of the sbq QUIC
+//! `sbq-node`: the N-API addon of `@kaetemi/switchboard`. It mirrors the C ABI of the sbq QUIC
 //! shim (`sbq-vendor/include/sbq.h`, ABI version 4) function for function, calling the `sbq_*`
 //! functions Rust to Rust. The provider and everything above it are TypeScript
 //! (`src/node/quic/native-provider.ts`); nothing here knows about Switchboard.

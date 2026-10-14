@@ -2,7 +2,7 @@
 
 _Status: v1, 2026-10-14. The lead thread owns this document; it is refined as the port proceeds. Decisions are stated as decisions; open questions are collected at the end._
 
-`@polyverse/switchboard` is the TypeScript port of the Switchboard protocol: multiplexed channels, Talk message chains, service addressing, identity, the naming service and sharding, over WebSocket, TCP, QUIC and WebTransport. It targets modern JavaScript and TypeScript consumers with ES modules, and makes the protocol feel native to the platform: `for await` over channels and messages, Web Streams for bytes, `AbortSignal` for cancellation, promises everywhere a Dart future was, and `await using` for lifetimes.
+`@kaetemi/switchboard` is the TypeScript port of the Switchboard protocol: multiplexed channels, Talk message chains, service addressing, identity, the naming service and sharding, over WebSocket, TCP, QUIC and WebTransport. It targets modern JavaScript and TypeScript consumers with ES modules, and makes the protocol feel native to the platform: `for await` over channels and messages, Web Streams for bytes, `AbortSignal` for cancellation, promises everywhere a Dart future was, and `await using` for lifetimes.
 
 QUIC is an integral part of the package, not an experimental add-on: the binding is in the core, a WebTransport provider ships for browsers, and a native QUIC provider ships for Node, Bun and Deno.
 
@@ -20,7 +20,7 @@ The Dart repositories are read-only for this project.
 A service and a client on one Node process:
 
 ```ts
-import { EndpointResolver, Switchboard } from '@polyverse/switchboard/node';
+import { EndpointResolver, Switchboard } from '@kaetemi/switchboard/node';
 
 const server = new Switchboard();
 server.registerService('echo', async (incoming) => {
@@ -67,11 +67,16 @@ await channel.close();
 A browser client over WebTransport, reconnecting, with a persistent channel:
 
 ```ts
-import { ReconnectingClient, webTransport } from '@polyverse/switchboard/web';
+import { ReconnectingClient, connectQuic, webTransport } from '@kaetemi/switchboard/web';
 
-const client = new ReconnectingClient(webTransport('https://edge.example.com:4433/sb', {
-  serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
-}));
+const client = new ReconnectingClient({
+  connect: (options, { signal }) =>
+    connectQuic('https://edge.example.com:4433/sb', webTransport(), {
+      options,
+      signal,
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+    }),
+});
 client.openPersistentTalk('chat', async (talk) => {
   for await (const message of talk.messages) render(message.json());
 });
@@ -80,7 +85,7 @@ client.openPersistentTalk('chat', async (talk) => {
 Identity, scoped policy, QUIC on Node:
 
 ```ts
-import { ChannelPolicies, Switchboard, nativeQuic, selfSignedCertificate } from '@polyverse/switchboard/node';
+import { ChannelPolicies, Switchboard, nativeQuic, selfSignedCertificate } from '@kaetemi/switchboard/node';
 
 const node = new Switchboard({
   credential: await issuer.issueNode('edge-1', scopes),
@@ -98,13 +103,13 @@ const quic = await node.listenQuic('0.0.0.0', 4433, {
 
 | Runtime | Entry | Transports | QUIC and WebTransport | Status |
 | --- | --- | --- | --- | --- |
-| Node.js 22, 24 and 26 | `@polyverse/switchboard/node` | TCP (`node:net`), WebSocket client (global `WebSocket`, or `ws`), WebSocket server (`ws`), in-memory | native provider (N-API addon over quinn) | primary target, CI |
-| Bun 1.x | `@polyverse/switchboard/node` | same, through Bun's Node compatibility | native provider (Bun loads N-API addons) | CI, best effort |
-| Deno 2.x | `@polyverse/switchboard/node` | same, through `node:` compatibility | native provider (Deno loads N-API addons with `--allow-ffi`) | tested manually until CI has Deno |
-| Browsers (evergreen) | `@polyverse/switchboard/web` | WebSocket | WebTransport API provider (`protocols` from Chrome 143, Firefox 155, Safari 26.4; the exporter on Firefox 155+) | Chrome for Testing 143+ in CI via Playwright; Firefox and Safari manual |
-| Workers and edge runtimes | `@polyverse/switchboard` (core) with a caller-supplied transport | WebSocket where offered | none | not a target; nothing in the core prevents it |
+| Node.js 22, 24 and 26 | `@kaetemi/switchboard/node` | TCP (`node:net`), WebSocket client (global `WebSocket`, or `ws`), WebSocket server (`ws`), in-memory | native provider (N-API addon over quinn) | primary target, CI |
+| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider (Bun loads N-API addons) | CI, best effort |
+| Deno 2.x | `@kaetemi/switchboard/node` | same, through `node:` compatibility | native provider (Deno loads N-API addons with `--allow-ffi`) | tested manually until CI has Deno |
+| Browsers (evergreen) | `@kaetemi/switchboard/web` | WebSocket | WebTransport API provider (`protocols` from Chrome 143, Firefox 155, Safari 26.4; the exporter on Firefox 155+) | Chrome for Testing 143+ in CI via Playwright; Firefox and Safari manual |
+| Workers and edge runtimes | `@kaetemi/switchboard` (core) with a caller-supplied transport | WebSocket where offered | none | not a target; nothing in the core prevents it |
 
-The **core entry** `@polyverse/switchboard` has no runtime dependency beyond the Web platform APIs that all of these share: `Uint8Array`, `DataView`, `TextEncoder`, `ReadableStream`, `WritableStream`, `AbortSignal`, `crypto.subtle`, `crypto.getRandomValues`, `performance.now`, `queueMicrotask`, timers. It never imports a `node:` module, `ws`, or a DOM-only API. The node and web entries re-export the core and add the runtime specific transports and providers.
+The **core entry** `@kaetemi/switchboard` has no runtime dependency beyond the Web platform APIs that all of these share: `Uint8Array`, `DataView`, `TextEncoder`, `ReadableStream`, `WritableStream`, `AbortSignal`, `crypto.subtle`, `crypto.getRandomValues`, `performance.now`, `queueMicrotask`, timers. It never imports a `node:` module, `ws`, or a DOM-only API. The node and web entries re-export the core and add the runtime specific transports and providers.
 
 Supported language level: ES2023 output, ES modules only (no CommonJS build; Node 22 `require()` of ESM works for synchronous graphs if a consumer needs it). TypeScript consumers get `.d.ts` with `exactOptionalPropertyTypes` friendly signatures.
 
@@ -114,8 +119,8 @@ The protocol needs a QUIC implementation that exposes bidirectional streams, per
 
 **Decision.** Two providers behind one contract, `QuicConnector` and `QuicListener` in `src/core/quic/contract.ts`:
 
-1. **Native provider** (`@polyverse/switchboard/node`, `nativeQuic()`): an N-API addon written in Rust with `napi-rs`, in `native/`, over `quinn` 0.11 and `rustls`, serving raw QUIC with ALPN `switchboard` and WebTransport over HTTP/3, both as client and as server. The addon is built per platform and published as optional dependencies (`@polyverse/switchboard-quic-linux-x64-gnu`, `-darwin-arm64`, `-win32-x64-msvc`, and so on; the exact list is the QUIC thread's call). The node entry loads it lazily on first use, so a consumer that never touches QUIC never loads native code, and a missing binary fails with `UNSUPPORTED` and a message that says which package to install. One addon serves Node, Bun and Deno, since all three load N-API modules.
-2. **WebTransport provider** (`@polyverse/switchboard/web`, `webTransport()`): the W3C WebTransport API as the browser offers it. Raw QUIC is not available in browsers. Chromium 149 quirks from the wiki apply (no `exportKeyingMaterial`, so identity is nonce-bound; no `sendOrder`; 8-bit stream error codes).
+1. **Native provider** (`@kaetemi/switchboard/node`, `nativeQuic()`): an N-API addon written in Rust with `napi-rs`, in `native/`, over `quinn` 0.11 and `rustls`, serving raw QUIC with ALPN `switchboard` and WebTransport over HTTP/3, both as client and as server. The addon is built per platform and published as optional dependencies (`@kaetemi/switchboard-quic-linux-x64-gnu`, `-darwin-arm64`, `-win32-x64-msvc`, and so on; the exact list is the QUIC thread's call). The node entry loads it lazily on first use, so a consumer that never touches QUIC never loads native code, and a missing binary fails with `UNSUPPORTED` and a message that says which package to install. One addon serves Node, Bun and Deno, since all three load N-API modules.
+2. **WebTransport provider** (`@kaetemi/switchboard/web`, `webTransport()`): the W3C WebTransport API as the browser offers it. Raw QUIC is not available in browsers. Chromium 149 quirks from the wiki apply (no `exportKeyingMaterial`, so identity is nonce-bound; no `sendOrder`; 8-bit stream error codes).
 
 The addon reuses the Dart package's shim: `switchboard_quic/native/sbq` already implements the connection and stream model, HTTP/3 and WebTransport over quinn, with 11 000 lines including tests, and it is the reference the Dart tests exercise. The user approved reusing it (2026-10-14). The QUIC thread built such an addon with `napi-rs` 3 and completed a QUIC handshake with matching TLS key export on both ends in Node 22, 24 and 26, Bun and Deno (`notes/quic.md`, section 9). The addon mirrors the C ABI function for function (handles as numbers, `sbq_poll` filling an event array, the doorbell as a non-blocking thread-safe function with a weak reference so an idle pump does not hold the process open); all protocol logic stays in TypeScript, and the TS native provider is a direct port of the Dart one. How the addon depends on the shim:
 
@@ -133,7 +138,7 @@ Bun runs the Node entry unchanged; its WebSocket and `node:net` compatibility is
 
 ```
 switchboard_ts/
-  package.json               @polyverse/switchboard, ESM, exports: ., ./node, ./web, ./testing
+  package.json               @kaetemi/switchboard, ESM, exports: ., ./node, ./web, ./testing
   src/
     core/                    runtime neutral; never imports node:, ws, or DOM-only APIs
       index.ts               gathers the barrels below
@@ -268,7 +273,7 @@ What changes:
 
 - Delivery is pull based (section 5). A channel not being read holds its credit; `break` out of `for await` discards and closes.
 - Two hooks replace Dart's address decoding inside the mux: `connection.adoptIncoming(filter)` lets a layer claim peer-opened channels before they reach `incoming` (Talk claims `_bulk` channels for their parent), and `connection.admitAfterGoAway(predicate)` decides which OPENs are still accepted after GOAWAY (Talk admits `_bulk` continuations).
-- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`).
+- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`). As in Dart, it carries no identity exchange and neither hook: the QUIC binding has its own (exporter binding, held control messages) and the frame mux its own (held frames). Decided 2026-10-14 with PR #9.
 - Control message codecs (`MuxPing`, `MuxGoAway`, `MuxLimits`, `MuxNonce`, `MuxIdent`, `MuxCredit`, `MuxHello`) are exported for the vectors and for the QUIC binding, which reuses NONCE, IDENT, GOAWAY and PING.
 
 ### 6.4 Identity: `identity/contract.ts`
@@ -301,7 +306,7 @@ Changed: payloads are `PayloadLike`; a bulk source is a `ReadableStream<Uint8Arr
 
 ### 6.7 The node: `switchboard/contract.ts`, `switchboard/`, `node/`
 
-Ports `switchboard.dart` and its helpers. The runtime-neutral core node (`core/switchboard/switchboard.ts`) holds the registrations, dispatch, policies, the connection pool, resolvers, identity on connections, the proxy and the relay; it takes transports and listeners from a `Runtime` object the entry point supplies (`connect(endpoint)` and the listener factories). `@polyverse/switchboard/node` exports `Switchboard` with `listenTcp`, `listenWebSocket`, `listenMemory`, `listenQuic`, `listenWebTransport`, `accept`, `acceptWebSocket` and `connect` over `tcp`, `ws`, `wss`, `mem`, `quic` and `https`; `@polyverse/switchboard/web` exports a `Switchboard` that can `connect` over `wss` and `https` and listen on nothing.
+Ports `switchboard.dart` and its helpers. The runtime-neutral core node (`core/switchboard/switchboard.ts`) holds the registrations, dispatch, policies, the connection pool, resolvers, identity on connections, the proxy and the relay; it takes transports and listeners from a `Runtime` object the entry point supplies (`connect(endpoint)` and the listener factories). `@kaetemi/switchboard/node` exports `Switchboard` with `listenTcp`, `listenWebSocket`, `listenMemory`, `listenQuic`, `listenWebTransport`, `accept`, `acceptWebSocket` and `connect` over `tcp`, `ws`, `wss`, `mem`, `quic` and `https`; `@kaetemi/switchboard/web` exports a `Switchboard` that can `connect` over `wss` and `https` and listen on nothing.
 
 ```ts
 class Switchboard {
@@ -336,7 +341,7 @@ Ports `naming/*.dart` and the slot machinery: the `_ns` protocol codecs (REGISTE
 
 ### 6.9 Clients: `client/`
 
-`ReconnectingClient(connector, options)` over a `TransportConnector` or a `QuicConnector` endpoint: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
+`ReconnectingClient(connector, options)` over a `TransportConnector` (the frame mux over the transport) or a `ConnectionConnector` object `{ connect(options, { signal }) }` (Dart's `ReconnectingClient.connections`), which is how QUIC and WebTransport plug in; a web entry-point helper returning such a connector is a QUIC-thread option: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
 
 ### 6.10 QUIC and WebTransport binding: `quic/contract.ts`, `quic/`
 
@@ -365,7 +370,7 @@ The native provider (`node/quic/native-provider.ts` plus `native/`) and the WebT
 | Language | TypeScript 7 (`tsc`), `module: NodeNext`, target ES2023, `.ts` extensions in imports with `rewriteRelativeImportExtensions`, `verbatimModuleSyntax`, `erasableSyntaxOnly`, strict plus `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess` | native TS runs the sources directly in Node 22 (`--experimental-strip-types`), Bun and Deno; `tsc` emits `dist/` with declarations for publishing |
 | Tests | Vitest 5, projects `unit`, `integration`, `interop` (and `browser` when the QUIC thread adds Playwright) | fast, ESM native, fake timers available, browser mode available |
 | Lint and format | Biome 2 (`biome check`), single quotes, 100 columns, `noExplicitAny` error, `useImportType` error | one tool, fast, no plugin graph |
-| Package | `@polyverse/switchboard` 3.0.0 (the Dart package is 3.x; the ports share the protocol version line), ESM only, `exports` for `.`, `./node`, `./web`, `./testing`, `./package.json`; `ws` optional peer dependency; prebuilt QUIC addons as optional dependencies | consumers import one package; `ws` only where a server is needed |
+| Package | `@kaetemi/switchboard` 3.0.0 (the Dart package is 3.x; the ports share the protocol version line), ESM only, `exports` for `.`, `./node`, `./web`, `./testing`, `./package.json`; `ws` optional peer dependency; prebuilt QUIC addons as optional dependencies | consumers import one package; `ws` only where a server is needed |
 | Native | Rust, `napi-rs`, `cargo`, prebuilt by the CI release workflow for the platforms listed in `native/README.md` | section 3.1 |
 | Scripts | `npm run check` (lint, typecheck, unit and integration tests), `npm run test:interop`, `npm run build` | what a contributor runs before pushing |
 | CI | `.github/workflows/ci.yml`: lint and typecheck; unit and integration on Node 22, 24 and 26 and on Bun; `interop` with Dart 3.13.5, Rust 1.99.0 and the pinned Dart checkouts; `native` builds the addon; `browser` runs Chrome for Testing | section 9 |
@@ -391,7 +396,7 @@ The detailed assignments are in `docs/work-split.md`. In short: six threads, eac
 
 | Question | Decision |
 | --- | --- |
-| Package name | `@polyverse/switchboard` as a working name, version line 3.x like the Dart package. **Pending the user's choice** (2026-10-14): the `polyverse` npm scope needs the npm account of that name, which exists and is not known to be the user's; `@kaetemi/switchboard` is free; the bare `switchboard` is taken by an unrelated package (1.3.0, 2022). The name is one field in `package.json` and the import paths in the docs; nothing else depends on it. |
+| Package name | `@kaetemi/switchboard` (the user's npm scope, decided 2026-10-14; the bare `switchboard` is taken by an unrelated package and `polyverse` is not the user's npm account), version line 3.x like the Dart package. Prebuilt QUIC addons as `@kaetemi/switchboard-quic-<target>`. |
 | Module format | ESM only, Node 22 floor |
 | QUIC on Node, Bun, Deno | one N-API addon mirroring the `sbq` C ABI; prebuilt optional dependencies; lazy load; a missing binary is `UNSUPPORTED`, never a crash |
 | Provider contract | the Dart shape typed for TS: pull-based `read(max)`, `write`, `finish`, `reset`, `stop`, streams taken only while asked for; WHATWG streams are adapted at the provider, not required of it |

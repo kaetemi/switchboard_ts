@@ -1,6 +1,6 @@
 # Native QUIC provider
 
-The N-API addon that gives `@polyverse/switchboard/node` raw QUIC and WebTransport on Node.js,
+The N-API addon that gives `@kaetemi/switchboard/node` raw QUIC and WebTransport on Node.js,
 Bun and Deno. The addon is a thin binding to the QUIC shim of `switchboard_quic` (`sbq`, Rust on
 quinn and h3); the provider and every protocol rule above it are TypeScript
 (`src/node/quic/native-provider.ts`, a port of `switchboard_quic`'s `native_provider.dart`). See
@@ -41,7 +41,7 @@ The provider loads the addon on first use, never at import, and tries in turn:
 
 1. `$SWITCHBOARD_QUIC_ADDON`, when it is set (and then nothing else);
 2. `native/sbq-node.node` in this package (the local build);
-3. the per-platform package `@polyverse/switchboard-quic-<target>` (table below).
+3. the per-platform package `@kaetemi/switchboard-quic-<target>` (table below).
 
 When none loads, connecting rejects and listening fails with
 `QuicError('unsupportedScheme', ...)`, whose message names the package for this platform;
@@ -55,11 +55,11 @@ The prebuilt targets follow `switchboard_quic`'s release workflow:
 
 | Platform            | Rust target                  | Package                                       |
 | ------------------- | ---------------------------- | --------------------------------------------- |
-| Linux x64 (glibc)   | `x86_64-unknown-linux-gnu`   | `@polyverse/switchboard-quic-linux-x64-gnu`   |
-| Linux arm64 (glibc) | `aarch64-unknown-linux-gnu`  | `@polyverse/switchboard-quic-linux-arm64-gnu` |
-| macOS arm64         | `aarch64-apple-darwin`       | `@polyverse/switchboard-quic-darwin-arm64`    |
-| macOS x64           | `x86_64-apple-darwin`        | `@polyverse/switchboard-quic-darwin-x64`      |
-| Windows x64         | `x86_64-pc-windows-msvc`     | `@polyverse/switchboard-quic-win32-x64-msvc`  |
+| Linux x64 (glibc)   | `x86_64-unknown-linux-gnu`   | `@kaetemi/switchboard-quic-linux-x64-gnu`   |
+| Linux arm64 (glibc) | `aarch64-unknown-linux-gnu`  | `@kaetemi/switchboard-quic-linux-arm64-gnu` |
+| macOS arm64         | `aarch64-apple-darwin`       | `@kaetemi/switchboard-quic-darwin-arm64`    |
+| macOS x64           | `x86_64-apple-darwin`        | `@kaetemi/switchboard-quic-darwin-x64`      |
+| Windows x64         | `x86_64-pc-windows-msvc`     | `@kaetemi/switchboard-quic-win32-x64-msvc`  |
 
 Windows builds link the C runtime statically, as `switchboard_quic` does, so that the addon needs
 no Visual C++ redistributable:
