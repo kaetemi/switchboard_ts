@@ -55,6 +55,7 @@ import { IncomingChannel } from './incoming-channel.ts';
 import { defaultRelayType, type RelayConfig } from './relay-config.ts';
 import { type BrokeringResolver, isBrokeringResolver } from './resolver.ts';
 import type { SwitchboardBinding, SwitchboardRuntime, TransportDialer } from './runtime.ts';
+import { type ServiceAddressLike, toServiceAddress } from './service-address-like.ts';
 import { installBulkRouting, isBulkAddress, refuseBulk, talkOver } from './talk-layer.ts';
 import {
   abortable,
@@ -65,6 +66,8 @@ import {
   goAwayQuietly,
   quietly,
 } from './waits.ts';
+
+export { type ServiceAddressLike, toServiceAddress } from './service-address-like.ts';
 
 /** The logger name of the node. */
 const logName = 'Switchboard.Node';
@@ -92,22 +95,6 @@ const schemePattern = /^[a-z][a-z0-9+.-]*$/;
 const emptyBytes = new Uint8Array(0);
 
 const strictUtf8 = new TextDecoder('utf-8', { fatal: true });
-
-/** A service address, or the text or name of one: `'echo'`, `'npc/1a2b'`, `Name.of('echo')`. */
-export type ServiceAddressLike = ServiceAddress | NameLike;
-
-/**
- * [address] as a {@link ServiceAddress}: itself, the text form parsed
- * (`type` or `type/<hex instance>`), or a name with instance 0 (any).
- *
- * @throws {RangeError} for text that is not a service address.
- */
-export function toServiceAddress(address: ServiceAddressLike): ServiceAddress {
-  if (address instanceof ServiceAddress) {
-    return address;
-  }
-  return typeof address === 'string' ? ServiceAddress.parse(address) : new ServiceAddress(address);
-}
 
 /** An instance {@link Switchboard.selectAndConnect} selected and the connection to it. */
 export interface SelectedInstance {
