@@ -123,8 +123,11 @@ test('a HOLDING of 20000 slots goes bulk and round-trips', async () => {
   await within(mesh.register(zone, ['tcp://127.0.0.1:1']), limit);
   await within(mesh.defineSlots(zone, { count: 20000 }), limit);
   const slots = Array.from({ length: 20000 }, (_, i) => i);
-  const discard = await within(mesh.declareHolding(zone, slots), limit);
+  // Before the answer, the client's mirror (it watches) gets a SLOT event
+  // for each of the 20000 slots, whose holder changed: seconds under load,
+  // so a longer bound than Dart's.
+  const discard = await within(mesh.declareHolding(zone, slots), 4 * limit);
   expect(discard).toEqual([]);
   // Declared again: still held.
-  expect(await within(mesh.declareHolding(zone, slots), limit)).toEqual([]);
-});
+  expect(await within(mesh.declareHolding(zone, slots), 4 * limit)).toEqual([]);
+}, 60_000);

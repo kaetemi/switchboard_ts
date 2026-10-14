@@ -258,6 +258,8 @@ function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
 class Peer {
   readonly client: MuxConnection;
   readonly server: MuxConnection;
+  /** How many channels reached the gate's dispatch. */
+  dispatched = 0;
 
   constructor(gate: SlotGate) {
     const [a, b] = memoryTransportPair({ delay: 0 });
@@ -271,6 +273,7 @@ class Peer {
     void (async () => {
       for await (const channel of server.incoming) {
         const result = gate.handler(new Incoming(channel));
+        this.dispatched++;
         if (isPromiseLike(result)) {
           result.then(
             () => {},
@@ -295,6 +298,11 @@ class Peer {
         payload: bytes(init.payload ?? 'cred'),
       }).encode(),
     );
+  }
+
+  /** Resolves once [count] channels in all reached the gate's dispatch (Dart waits a few ms). */
+  arrived(count: number): Promise<void> {
+    return until(() => this.dispatched >= count);
   }
 
   async close(): Promise<void> {
@@ -475,7 +483,7 @@ describe('dispatch', () => {
     const assigned = gate.onAssign(assign(1));
     const a = peer.open({ shard: 1, payload: 'a' });
     const b = peer.open({ shard: 1, payload: 'b' });
-    await settle();
+    await peer.arrived(2);
     lifecycle.onServe = (_, slot) => gate.onRevoke(kv, slot);
     lifecycle.loadGate.resolve();
     await assigned;
@@ -838,7 +846,7 @@ describe('hand-over', () => {
     await gate.onAssign(assign(1));
     await gate.onForward(forward(1, 2, 2));
     const first = peer.open({ shard: 1 });
-    await settle();
+    await peer.arrived(1);
     await first.close();
     // Closing and opening again cannot accumulate unbounded pending
     // resolver calls or continuations outside the mux channel limit.
@@ -878,7 +886,7 @@ describe('hand-over', () => {
     const queued = peer.open({ shard: 1 });
     const answers = new Frames(queued);
     void queued.send(bytes('a'));
-    await settle();
+    await peer.arrived(1);
     await gate.onForward(forward(1, 2, 2));
     await until(() => gate.stateOf(1) === undefined);
     expect(lifecycle.log.at(-1)).toBe('unload 1');
@@ -975,7 +983,7 @@ describe('hand-over', () => {
     await gate.onAssign(assign(1, { holder: 1 }));
     await gate.onDrain(drain(1, 2, 2));
     const queued = peer.open({ shard: 1, payload: 'queued' });
-    await settle();
+    await peer.arrived(1);
     // Owned by 2 at epoch 2, handed back at epoch 3: the state is there.
     await gate.onAssign(assign(1, { epoch: 3, holder: 2 }));
     expectMoved(await queued.done);
@@ -1126,6 +1134,8 @@ describe('hand-over', () => {
 
 describe('requests', () => {
   let answered: string[];
+  /** The requests whose handler started, in order. */
+  let started: string[];
 
   test('revocation from a request refuses the rest of the released queue', async () => {
     await setUp();
@@ -1160,10 +1170,12 @@ describe('requests', () => {
    */
   function talkLifecycle(hold?: Deferred<void>): void {
     answered = [];
+    started = [];
     lifecycle.onServe = (channel, slot) => {
       gate.detach(channel);
       void channel.talk().serve((m) =>
         gate.serveRequest(m, slot, async (request) => {
+          started.push(request.text());
           await hold?.promise;
           answered.push(request.text());
           void request.reply(`${slot}:${request.text()}`);
@@ -1297,7 +1309,7 @@ describe('requests', () => {
     await gate.onAssign(assign(1));
     const talk = new TalkChannel(peer.open({ shard: 1 }));
     const first = talk.request('GET', 'a');
-    await settle();
+    await until(() => started.length === 1);
     const drained = gate.onDrain(drain(1, 2, 2));
     const second = talk.request('GET', 'b');
     await settle();
@@ -1396,7 +1408,11 @@ describe('requests', () => {
     await gate.onDrain(drain(1, 2, 2));
     const gone = first.request('GET', 'gone');
     gone.catch(() => {});
-    await settle();
+    // Queued at the gate before the next request arrives on the other
+    // channel.
+    const servedFirst = (lifecycle.served.get(1) ?? [])[0] as IncomingChannel;
+    const atGate = servedFirst.talk();
+    await until(() => atGate.incomingRequestCount === 1);
     const refused = second.request('GET', 'refused').then(
       () => undefined,
       (e: unknown) => e,

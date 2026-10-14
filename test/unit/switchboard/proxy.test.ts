@@ -1734,6 +1734,7 @@ describe('proxyHandler with slot tables', () => {
         );
         return sent;
       });
+      await until(() => taken > 0, 5000);
       await pump();
       // The client sent what its window allows (1000 bytes, or 64 KiB if
       // it opened the channel before the proxy's LIMITS arrived), each
