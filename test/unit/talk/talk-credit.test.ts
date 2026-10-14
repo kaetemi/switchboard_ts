@@ -16,15 +16,21 @@ import { Status, StatusCode } from '../../../src/core/status.ts';
 import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   type FakeMuxChannel,
   type FakeMuxConnection,
   fakeMuxPair,
   costOf as muxCost,
 } from '../../support/talk/fake-channel.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { frameLink } from '../../support/talk/frame-link.ts';
-import { Collector, rejectsStatus, serve, uncaughtErrors } from '../../support/talk/helpers.ts';
+import {
+  Collector,
+  flush,
+  rejectsStatus,
+  serve,
+  uncaughtErrors,
+} from '../../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
 const defaultInitialWindow = defaultMuxOptions.initialWindow;
@@ -213,7 +219,7 @@ test('stream items are flow controlled by the items subscription', async () => {
 });
 
 test('items nobody listens to stall the channel until their request ends, not longer', async () => {
-  const clock = new FakeClock();
+  const clock = new ManualClock();
   [client, server] = fakeMuxPair({ mux: { clock } });
   const raw = client.open(empty);
   const talk = new TalkChannel(raw, { requestTimeout: 200 });
@@ -232,12 +238,12 @@ test('items nobody listens to stall the channel until their request ends, not lo
   // follow, and the request times out.
   const stream = talk.streamRequest('LIST', empty);
   const done = rejectsStatus(stream.done, StatusCode.deadlineExceeded);
-  await clock.elapse(200);
+  await clock.elapseAsync(200);
   await done;
   // Its end returned the items' credit: the channel flows again.
   expect(raw.heldBytes).toBe(0);
   const answer = talk.request('PING', empty);
-  await clock.elapse(100);
+  await clock.elapseAsync(100);
   expect([...(await answer).payload]).toEqual([1]);
   await talk.close();
 });

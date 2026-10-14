@@ -16,11 +16,12 @@ import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkAbortError } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
   expectStatus,
+  flush,
   Outcome,
   Queue,
   rejectsStatus,
@@ -179,7 +180,7 @@ describe('aborts', () => {
     // and stopping the iteration cancels the stream request (`TalkStream.
     // items`, design.md section 12, item 1). The item request the body was
     // handed is the application's: it is aborted by the responder timeout.
-    const clock = new FakeClock();
+    const clock = new ManualClock();
     const p = new Pair({ a: { clock }, b: { clock } });
     const responder = new Deferred<TalkMessage>();
     const itemStatus = new Deferred<number>();
@@ -220,7 +221,7 @@ describe('aborts', () => {
     expect((await responder.promise).isCancelled).toBe(true);
     // The item request still waits for the application's answer.
     expect(p.a.incomingRequestCount).toBe(1);
-    await clock.elapse(p.a.options.replyTimeout);
+    await clock.elapseAsync(p.a.options.replyTimeout);
     expect(await itemStatus.promise).toBe(StatusCode.deadlineExceeded);
     expect(p.a.incomingRequestCount).toBe(0);
     expect(p.b.outgoingRequestCount).toBe(0);

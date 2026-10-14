@@ -1,6 +1,6 @@
 # Hand-off: Talk port (thread 2)
 
-State on 2026-10-14, for the session that picks this up. Repository
+State on 2026-10-14, for the session that picks this up (updated after the integration tests over the frame mux and the QUIC binding). Repository
 `kaetemi/switchboard_ts`, integration branch `claude/switchboard-ts-design-s5r9na`.
 Running notes with the earlier design decisions are in `../notes/talk.md`.
 
@@ -31,14 +31,28 @@ The tests are 15 files and 328 tests in `test/unit/talk/`. Every test name in th
 The test fixtures are in `test/support/talk/`:
 
 * `fake-channel.ts`: `fakeMuxPair()`, an in-memory `MuxConnection` pair with real credit semantics. Keep it.
-* `fake-clock.ts`: `FakeClock`, with `elapse` flushing promise jobs between timers.
+* `frame-mux-peers.ts`: Talk over the real frame mux: `frameMuxPair()` (two `FrameMuxConnection`s on the memory pair, bulk routing installed, closed after the test; a `WireLog` of what both sides write; a transport that queues frames ahead), `FrameMuxPeers` (the frame-mux `Peers`), `RawMuxPeer`/`rawMuxPair()` (a mux whose peer hands it raw frames all at once).
 * `frame-link.ts`: `Pair`, `RawPeer`, `FrameEnd`.
-* `helpers.ts`: `Queue`, `Collector`, `serve`, and the status assertions.
-* `bulk-peers.ts`
+* `helpers.ts`: `Queue`, `Collector`, `serve`, `flush`, the status assertions, and the helpers the files used to copy (`toList`, `first`, `rejection`, `within`, `sleep`, `expectBytes`, `expectSame`, `expectRemote`, `rejectsRemote`, `rawOf`, `only`, `last`).
+* `frames.ts`: frames written by hand (credits, stream requests, items, BULK references, `_bulk` open payloads).
+* `carrier.ts`: `Carrier`, the `MuxChannelCarrier` stand-in (limit, interceptor).
+* `timer-clock.ts`: `TimerClock`, a `ManualClock` that tells its pending delays.
+* `bulk-peers.ts`: `Peers`, sources, `until`, `PulledSource`.
+
+`FakeClock` is gone: the tests use `ManualClock.elapseAsync` (and `flushAsync`, `settle`, `nextAt`) from `src/testing/manual-clock.ts`. The node's `SteppingClock` and the naming tests' `TestClock` can merge into it the same way (their owners' call).
+
+## Integration tests (`test/integration/talk-*.test.ts`)
+
+* `talk-frame-mux.test.ts` (45): `mux_talk_test` over the frame mux, requests, streams, aborts, cancels, timeouts and EXTEND, item windows, ordered answers, GOAWAY and its grace, a transport frame limit, keep-alive. Time on a `ManualClock`.
+* `talk-frame-mux-credit.test.ts` (16): `talk_credit_test` over the frame mux.
+* `talk-frame-mux-bulk.test.ts` (41) and `talk-frame-mux-bulk-rules.test.ts` (30): all of `talk_bulk_test` over the frame mux, the adapted tests as in Dart (LIMITS, the GOAWAY drain, the receive mark), 'over memory' run again with transport latency (the 'over TCP' adaptation), and the bulk admission at the bound.
+* `talk-frame-mux-forward.test.ts` (53): forwarding chains over frame mux pairs, 'bulk payloads' and 'forwarding credit' (with the real `SlotChannel`).
+* `talk-quic.test.ts` (17, one `test.fails`): Talk over `QuicBindingConnection` on the fake provider: unordered channels, bulk streams overtaking or lagging their references and their parent, lingering with drain holds, `_bulk` continuations after GOAWAY.
+
+* `talk-tcp.test.ts` (9): the 'over TCP' group of `talk_bulk_test` over the frame mux on loopback TCP (`connectTcp`, `listenTcp`), `mux_talk_test` over TCP, and a stalled reader holding its channel at the window.
 
 ## Not ported, with the reason in the test file
 
-* **`talk_bulk_test` 'over TCP':** there is no mux over TCP yet. The same tests run 'over memory' on the fake mux.
 * **`talk_forward_test` '1 proxy, synchronous transport' and '2 proxies, synchronous transport' (22 tests), plus 3 loop cases in 'item windows':** a Talk channel reads through a ReadableStream, which never delivers inside a send. The non-sync variants are fully ported.
 * **`talk_test` 'onError(null) on the subscription logs instead':** this is about Dart's `StreamSubscription.onError`, which TS has no equivalent for.
 * **`talk_test` 'synchronous transport' (11 tests):** ported, but adapted. The peer's cancel crosses the reply on the wire instead of arriving inside the send. They use a carrier that can intercept or refuse each frame. The held-cancel path (`#sending`/`#heldCancel` in `IncomingMessage`) is reachable only through re-entrant forwarding, and no test reaches it.
@@ -55,24 +69,24 @@ All of these are documented in the code.
 * **Error types differ.** `ArgumentError` becomes `RangeError` or `TypeError`, and `StateError` becomes `Error`. `onExtend` gets one `{deadline?, renew?}` object.
 * **Bulk receive allows for Talk running behind the mux.** Talk reads its channels through ReadableStreams, while the Dart mux delivers synchronously in wire order. These are the fixes in commit 9c2919d, `talk-channel.ts`:
   * `streamHold` counts the bulk channel's `heldBytes + bufferedBytes`, plus its window while it is open.
-  * `_adoptBulk` refuses only beyond `maxUnclaimedBulk` plus the references that the parent's unread (`bufferedBytes`) frames could carry. It then recounts after each frame read.
-    * Known gap: a frame already delivered to Talk's reader but not yet processed is not counted. A peer sitting exactly at the bound can therefore get a spurious RESOURCE_EXHAUSTED.
+  * `_adoptBulk` refuses only beyond `maxUnclaimedBulk` plus the references that the parent's unread frames could carry: those the mux channel buffers (`bufferedBytes`) and those delivered toward Talk's reader and not read yet (the channel's `heldBytes` less what Talk took from its reader and holds). It then recounts after each frame read. (The second half closed the gap where a peer exactly at the bound got a spurious RESOURCE_EXHAUSTED, reachable through a slot channel over a transport that queues frames ahead.)
   * On an ordered connection, a graceful close waits for the reassemblies of bulk channels that had already closed.
 * **On a frame channel that is not a mux channel, a status close waits for the last write.** This is so a channel abort sent just before the close is not lost. A sink that never accepts the write would hold that close.
 
-## Remaining from the work split
+## Fixes the integration tests found
 
-1. **Register the Talk vector ids through `test/support/vectors.ts`.** Use `wikiVector`/`wikiBytes` in `test/vectors/talk.test.ts`, which still reads hex inline, so that `test/vectors/coverage.test.ts` checks the Talk tables. The support file has landed, so this is unblocked.
-2. **Integration tests (`test/integration/talk-*.test.ts`):**
-   * Talk over the real frame mux on the memory pair, once thread 1's frame mux connection lands. It has not landed yet: `src/core/mux/` has the codecs and `BindingConnection` only.
-   * Then the bulk 'over TCP' group.
-   * Talk over `QuicBindingConnection` can be done now with `test/unit/quic/harness.ts`. That gives independent channels, the `ordered: false` paths and bulk lingering.
-3. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) need the TS peer and the node. Talk itself is ready for them.
-4. **Fixture follow-ups (optional):**
-   * Move the helpers the workers wrote locally into `test/support/talk/`: `toList`, `first`, `rejection`, `until`, a `MuxChannelCarrier` stand-in, `TimerClock`, frame builders, and a hand-fed source.
-   * Give `FakeClock` the pending-timer delays.
-   * The fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark.
-   * A core `ManualClock.elapseAsync` would let `FakeClock` go.
+* **Bulk admission at the bound** (the `_adoptBulk` allowance above, commit "Talk: count frames on their way to the reader in bulk admission"; test 'a reference on its way to Talk frees its place for the next OPEN, over a slot channel').
+* **After this side's GOAWAY, `installBulkRouting` admits a `_bulk` continuation for a parent that is open or that the connection retains for its drain** (Dart's QUIC binding: open or retained for its drain). Before, a late bulk stream of a closed parent Talk waited for was refused GOING_AWAY (test "after this side's GOAWAY, the late bulk channel Talk waits for is admitted, and the GOAWAY waits for it" in `talk-quic.test.ts`). The node thread fixed the same on main at the same time (by `retainedForDrain`, which also covers a proxy's pipe); the merge kept that version.
+
+## Known gap (reported, `test.fails` in `talk-quic.test.ts`)
+
+Over the QUIC binding, which reads a channel's stream only as far as what it delivered was consumed or granted ahead (as Dart's does), a message Talk holds for its payload holds every frame behind it in the QUIC stack. When an early bulk stream lags, the references behind it stay unread while their bulk streams keep arriving: past `maxUnclaimedBulk` Talk refuses them RESOURCE_EXHAUSTED and those messages fail at the sender. The frame mux reads references as they arrive. Either the binding reads ahead for Talk or Talk grants its parent a window ahead on unordered connections; the Dart reference has the same shape.
+
+## Remaining
+
+1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) need the TS peer. Talk itself is ready for them.
+2. **The QUIC bulk burst gap** above.
+3. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
 
 ## Conventions this thread followed
 

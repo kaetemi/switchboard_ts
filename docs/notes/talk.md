@@ -87,8 +87,10 @@ connection. `BulkRoutes` is not exported from the barrel; import from
   credit batched at half the window, manual credit, grant, CLOSE confirmed
   by the peer, `openAfter` ordering, bulk chunking, adoptIncoming and
   admitAfterGoAway, `ordered: false` with held channels for reordering).
-- `test/support/talk/fake-clock.ts`: `FakeClock` with `async elapse(ms)`
-  that flushes promise jobs between timers (the `fake_async` model).
-  `ManualClock` fires timers synchronously, which promise-driven code does
-  not keep up with; a core `ManualClock.elapseAsync` would let the two
-  merge.
+- `ManualClock.elapseAsync(ms)` (with `flushAsync`, `settle`, `nextAt`)
+  in `src/testing/manual-clock.ts` flushes promise jobs between timers
+  (the `fake_async` model); it replaced the Talk tests' `FakeClock`. The
+  node's `SteppingClock` and the naming tests' `TestClock` can merge into
+  it.
+- `test/support/talk/frame-mux-peers.ts`: Talk over the real frame mux
+  (`frameMuxPair`, `FrameMuxPeers`, `WireLog`, `RawMuxPeer`).

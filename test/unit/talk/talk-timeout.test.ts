@@ -15,10 +15,17 @@ import { Name } from '../../../src/core/name.ts';
 import { StatusCode } from '../../../src/core/status.ts';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
-import type { TimerHandle } from '../../../src/core/util/clock.ts';
-import { FakeClock, flush } from '../../support/talk/fake-clock.ts';
 import { Pair, RawPeer } from '../../support/talk/frame-link.ts';
-import { bytes, expectStatus, Outcome, serve, throwsStatus } from '../../support/talk/helpers.ts';
+import {
+  bytes,
+  expectStatus,
+  flush,
+  Outcome,
+  serve,
+  throwsStatus,
+  toList,
+} from '../../support/talk/helpers.ts';
+import { TimerClock } from '../../support/talk/timer-clock.ts';
 
 const empty = new Uint8Array(0);
 const ms30 = 30;
@@ -31,30 +38,6 @@ const day = 24 * hour;
  */
 const maxTimerDelay = 0x7fffffff;
 
-/** A {@link FakeClock} that knows the delay of each pending timer, as `fake_async`'s `pendingTimers` do. */
-class TimerClock extends FakeClock {
-  readonly #delays = new Map<TimerHandle, number>();
-
-  override setTimeout(callback: () => void, ms: number): TimerHandle {
-    const handle = super.setTimeout(() => {
-      this.#delays.delete(handle);
-      callback();
-    }, ms);
-    this.#delays.set(handle, ms);
-    return handle;
-  }
-
-  override clearTimeout(handle: TimerHandle): void {
-    this.#delays.delete(handle);
-    super.clearTimeout(handle);
-  }
-
-  /** The delays the pending timers were armed with. */
-  get pendingDelays(): number[] {
-    return [...this.#delays.values()];
-  }
-}
-
 function expectTimersInRange(clock: TimerClock): void {
   for (const delay of clock.pendingDelays) {
     expect(delay, 'longer timers fire at once on JavaScript').toBeLessThanOrEqual(maxTimerDelay);
@@ -64,15 +47,6 @@ function expectTimersInRange(clock: TimerClock): void {
 /** Waits [ms] of real time. */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Every value of [iterable], as Dart's `Stream.toList`. */
-async function toList<T>(iterable: AsyncIterable<T>): Promise<T[]> {
-  const values: T[] = [];
-  for await (const value of iterable) {
-    values.push(value);
-  }
-  return values;
 }
 
 describe('timeouts', () => {
@@ -93,15 +67,15 @@ describe('timeouts', () => {
     );
     await flush();
     expectTimersInRange(clock);
-    await clock.elapse(29 * day);
+    await clock.elapseAsync(29 * day);
     expectTimersInRange(clock);
     expect(gap.isDone).toBe(false);
-    await clock.elapse(day);
+    await clock.elapseAsync(day);
     expectStatus(gap.error, StatusCode.deadlineExceeded);
-    await clock.elapse(9 * day);
+    await clock.elapseAsync(9 * day);
     expectTimersInRange(clock);
     expect(declared.isDone).toBe(false);
-    await clock.elapse(day);
+    await clock.elapseAsync(day);
     expectStatus(declared.error, StatusCode.deadlineExceeded);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     expect(clock.pendingCount).toBe(0);
@@ -113,10 +87,10 @@ describe('timeouts', () => {
     const peer = new RawPeer({ options: { clock, requestTimeout: 30 * day } });
     peer.talk.startRequest('Q', empty).cancel();
     expectTimersInRange(clock);
-    await clock.elapse(29 * day);
+    await clock.elapseAsync(29 * day);
     expectTimersInRange(clock);
     expect(peer.talk.outgoingRequestCount).toBe(1);
-    await clock.elapse(day);
+    await clock.elapseAsync(day);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     expect(clock.pendingCount).toBe(0);
     await peer.talk.close();
@@ -133,10 +107,10 @@ describe('timeouts', () => {
     await flush();
     void held?.extend({ deadline: 30 * day });
     expectTimersInRange(clock);
-    await clock.elapse(29 * day);
+    await clock.elapseAsync(29 * day);
     expectTimersInRange(clock);
     expect(held?.canReply).toBe(true);
-    await clock.elapse(day);
+    await clock.elapseAsync(day);
     expect(held?.canReply).toBe(false);
     const last = peer.received.at(-1) as TalkFrame;
     expect(last.kind).toBe(TalkKind.abort);
@@ -191,9 +165,9 @@ describe('timeouts', () => {
     await flush();
     expect(held).toBeDefined();
     expect(p.b.incomingRequestCount).toBe(1);
-    await clock.elapse(29);
+    await clock.elapseAsync(29);
     expect(result.isDone).toBe(false);
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     expectStatus(result.error, StatusCode.deadlineExceeded);
     expect(p.bToA).toHaveLength(1);
     const abort = p.bToA[0] as TalkFrame;
@@ -219,7 +193,7 @@ describe('timeouts', () => {
     await flush();
     expect(peer.received).toHaveLength(2);
     const id = peer.received[0]?.requestId as number;
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expectStatus(result.error, StatusCode.deadlineExceeded);
     expectStatus(items.error, StatusCode.deadlineExceeded);
     expect(peer.received).toHaveLength(4);
@@ -251,10 +225,10 @@ describe('timeouts', () => {
     const result = new Outcome(p.a.request('SLOW', empty));
     await flush();
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       void held?.extend();
     }
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(result.isDone).toBe(false);
     void held?.reply(bytes([1]));
     await flush();
@@ -280,10 +254,10 @@ describe('timeouts', () => {
     const done = new Outcome(s.done);
     await flush();
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       void held?.replyItem(bytes([i]));
     }
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     void held?.reply(empty);
     await flush();
     expect(items.value?.map((m) => m.payload[0])).toEqual([0, 1, 2, 3, 4]);
@@ -306,14 +280,14 @@ describe('timeouts', () => {
     const long = new Outcome(p.a.request('LONG', empty, { timeout: 100 }));
     const short = new Outcome(p.a.request('SHORT', empty, { timeout: 10 }));
     const never = new Outcome(p.a.request('NEVER', empty, { timeout: 0 }));
-    await clock.elapse(11);
+    await clock.elapseAsync(11);
     expectStatus(short.error, StatusCode.deadlineExceeded);
-    await clock.elapse(69);
+    await clock.elapseAsync(69);
     expect(long.isDone).toBe(false);
     void held.get('LONG')?.reply(bytes([1]));
     await flush();
     expect([...(long.value as TalkMessage).payload]).toEqual([1]);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(never.isDone).toBe(false);
     await p.close();
     await flush();
@@ -329,7 +303,7 @@ describe('timeouts', () => {
     s.cancel();
     await flush();
     expect(peer.talk.outgoingRequestCount).toBe(1);
-    await clock.elapse(31);
+    await clock.elapseAsync(31);
     expect(peer.talk.outgoingRequestCount).toBe(0);
     // No second cancel.
     expect(peer.received).toHaveLength(2);
