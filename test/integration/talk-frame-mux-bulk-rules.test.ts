@@ -20,8 +20,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { describe, expect, test } from 'vitest';
 import { bytesEqual, hexString } from '../../src/core/bytes.ts';
-import type { MuxChannel } from '../../src/core/mux/contract.ts';
+import type { MuxChannel, MuxChannelCarrier } from '../../src/core/mux/contract.ts';
+import { MuxFrame } from '../../src/core/mux/mux-frame.ts';
 import { Name } from '../../src/core/name.ts';
+import { SlotChannel } from '../../src/core/naming/slot-channel.ts';
 import { Status, StatusCode, SwitchboardError } from '../../src/core/status.ts';
 import type { TalkMessage, TalkOptions } from '../../src/core/talk/contract.ts';
 import { TalkBulkOpen, TalkBulkReference } from '../../src/core/talk/talk-bulk.ts';
@@ -40,6 +42,8 @@ import {
   frameMuxPair,
   nextIncoming,
   FrameMuxPeers as Peers,
+  type RawMuxPeer,
+  rawMuxPair,
 } from '../support/talk/frame-mux-peers.ts';
 import {
   bytes,
@@ -647,4 +651,97 @@ describe('bulk channel rules', () => {
     const m = await got.promise;
     expectBytes(m.payload, pattern(300000));
   });
+});
+
+// Not in the Dart file: the bound on bulk channels opened ahead of their
+// messages, at the bound exactly. Talk reads its channel through a
+// ReadableStream, a step behind the frame mux, which delivers in wire
+// order as frames arrive (Dart's mux delivers synchronously): when the
+// mux takes a bulk OPEN, a reference that came before it may be on its
+// way to Talk's reader, out of the mux channel's buffer and not read yet.
+// A slot channel (SlotChannel, as the node opens toward a slot) adds a
+// step, and a transport that queues frames ahead (a stream transport's
+// decoder) lets the mux take the OPEN before Talk read the reference.
+describe('bulk channels opened ahead of their messages, at the bound', () => {
+  /** A BULK message "PUT" referencing bulk [number], 3 bytes long. */
+  const reference = (number: number): Uint8Array =>
+    new TalkFrame({
+      kind: TalkKind.message,
+      procedure: Name.of('PUT'),
+      bulk: true,
+      payload: new TalkBulkReference(number, 3).encode(),
+    }).encode();
+
+  /** The OPEN of bulk channel [number] (channel id 2 + 2 [number]) of parent channel 2. */
+  const bulkOpenFrame = (number: number): MuxFrame =>
+    MuxFrame.open(2 + 2 * number, new TalkBulkOpen(2, number).encode());
+
+  /**
+   * A frame mux whose raw peer opened channel 2 and, ahead of any message,
+   * bulk channels 1 to 4 for it; a Talk channel with `maxUnclaimedBulk` 4
+   * over channel 2 itself, or over a slot channel carrying it.
+   */
+  async function atTheBound(
+    carried: boolean,
+  ): Promise<{ peer: RawMuxPeer; talk: TalkChannel; seen: TalkMessage[] }> {
+    const [connection, peer] = rawMuxPair();
+    peer.send(MuxFrame.open(2, empty));
+    const parent = await nextIncoming(connection);
+    const near: MuxChannel | MuxChannelCarrier = carried
+      ? new SlotChannel(Name.of('svc'), 0, parent, () => Promise.resolve(undefined))
+      : parent;
+    const talk = new TalkChannel(near, { maxUnclaimedBulk: 4 });
+    const seen: TalkMessage[] = [];
+    serve(talk, (m) => seen.push(m));
+    peer.send(...[1, 2, 3, 4].map(bulkOpenFrame));
+    await flush();
+    expect(peer.closes).toEqual([]);
+    return { peer, talk, seen };
+  }
+
+  for (const carried of [false, true]) {
+    const over = carried ? 'over a slot channel' : 'over the mux channel';
+
+    test(`a reference on its way to Talk frees its place for the next OPEN, ${over}`, async () => {
+      const { peer, seen } = await atTheBound(carried);
+      // The reference to bulk 1 comes before the OPEN of bulk 5: the peer
+      // never has more than 4 channels unclaimed.
+      peer.send(MuxFrame.data(2, reference(1)), bulkOpenFrame(5));
+      await flush();
+      expect(peer.closes).toEqual([]);
+      // The rest of the run, at the bound throughout: each payload, then
+      // the next reference and the next OPEN.
+      for (let n = 1; n <= 5; n++) {
+        const more = n < 5 ? [MuxFrame.data(2, reference(n + 1)), bulkOpenFrame(n + 5)] : [];
+        peer.send(MuxFrame.data(2 + 2 * n, bytes([n, n, n])), MuxFrame.close(2 + 2 * n), ...more);
+        await flush();
+      }
+      await until(() => seen.length === 5);
+      expect(seen.map((m) => [...m.payload])).toEqual([1, 2, 3, 4, 5].map((n) => [n, n, n]));
+      expect(peer.closes.filter((c) => c.endsWith(` ${StatusCode.resourceExhausted}`))).toEqual([]);
+    });
+
+    test(`one more than the bound is refused RESOURCE_EXHAUSTED once what came before it was read, ${over}`, async () => {
+      const { peer, talk } = await atTheBound(carried);
+      // A plain message comes before the OPEN of bulk 5, no reference.
+      peer.send(
+        MuxFrame.data(
+          2,
+          new TalkFrame({ kind: TalkKind.message, procedure: Name.of('NOTE') }).encode(),
+        ),
+        bulkOpenFrame(5),
+      );
+      await flush();
+      expect(peer.closes).toEqual([`12 ${StatusCode.resourceExhausted}`]);
+      expect(talk.isOpen).toBe(true);
+    });
+
+    test(`one more than the bound with nothing before it is refused at once, ${over}`, async () => {
+      const { peer, talk } = await atTheBound(carried);
+      peer.send(bulkOpenFrame(5));
+      await flush();
+      expect(peer.closes).toEqual([`12 ${StatusCode.resourceExhausted}`]);
+      expect(talk.isOpen).toBe(true);
+    });
+  }
 });
