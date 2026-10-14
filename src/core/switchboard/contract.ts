@@ -8,6 +8,8 @@ import type { ChannelAddress, ServiceAddress } from '../address/index.ts';
 import type { PeerIdentity } from '../identity/contract.ts';
 import type { MuxChannel, MuxConnection } from '../mux/contract.ts';
 import type { Name } from '../name.ts';
+import type { SlotEntry } from '../naming/naming-protocol.ts';
+import type { SlotEvent, SlotTable } from '../naming/slot-table.ts';
 import type { Status } from '../status.ts';
 import type { TalkChannel, TalkOptions } from '../talk/contract.ts';
 
@@ -73,6 +75,40 @@ export interface Resolver {
   /** Resolves once the table has been usable at least once (at once for a static resolver). */
   readonly ready: Promise<void>;
   close(): Promise<void>;
+}
+
+/**
+ * A resolver that also knows the slot tables of sharded types, so that a
+ * router can send a channel for a shard slot to the slot's owner (wiki
+ * page "Polyverse Switchboard Sharding", section "Routing").
+ * `Switchboard.selectAndConnect` routes `(type, slot)` through
+ * {@link slotOwner} when the resolver implements this interface and
+ * {@link slotTable} has a table for the type; types without a slot table
+ * keep the plain rule of the addressing page (`sorted[slot mod n]`).
+ * `NamingResolver` implements it over the naming service's mirrored
+ * tables, `StaticResolver` over a configured slot map.
+ */
+export interface SlotResolver extends Resolver {
+  /** The slot table of [type], or undefined if the type has no slot space. */
+  slotTable(type: Name): SlotTable | undefined;
+  /**
+   * Where traffic for [slot] of [type] goes: the entry if the slot is owned
+   * or migrating (route to `SlotEntry.owner`, the old owner while
+   * migrating), undefined otherwise.
+   */
+  slotOwner(type: Name, slot: number): SlotEntry | undefined;
+  /** The distinct instances the slots of [type] are routed to. */
+  slotOwners(type: Name): Set<number>;
+  /** Changes of the slot tables. */
+  readonly slotEvents: AsyncIterable<SlotEvent>;
+  /**
+   * Asks the authority for the owner of [slot] of [type], bypassing the
+   * table: the naming service's `LOCATE`, which in a managed space assigns
+   * a free slot first. Resolves with the entry to route to (owned or
+   * migrating), or undefined when the slot stays free. Rejects like the
+   * underlying request (UNAVAILABLE while disconnected, say).
+   */
+  locateSlot(type: Name, slot: number): Promise<SlotEntry | undefined>;
 }
 
 /**
