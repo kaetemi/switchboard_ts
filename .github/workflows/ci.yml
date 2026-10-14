@@ -63,6 +63,116 @@ jobs:
       - run: npm run build
       - run: node --input-type=module -e "import('./dist/core/index.js').then((m) => console.log(Object.keys(m).length, 'exports'))"
 
-  # The interop job (Dart 3.13.5, Rust 1.99.0, the pinned Dart checkouts, the
-  # AOT peer) is added by the interop thread; the native and browser jobs by
-  # the QUIC thread. See docs/work-split.md.
+  # The Dart reference implementation as a peer (test/interop): the two Dart
+  # repositories checked out next to this one at the commits in
+  # test/interop/dart_peer/dart_commits.txt, where the peer's path
+  # dependencies find them; Dart 3.13.5 and Rust 1.99.0 (switchboard_quic's
+  # build hook compiles its QUIC library with cargo) build the AOT peer, which
+  # is cached on its sources and the pins. When a toolchain cannot be
+  # installed the job warns and the Dart cells skip; otherwise a missing peer
+  # fails the run (SWITCHBOARD_INTEROP=required).
+  interop:
+    name: Interop (Dart reference)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: switchboard_ts
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: switchboard_ts
+
+      - name: Pinned Dart commits
+        id: pins
+        run: |
+          pins=test/interop/dart_peer/dart_commits.txt
+          echo "core=$(awk '$1 == "switchboard" { print $2 }' "$pins")" >> "$GITHUB_OUTPUT"
+          echo "quic=$(awk '$1 == "switchboard_quic" { print $2 }' "$pins")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard
+          ref: ${{ steps.pins.outputs.core }}
+          path: switchboard
+
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard_quic
+          ref: ${{ steps.pins.outputs.quic }}
+          path: switchboard_quic
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: switchboard_ts/package-lock.json
+
+      - id: dart
+        uses: dart-lang/setup-dart@v1
+        continue-on-error: true
+        with:
+          sdk: 3.13.5
+
+      - id: rust
+        uses: dtolnay/rust-toolchain@stable
+        continue-on-error: true
+        with:
+          toolchain: 1.99.0
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.rust.outcome == 'success'
+        with:
+          workspaces: switchboard_quic/native/sbq -> target
+
+      - uses: actions/cache@v4
+        with:
+          path: switchboard_ts/test/interop/dart_peer/build/peer
+          key: dart-peer-${{ runner.os }}-${{ hashFiles('switchboard_ts/test/interop/dart_peer/**/*.dart', 'switchboard_ts/test/interop/dart_peer/pubspec.yaml', 'switchboard_ts/test/interop/dart_peer/dart_commits.txt') }}
+
+      - run: npm ci
+
+      - name: Build the Dart peer
+        id: peer
+        if: steps.dart.outcome == 'success' && steps.rust.outcome == 'success'
+        run: node tool/dart-peer.mjs build --expect-pins
+
+      - name: Interop tests
+        run: |
+          if [ "${{ steps.peer.outcome }}" = success ]; then
+            export SWITCHBOARD_INTEROP=required
+          else
+            echo "::warning::Dart or Rust could not be installed: the Dart interop cells skip"
+            export SWITCHBOARD_INTEROP=skip
+          fi
+          npm run test:interop
+
+  # The QUIC thread's jobs: the native addon built from the vendored sbq
+  # (checked against switchboard_quic at the pin) and its tests over loopback.
+  native:
+    name: Native QUIC provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The commit native/sbq-vendor.commit pins: the vendored shim must match it.
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard_quic
+          ref: c5b32652cdcfe91e496fe853b7dcb3a354325bbe
+          path: switchboard_quic
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node tool/sync-sbq.mjs --check switchboard_quic
+      - run: npm run build:native
+      - run: npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts
+        env:
+          SWITCHBOARD_NATIVE: required

@@ -67,11 +67,16 @@ await channel.close();
 A browser client over WebTransport, reconnecting, with a persistent channel:
 
 ```ts
-import { ReconnectingClient, webTransport } from '@kaetemi/switchboard/web';
+import { ReconnectingClient, connectQuic, webTransport } from '@kaetemi/switchboard/web';
 
-const client = new ReconnectingClient(webTransport('https://edge.example.com:4433/sb', {
-  serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
-}));
+const client = new ReconnectingClient({
+  connect: (options, { signal }) =>
+    connectQuic('https://edge.example.com:4433/sb', webTransport(), {
+      options,
+      signal,
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+    }),
+});
 client.openPersistentTalk('chat', async (talk) => {
   for await (const message of talk.messages) render(message.json());
 });
@@ -119,7 +124,7 @@ The protocol needs a QUIC implementation that exposes bidirectional streams, per
 
 The addon reuses the Dart package's shim: `switchboard_quic/native/sbq` already implements the connection and stream model, HTTP/3 and WebTransport over quinn, with 11 000 lines including tests, and it is the reference the Dart tests exercise. The user approved reusing it (2026-10-14). The QUIC thread built such an addon with `napi-rs` 3 and completed a QUIC handshake with matching TLS key export on both ends in Node 22, 24 and 26, Bun and Deno (`notes/quic.md`, section 9). The addon mirrors the C ABI function for function (handles as numbers, `sbq_poll` filling an event array, the doorbell as a non-blocking thread-safe function with a weak reference so an idle pump does not hold the process open); all protocol logic stays in TypeScript, and the TS native provider is a direct port of the Dart one. How the addon depends on the shim:
 
-- **Decided (2026-10-14, the user's call):** duplicate the shim now. `native/sbq-vendor/` holds `switchboard_quic/native/sbq` at the commit recorded in `native/sbq-vendor/COMMIT`, with one change, `"rlib"` added to the crate types so the addon can depend on it by path; `tool/sync-sbq.mjs` refreshes it from a `switchboard_quic` checkout, and a CI check verifies that the vendored tree equals upstream at that commit except for that line. No change is made to `switchboard_quic`. The copy stays cleanly separable: its own directory, no TS-specific edits to the Rust beyond the crate-type line, the N-API crate as a separate crate next to it. **Intended direction:** once the port is ready, the shim may move to a dedicated repository shared by the Dart and TypeScript packages; the separation above makes that extraction a move, not a rewrite.
+- **Decided (2026-10-14, the user's call):** duplicate the shim now. `native/sbq-vendor/` holds `switchboard_quic/native/sbq` at the commit recorded in `native/sbq-vendor.commit` (outside the copy, so the copy stays byte-identical to upstream apart from the crate-type line), with one change, `"rlib"` added to the crate types so the addon can depend on it by path; `tool/sync-sbq.mjs` refreshes it from a `switchboard_quic` checkout, and a CI check verifies that the vendored tree equals upstream at that commit except for that line. No change is made to `switchboard_quic`. The copy stays cleanly separable: its own directory, no TS-specific edits to the Rust beyond the crate-type line, the N-API crate as a separate crate next to it. **Intended direction:** once the port is ready, the shim may move to a dedicated repository shared by the Dart and TypeScript packages; the separation above makes that extraction a move, not a rewrite.
 
 Alternatives considered and rejected: a pure FFI layer over the unchanged cdylib (`koffi`, `bun:ffi`, `Deno.dlopen`: two native artifacts per platform, three loaders, blocking-callback rules; kept as a possible later fallback since the addon mirrors the C ABI), `@fails-components/webtransport` (a second QUIC stack with its own dialect, no raw QUIC, fails in Deno), a fresh quinn binding (would re-derive what `sbq` settled), Deno's built-in QUIC (no exporter, no pinning, `--unstable-net`), and WASM (a possible no-prebuild fallback later).
 
@@ -268,7 +273,7 @@ What changes:
 
 - Delivery is pull based (section 5). A channel not being read holds its credit; `break` out of `for await` discards and closes.
 - Two hooks replace Dart's address decoding inside the mux: `connection.adoptIncoming(filter)` lets a layer claim peer-opened channels before they reach `incoming` (Talk claims `_bulk` channels for their parent), and `connection.admitAfterGoAway(predicate)` decides which OPENs are still accepted after GOAWAY (Talk admits `_bulk` continuations).
-- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`).
+- `BindingConnection` is the abstract base for the QUIC binding: neutral diagnostics, `hasOrderedChannels = false`, drain holds (`retainForDrain`, `hasDrainHolds`, `retainedForDrain`, `drainStateChanged`). As in Dart, it carries no identity exchange and neither hook: the QUIC binding has its own (exporter binding, held control messages) and the frame mux its own (held frames). Decided 2026-10-14 with PR #9.
 - Control message codecs (`MuxPing`, `MuxGoAway`, `MuxLimits`, `MuxNonce`, `MuxIdent`, `MuxCredit`, `MuxHello`) are exported for the vectors and for the QUIC binding, which reuses NONCE, IDENT, GOAWAY and PING.
 
 ### 6.4 Identity: `identity/contract.ts`
@@ -336,7 +341,7 @@ Ports `naming/*.dart` and the slot machinery: the `_ns` protocol codecs (REGISTE
 
 ### 6.9 Clients: `client/`
 
-`ReconnectingClient(connector, options)` over a `TransportConnector` or a `QuicConnector` endpoint: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
+`ReconnectingClient(connector, options)` over a `TransportConnector` (the frame mux over the transport) or a `ConnectionConnector` object `{ connect(options, { signal }) }` (Dart's `ReconnectingClient.connections`), which is how QUIC and WebTransport plug in; a web entry-point helper returning such a connector is a QUIC-thread option: `states` (an `Emitter` event and an `AsyncIterable`, replaying the current state), `state`, `connection`, `connected`, `start`, `stop`, `reconnectNow`, `close`, `openChannel`, `openTalk`, `openPersistent`, `openPersistentTalk`, `incoming`. `Backoff` is shared with `PeerSet`; `MeshNode` as in Dart. Backoff randomness is injectable (`random: () => number`).
 
 ### 6.10 QUIC and WebTransport binding: `quic/contract.ts`, `quic/`
 
