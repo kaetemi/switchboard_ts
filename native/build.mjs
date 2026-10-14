@@ -8,10 +8,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // then copies the library cargo wrote to native/sbq-node.node, the file the native provider
 // loads first (src/node/quic/native-provider.ts).
 //
-//   node native/build.mjs [--debug] [--target <triple>] [--out <file>]
+//   node native/build.mjs [--debug] [--target <triple>] [--out <file>] [--dry-run]
 //
-// --debug builds the dev profile (faster to build, much slower to run); --target cross-compiles
-// (the toolchain for it must be installed); --out writes the addon elsewhere.
+// --debug builds the dev profile (faster to build, much slower to run); --target builds for that
+// Rust target (cargo writes under target/<triple>/; cross-compiling needs the target's standard
+// library and a C toolchain for ring); --out writes the addon elsewhere, such as
+// native/npm/<package>/sbq-node.node for a per-platform package; --dry-run prints the cargo
+// command and the copy without running them.
 
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
@@ -23,15 +26,20 @@ const args = process.argv.slice(2);
 let profile = 'release';
 let target;
 let out = join(native, 'sbq-node.node');
+let dryRun = false;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--debug') {
     profile = 'debug';
+  } else if (args[i] === '--dry-run') {
+    dryRun = true;
   } else if (args[i] === '--target' && args[i + 1] !== undefined) {
     target = args[++i];
   } else if (args[i] === '--out' && args[i + 1] !== undefined) {
     out = resolve(args[++i]);
   } else {
-    console.error('usage: node native/build.mjs [--debug] [--target <triple>] [--out <file>]');
+    console.error(
+      'usage: node native/build.mjs [--debug] [--target <triple>] [--out <file>] [--dry-run]',
+    );
     process.exit(2);
   }
 }
@@ -39,12 +47,7 @@ for (let i = 0; i < args.length; i++) {
 const cargoArgs = ['build', '--locked'];
 if (profile === 'release') cargoArgs.push('--release');
 if (target !== undefined) cargoArgs.push('--target', target);
-const cargo = spawnSync(process.env.CARGO ?? 'cargo', cargoArgs, { cwd: native, stdio: 'inherit' });
-if (cargo.error !== undefined) {
-  console.error(`build-native: cannot run cargo (${cargo.error.message}); install Rust: https://rustup.rs`);
-  process.exit(1);
-}
-if (cargo.status !== 0) process.exit(cargo.status ?? 1);
+const cargoCommand = process.env.CARGO ?? 'cargo';
 
 const os = target ?? `${process.platform}`;
 const file = /windows|win32/.test(os)
@@ -54,6 +57,20 @@ const file = /windows|win32/.test(os)
     : 'libsbq_node.so';
 const targetDir = process.env.CARGO_TARGET_DIR ?? join(native, 'target');
 const built = join(resolve(native, targetDir), ...(target === undefined ? [] : [target]), profile, file);
+
+if (dryRun) {
+  console.log(`build-native: would run (in ${native}): ${cargoCommand} ${cargoArgs.join(' ')}`);
+  console.log(`build-native: would copy ${built}`);
+  console.log(`build-native:         to ${out}`);
+  process.exit(0);
+}
+
+const cargo = spawnSync(cargoCommand, cargoArgs, { cwd: native, stdio: 'inherit' });
+if (cargo.error !== undefined) {
+  console.error(`build-native: cannot run cargo (${cargo.error.message}); install Rust: https://rustup.rs`);
+  process.exit(1);
+}
+if (cargo.status !== 0) process.exit(cargo.status ?? 1);
 if (!existsSync(built)) {
   console.error(`build-native: cargo succeeded but ${built} is missing`);
   process.exit(1);

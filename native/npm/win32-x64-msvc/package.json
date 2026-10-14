@@ -1,0 +1,22 @@
+{
+  "name": "@kaetemi/switchboard-quic-win32-x64-msvc",
+  "version": "3.0.0-dev.1",
+  "description": "The native QUIC addon of @kaetemi/switchboard for Windows x64 (x86_64-pc-windows-msvc).",
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kaetemi/switchboard_ts.git",
+    "directory": "native/npm/win32-x64-msvc"
+  },
+  "homepage": "https://github.com/kaetemi/switchboard_ts/tree/main/native#readme",
+  "main": "sbq-node.node",
+  "files": ["sbq-node.node"],
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

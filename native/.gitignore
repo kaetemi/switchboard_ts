@@ -1,2 +1,5 @@
 # The addon native/build.mjs copies here (npm run build:native).
 /*.node
+# The per-platform packages' addons and the licence the release workflow copies in.
+/npm/*/*.node
+/npm/*/LICENSE
