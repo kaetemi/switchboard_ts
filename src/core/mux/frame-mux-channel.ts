@@ -23,7 +23,7 @@ import type {
   MuxPriority,
 } from './contract.ts';
 import { MuxControlMessage, MuxCredit, MuxFrame, MuxLimits } from './mux-frame.ts';
-import { checkMuxStatus, fitStatus } from './mux-protocol.ts';
+import { checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
 
 /**
  * What a channel needs of its connection; the connection implements it
@@ -458,6 +458,16 @@ export class FrameMuxChannel implements MuxChannel {
       { highWaterMark: 0 },
     );
     return this.#readable;
+  }
+
+  /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`: each step takes delivery of one, which lets its credit go
+   * back; stopping early cancels the readable, which discards what arrives
+   * from then on and leaves the channel open. Locks {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
   }
 
   /** Outgoing subframes; see {@link MuxChannel.writable}. */
