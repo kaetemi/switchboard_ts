@@ -66,3 +66,31 @@ jobs:
   # The interop job (Dart 3.13.5, Rust 1.99.0, the pinned Dart checkouts, the
   # AOT peer) is added by the interop thread; the native and browser jobs by
   # the QUIC thread. See docs/work-split.md.
+
+  native:
+    name: Native QUIC provider
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The commit native/sbq-vendor.commit pins: the vendored shim must match it.
+      - uses: actions/checkout@v5
+        with:
+          repository: kaetemi/switchboard_quic
+          ref: c5b32652cdcfe91e496fe853b7dcb3a354325bbe
+          path: switchboard_quic
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node tool/sync-sbq.mjs --check switchboard_quic
+      - run: npm run build:native
+      - run: npx vitest run --project integration test/integration/quic-native.test.ts
+        env:
+          SWITCHBOARD_NATIVE: required

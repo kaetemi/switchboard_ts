@@ -1,0 +1,34 @@
+# Polyverse Switchboard
+# Microservice Network Architecture
+# Copyright (C) 2018-2026  Jan BOON (Kaetemi)
+
+[package]
+name = "sbq-node"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+description = "N-API addon of @polyverse/switchboard: the sbq QUIC shim's C ABI for Node.js, Bun and Deno"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# napi4: thread-safe functions (the doorbell), napi3: environment cleanup hooks, napi6: BigInt
+# (results beyond 2^53 - 1).
+napi = { version = "3.14", default-features = false, features = ["napi6"] }
+napi-derive = "3.6"
+sbq = { path = "sbq-vendor" }
+
+[build-dependencies]
+napi-build = "2.6"
+
+# The shim's own release profile (native/sbq-vendor/Cargo.toml), which a path dependency's
+# profile does not carry over: the shim assumes that a panic aborts.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
