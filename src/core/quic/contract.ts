@@ -89,8 +89,9 @@ export interface QuicSession {
   /** The server certificate's SHA-256 over its DER, for pinning; undefined when not exposed. */
   readonly peerCertificateHash: Uint8Array | undefined;
   /**
-   * Closes with an application [code] (0 to 255) and [reason] (at most
-   * 1024 bytes of UTF-8). Idempotent; resolves once the session has ended.
+   * Closes with an application [code] (0 to 2^32 - 1, the WebTransport
+   * session close code; the binding itself uses 0 to 255) and [reason] (at
+   * most 1024 bytes of UTF-8). Idempotent; resolves once the session has ended.
    */
   close(code: number, reason: string): Promise<void>;
   /** Resolves when the session has ended, with how. Never rejects. */

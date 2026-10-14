@@ -47,10 +47,13 @@ Prebuilt binaries ship as optional dependencies per platform (Linux x64 and arm6
 The W3C WebTransport API, as a client only.
 
 ```ts
-import { webTransport } from '@kaetemi/switchboard/web';
-const connector = webTransport('https://edge.example.com:4433/sb', {
-  serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
-});
+import { ReconnectingClient, quicConnector, webTransport } from '@kaetemi/switchboard/web';
+// webTransport() is the provider; quicConnector gives a client its connector.
+const client = new ReconnectingClient(
+  quicConnector('https://edge.example.com:4433/sb', webTransport(), {
+    serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
+  }),
+);
 ```
 
 Browser notes: the `switchboard` protocol is negotiated from Chrome 143, Firefox 155 and Safari 26.4 (older browsers connect without one, which the server accepts); keying-material export exists on Firefox 155 and later, elsewhere identity is nonce-bound, which is safe because the browser verified the certificate; stream priorities only where `sendOrder` exists; Chromium carries stream error codes up to 255, which is all the binding uses.
