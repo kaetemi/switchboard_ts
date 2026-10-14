@@ -173,7 +173,7 @@ jobs:
       - run: npm ci
       - run: node tool/sync-sbq.mjs --check switchboard_quic
       - run: npm run build:native
-      - run: npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts
+      - run: npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts test/integration/quic-node-native.test.ts test/integration/node-quic.test.ts test/integration/node-webtransport.test.ts
         env:
           SWITCHBOARD_NATIVE: required
 
