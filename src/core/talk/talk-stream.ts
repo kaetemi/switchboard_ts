@@ -34,7 +34,8 @@ export class TalkStreamHandle implements TalkStream {
    * arrives; throws the failure of the request (a `TalkAbortError` when
    * the peer aborts it or the channel). Stopping the iteration early
    * cancels the request; item requests nobody took are answered
-   * `ABORT CANCELLED`.
+   * `ABORT CANCELLED`. Iterated once (here or through the handle): a
+   * second iteration throws.
    */
   get items(): AsyncIterable<TalkMessage> {
     return this.#pending.items as Delivery;

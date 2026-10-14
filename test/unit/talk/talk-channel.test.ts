@@ -360,4 +360,25 @@ describe('streams', () => {
     expect(itemsError).toBeInstanceOf(SwitchboardError);
     await p.close();
   });
+
+  test('messages and items are iterated once', async () => {
+    const p = new Pair();
+    serve(p.b, (m) => {
+      void m.replyItem(bytes([1]));
+      void m.reply(empty);
+    });
+    const s = p.a.streamRequest('LIST', empty);
+    for await (const _ of s) {
+      break;
+    }
+    // Stopping the iteration dropped what was left: a second consumer is
+    // a mistake, not an empty stream.
+    expect(() => s.items[Symbol.asyncIterator]()).toThrow(Error);
+    await s.done.catch(() => {});
+    const messages = new Queue(p.a.messages);
+    expect(() => p.a.messages[Symbol.asyncIterator]()).toThrow(Error);
+    expect(() => p.a.serve(() => {})).toThrow(Error);
+    await messages.cancel();
+    await p.close();
+  });
 });

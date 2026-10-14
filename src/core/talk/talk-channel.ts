@@ -460,7 +460,8 @@ export class TalkChannel implements TalkChannelContract {
    * Stopping the iteration (`break`) answers the requests not taken yet,
    * and every later request, with ABORT UNIMPLEMENTED, including requests
    * whose bulk payloads are still being reassembled; their transfers are
-   * cancelled too.
+   * cancelled too. It is iterated once: a second iteration, or
+   * {@link serve} after one, throws.
    */
   get messages(): AsyncIterable<TalkMessage> {
     return this.#messages;

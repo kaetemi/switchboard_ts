@@ -66,7 +66,8 @@ export class Held {
 
 /**
  * Messages waiting for a consumer, in order, delivered as an async
- * iterable or to a handler. One consumer.
+ * iterable or to a handler. One consumer, attached once: a second
+ * iteration, or a handler after an iteration, throws.
  *
  * Ends after what it holds once {@link close}d, with an error first after
  * {@link fail}. When the consumer stops before the end (`break` in a
@@ -170,8 +171,15 @@ export class Delivery implements AsyncIterable<TalkMessage> {
     return served.promise;
   }
 
+  /**
+   * The one iteration of this delivery, as a Dart stream is listened to
+   * once: stopping it (`break`) cancels the delivery, so there is nothing
+   * left for a second one.
+   *
+   * @throws {Error} if a consumer was attached already.
+   */
   [Symbol.asyncIterator](): AsyncIterator<TalkMessage> {
-    if (this.#handler !== undefined) {
+    if (this.#listened) {
       throw new Error('a Talk message delivery has one consumer');
     }
     this.#listened = true;
