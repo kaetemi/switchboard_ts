@@ -134,7 +134,7 @@ export interface MeshNodeOptions {
 }
 
 /** What {@link MeshNode.publish} takes beside the type and the handler. */
-export interface PublishOptions {
+export interface MeshPublishOptions {
   /** The instance id to ask for; 0 (the default) has the naming service assign one. */
   readonly instance?: number | undefined;
   /**
@@ -383,7 +383,11 @@ export class MeshNode implements AsyncDisposable {
    * Rejects like `NamingClient.register`, and with `FAILED_PRECONDITION`
    * after {@link leave}.
    */
-  publish(type: NameLike, handler: ChannelHandler, options: PublishOptions = {}): Promise<number> {
+  publish(
+    type: NameLike,
+    handler: ChannelHandler,
+    options: MeshPublishOptions = {},
+  ): Promise<number> {
     if (this.#leaving) {
       return Promise.reject(SwitchboardError.of(StatusCode.failedPrecondition, 'left mesh'));
     }
@@ -412,7 +416,7 @@ export class MeshNode implements AsyncDisposable {
    * @throws {TypeError} when [relay] forwards through another node.
    * Rejects like {@link publish}.
    */
-  publishRelay(relay: RelayService, options: PublishOptions = {}): Promise<number> {
+  publishRelay(relay: RelayService, options: MeshPublishOptions = {}): Promise<number> {
     if (relay.switchboard !== this.switchboard) {
       throw new TypeError('the relay forwards through another node');
     }
@@ -438,7 +442,7 @@ export class MeshNode implements AsyncDisposable {
   #publish(
     type: Name,
     handler: ChannelHandler,
-    options: PublishOptions,
+    options: MeshPublishOptions,
     metadata: Uint8Array | undefined,
   ): Promise<number> {
     let current: ServiceAddress | undefined;

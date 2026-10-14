@@ -11,9 +11,9 @@ export {
   LeaveReport,
   MeshNode,
   type MeshNodeOptions,
+  type MeshPublishOptions,
   type NamingClientForOptions,
   namingClientFor,
-  type PublishOptions,
 } from './mesh-node.ts';
 export {
   Peer,
