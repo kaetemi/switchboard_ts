@@ -19,6 +19,7 @@ import {
   WatchRequest,
 } from '../../../src/core/naming/naming-protocol.ts';
 import {
+  type NamingConnection,
   NamingService,
   type NamingServiceOptions,
 } from '../../../src/core/naming/naming-service.ts';
@@ -143,6 +144,12 @@ export interface LinkOptions {
   readonly dropToService?: FrameFilter;
   /** Drops frames from the naming service to the client. */
   readonly dropToClient?: FrameFilter;
+  /** The naming service's Talk options; default {@link serverOptions}. */
+  readonly serverOptions?: Partial<TalkOptions>;
+  /** The connection the service reads the channel's identity from (`serve`). */
+  readonly connection?: NamingConnection;
+  /** The application payload of the channel's OPEN, a credential (`serve`). */
+  readonly credential?: Uint8Array;
 }
 
 /**
@@ -184,14 +191,17 @@ export class Harness {
     const clock = this.clock === undefined ? {} : { clock: this.clock };
     const [client, server] = fakeTalkPair({
       a: { ...clientOptions, ...clock, ...options.options },
-      b: { ...serverOptions, ...clock },
+      b: { ...serverOptions, ...clock, ...options.serverOptions },
       sync: options.sync ?? false,
       ...(options.dropToService === undefined ? {} : { dropAtoB: options.dropToService }),
       ...(options.dropToClient === undefined ? {} : { dropBtoA: options.dropToClient }),
     });
     this.servers.push(server);
     this.clients.push(client);
-    this.service.serve(server);
+    this.service.serve(server, {
+      ...(options.connection === undefined ? {} : { connection: options.connection }),
+      ...(options.credential === undefined ? {} : { credential: options.credential }),
+    });
     return [client, server];
   }
 
