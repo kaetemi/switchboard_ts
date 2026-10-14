@@ -85,9 +85,9 @@ export interface SwitchboardOptions extends CoreSwitchboardOptions {
    * The QUIC provider the node dials `quic://` and `https://`
    * (WebTransport) endpoints through, with a `QuicSwitchboardBinding`; for
    * example `nativeQuic()`. Undefined: those schemes are not dialled
-   * (`UNIMPLEMENTED`). {@link Switchboard.listenQuic} and
-   * {@link Switchboard.listenWebTransport} listen with it when it can
-   * listen, and with `nativeQuic()` otherwise.
+   * (`UNIMPLEMENTED`) until the node listens on QUIC or WebTransport.
+   * {@link Switchboard.listenQuic} and {@link Switchboard.listenWebTransport}
+   * listen with it when it can listen, and with `nativeQuic()` otherwise.
    */
   quic?: QuicConnector | undefined;
   /** The options of the QUIC binding the {@link quic} provider dials through. */
@@ -238,8 +238,9 @@ function nodeRuntime(context: NodeContext): SwitchboardRuntime {
  *   (put TLS in front of a listener);
  * - `mem://id`, in-process ({@link listenMemory});
  * - `quic://host:port` and `https://host:port/path` (WebTransport), the
- *   QUIC binding: dialled through the `quic` option's provider,
- *   listened on with {@link listenQuic} and {@link listenWebTransport}.
+ *   QUIC binding: dialled through the `quic` option's provider (or, once
+ *   the node listens on QUIC, the listener's), listened on with
+ *   {@link listenQuic} and {@link listenWebTransport}.
  *
  * ```ts
  * const server = new Switchboard();
@@ -253,9 +254,8 @@ function nodeRuntime(context: NodeContext): SwitchboardRuntime {
  * (`ChannelPolicies.denyReserved`).
  */
 export class Switchboard extends CoreSwitchboard {
-  /** The QUIC provider of the `quic` option, or undefined. */
-  readonly quic: QuicConnector | undefined;
-
+  readonly #quicBinding: QuicSwitchboardBindingOptions;
+  #quic: QuicConnector | undefined;
   readonly #quicListeners: QuicSwitchboardListener[] = [];
   #closing: Promise<void> | undefined;
 
@@ -275,7 +275,18 @@ export class Switchboard extends CoreSwitchboard {
     super({ ...rest, runtime: options.runtime ?? nodeRuntime(context), bindings });
     context.clock = this.clock;
     context.logger = this.logger;
-    this.quic = quic;
+    this.#quic = quic;
+    this.#quicBinding = quicBinding ?? {};
+  }
+
+  /**
+   * The QUIC provider the node dials `quic://` and `https://` endpoints
+   * through: the `quic` option, or the provider a listener of
+   * {@link listenQuic} or {@link listenWebTransport} took when there was
+   * none; undefined before.
+   */
+  get quic(): QuicConnector | undefined {
+    return this.#quic;
   }
 
   // Listening ---------------------------------------------------------------
@@ -486,7 +497,7 @@ export class Switchboard extends CoreSwitchboard {
     const listener = await provider.listen(address, port, config, {
       advertisedHost: options.advertisedHost,
     });
-    return this.#startQuic(listener, address, options);
+    return this.#startQuic(provider, listener, address, options);
   }
 
   /**
@@ -513,14 +524,35 @@ export class Switchboard extends CoreSwitchboard {
       allowedOrigins: options.allowedOrigins,
       protocols: [switchboardAlpn],
     });
-    return this.#startQuic(listener, address, options);
+    return this.#startQuic(provider, listener, address, options);
   }
 
   #listenProvider(given: QuicListenProvider | undefined): QuicListenProvider {
     if (given !== undefined) {
       return given;
     }
-    return canListen(this.quic) ? this.quic : nativeQuic();
+    return canListen(this.#quic) ? this.#quic : nativeQuic();
+  }
+
+  /**
+   * A node listening on QUIC without a provider to dial with dials through
+   * the listener's from now on (when it can dial), so that the binding
+   * normalises its endpoints (a WebTransport endpoint by its path among
+   * them) and its own endpoints are recognised as such.
+   */
+  #adoptProvider(provider: QuicListenProvider): void {
+    const connector = provider as Partial<QuicConnector>;
+    const schemes = this.bindingSchemes;
+    if (
+      this.#quic !== undefined ||
+      typeof connector.connect !== 'function' ||
+      schemes.has(QuicSwitchboardBinding.quicScheme) ||
+      schemes.has(QuicSwitchboardBinding.webTransportScheme)
+    ) {
+      return;
+    }
+    this.#quic = connector as QuicConnector;
+    this.registerBinding(new QuicSwitchboardBinding(this.#quic, this.#quicBinding));
   }
 
   #serverConfig(address: string, options: ListenQuicOptions): QuicServerConfig {
@@ -540,12 +572,14 @@ export class Switchboard extends CoreSwitchboard {
   }
 
   async #startQuic(
+    provider: QuicListenProvider,
     listener: QuicListener,
     address: string,
     options: ListenQuicOptions,
   ): Promise<string> {
     let accepting: QuicSwitchboardListener;
     try {
+      this.#adoptProvider(provider);
       accepting = await QuicSwitchboardListener.start(this, listener, {
         policy: options.policy,
         quicOptions: options.quicOptions,
