@@ -21,6 +21,7 @@ import {
   receiverNonce,
   senderNonce,
 } from '../support/identity/identity-vectors.ts';
+import { wikiBlob } from '../support/vectors.ts';
 
 async function expectCode(promise: Promise<unknown>, code: StatusCode): Promise<void> {
   const error = await promise.then(
@@ -72,6 +73,11 @@ describe('exporter-bound proof (QUIC and WebTransport binding, X)', () => {
       exporter: options.exporter,
       now: at,
     });
+
+  test('the wiki gives the same message and signature', () => {
+    expect(hexString(wikiBlob('quic.X'))).toBe(message);
+    expect(hexString(wikiBlob('quic.X.signature'))).toBe(x);
+  });
 
   test('the signed message and its signature', async () => {
     const signed = MuxIdent.proofMessage(senderNonce, receiverNonce, intent, receiver, exporter);

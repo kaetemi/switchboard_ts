@@ -159,7 +159,8 @@ describe('StreamTransport over TCP', () => {
     const clientEnd = collect(client.readable).catch(() => []);
     server.abort();
     expect(await serverEnd).toEqual([]);
-    await server.writable.close();
+    // Aborted: the writable is errored, its close refused.
+    await server.writable.close().catch(() => {});
     expect(server.socket.destroyed).toBe(true);
     // The peer sees the connection go away.
     await clientEnd;

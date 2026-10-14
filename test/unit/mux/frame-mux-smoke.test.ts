@@ -1,20 +1,22 @@
 // A first end-to-end check of the frame mux over the memory pair: open,
 // subframes both ways, credit, close, ping, GOAWAY and connection loss.
-// The ports of the Dart mux tests (mux_test.dart and the others) follow.
+// The ports of the Dart mux tests are mux.test.ts and the files beside it.
 import { describe, expect, test } from 'vitest';
 import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
+import { SteppingClock, settle } from './support.ts';
 
 const quiet = { keepAliveInterval: undefined, goAwayGrace: 2000 } as const;
 
 function pair(): [FrameMuxConnection, FrameMuxConnection] {
-  const [a, b] = memoryTransportPair();
+  const clock = new SteppingClock();
+  const [a, b] = memoryTransportPair({ clock });
   return [
-    new FrameMuxConnection(a, { isInitiator: true, ...quiet }),
-    new FrameMuxConnection(b, { isInitiator: false, ...quiet }),
+    new FrameMuxConnection(a, { isInitiator: true, ...quiet, clock }),
+    new FrameMuxConnection(b, { isInitiator: false, ...quiet, clock }),
   ];
 }
 
@@ -65,7 +67,7 @@ describe('frame mux over the memory pair', () => {
       sent = true;
     });
     const incoming = await nextIncoming(b);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await settle();
     expect(sent).toBe(false);
     const reader = incoming.readable.getReader();
     await reader.read();

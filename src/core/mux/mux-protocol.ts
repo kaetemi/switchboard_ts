@@ -485,3 +485,53 @@ export function identReceiverProblem(
   }
   return undefined;
 }
+
+/**
+ * The iterator behind `for await (const subframe of channel)`, over the
+ * channel's [readable], which it locks: each step is a read, which takes
+ * delivery of a subframe and so lets its credit go back; the iteration
+ * ends when the channel's subframes do (its `done` tells how). Stopping
+ * early (`break`, `return`, an exception out of the loop) cancels the
+ * readable: what arrives from then on is discarded, counted as consumed,
+ * and the channel stays open (design section 12, item 10). Shared by the
+ * bindings' channels.
+ */
+export function readSubframes(
+  readable: ReadableStream<Uint8Array>,
+): AsyncIterableIterator<Uint8Array, undefined> {
+  const reader = readable.getReader();
+  let finished = false;
+  const iterator: AsyncIterableIterator<Uint8Array, undefined> = {
+    async next(): Promise<IteratorResult<Uint8Array, undefined>> {
+      if (finished) {
+        return { value: undefined, done: true };
+      }
+      let result: ReadableStreamReadResult<Uint8Array>;
+      try {
+        result = await reader.read();
+      } catch (error) {
+        finished = true;
+        reader.releaseLock();
+        throw error;
+      }
+      if (result.done) {
+        finished = true;
+        reader.releaseLock();
+        return { value: undefined, done: true };
+      }
+      return { value: result.value, done: false };
+    },
+    async return(): Promise<IteratorResult<Uint8Array, undefined>> {
+      if (!finished) {
+        finished = true;
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      return { value: undefined, done: true };
+    },
+    [Symbol.asyncIterator]() {
+      return iterator;
+    },
+  };
+  return iterator;
+}

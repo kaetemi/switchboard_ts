@@ -23,7 +23,7 @@ import type {
   MuxPriority,
 } from './contract.ts';
 import { MuxControlMessage, MuxCredit, MuxFrame, MuxLimits } from './mux-frame.ts';
-import { checkMuxStatus, fitStatus } from './mux-protocol.ts';
+import { checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
 
 /**
  * What a channel needs of its connection; the connection implements it
@@ -321,12 +321,6 @@ export class FrameMuxChannel implements MuxChannel {
   /** The payload of the OPEN frame, passed through unchanged. */
   readonly openPayload: Uint8Array;
 
-  /** Incoming subframes, one per chunk; see {@link MuxChannel.readable}. */
-  readonly readable: ReadableStream<Uint8Array>;
-
-  /** Outgoing subframes; see {@link MuxChannel.writable}. */
-  readonly writable: WritableStream<Uint8Array>;
-
   readonly #link: MuxChannelLink;
   readonly #host: MuxChannelHost;
   readonly #done = new Deferred<Status>();
@@ -345,7 +339,12 @@ export class FrameMuxChannel implements MuxChannel {
   #queuedBytes = 0;
   #discarding = false;
   #endRequested = false;
-  #controller!: ReadableStreamDefaultController<Uint8Array>;
+  // The streams are made on first use: a channel nobody reads or writes
+  // through them (a Talk channel, a rejected or adopted one) never pays
+  // for them.
+  #readable: ReadableStream<Uint8Array> | undefined;
+  #writable: WritableStream<Uint8Array> | undefined;
+  #controller: ReadableStreamDefaultController<Uint8Array> | undefined;
   #readableClosed = false;
   // A read waiting for a subframe.
   #pull: Deferred<void> | undefined;
@@ -403,29 +402,6 @@ export class FrameMuxChannel implements MuxChannel {
     this.#sendWindow = awaitingLimits ? 0 : this.#initialSendWindow;
     this.#receiveWindow = init.receiveWindow;
     this.#creditWindow = init.creditWindow;
-    this.readable = new ReadableStream<Uint8Array>(
-      {
-        start: (controller) => {
-          this.#controller = controller;
-        },
-        pull: () => this.#onPull(),
-        cancel: () => {
-          this.#readableClosed = true;
-          this.#discard();
-        },
-      },
-      { highWaterMark: 0 },
-    );
-    this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => {
-        if (!(chunk instanceof Uint8Array)) {
-          throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
-        }
-        return this.send(chunk);
-      },
-      close: () => this.close(),
-      abort: (reason: unknown) => this.close(abortStatus(reason)),
-    });
     bind({
       closeReceived: () => this.#closeReceived,
       receive: (payload) => this.#receive(payload),
@@ -462,6 +438,51 @@ export class FrameMuxChannel implements MuxChannel {
         }
       },
     });
+  }
+
+  // Streams -----------------------------------------------------------------
+
+  /** Incoming subframes, one per chunk; see {@link MuxChannel.readable}. */
+  get readable(): ReadableStream<Uint8Array> {
+    this.#readable ??= new ReadableStream<Uint8Array>(
+      {
+        start: (controller) => {
+          this.#controller = controller;
+        },
+        pull: () => this.#onPull(),
+        cancel: () => {
+          this.#readableClosed = true;
+          this.#discard();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    return this.#readable;
+  }
+
+  /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`: each step takes delivery of one, which lets its credit go
+   * back; stopping early cancels the readable, which discards what arrives
+   * from then on and leaves the channel open. Locks {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
+  }
+
+  /** Outgoing subframes; see {@link MuxChannel.writable}. */
+  get writable(): WritableStream<Uint8Array> {
+    this.#writable ??= new WritableStream<Uint8Array>({
+      write: (chunk) => {
+        if (!(chunk instanceof Uint8Array)) {
+          throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
+        }
+        return this.send(chunk);
+      },
+      close: () => this.close(),
+      abort: (reason: unknown) => this.close(abortStatus(reason)),
+    });
+    return this.#writable;
   }
 
   // State -------------------------------------------------------------------
@@ -503,7 +524,7 @@ export class FrameMuxChannel implements MuxChannel {
 
   /** Whether something reads {@link readable}. */
   get hasListener(): boolean {
-    return this.readable.locked && !this.#discarding;
+    return (this.#readable?.locked ?? false) && !this.#discarding;
   }
 
   /** Whether DATA waits for the peer's LIMITS: until then {@link maxSubframeLength} reflects the 64 KiB assumed without one. */
@@ -1218,7 +1239,7 @@ export class FrameMuxChannel implements MuxChannel {
       } else {
         this.#unreturned += cost;
       }
-      this.#controller.enqueue(payload);
+      (this.#controller as ReadableStreamDefaultController<Uint8Array>).enqueue(payload);
       this.#consume(0);
       if (this.#endRequested && this.#queue.length === 0) {
         this.#closeReadable();
@@ -1232,12 +1253,14 @@ export class FrameMuxChannel implements MuxChannel {
     return false;
   }
 
+  /** Ends `readable`; one not made yet ends when it is, on its first read. */
   #closeReadable(): void {
-    if (this.#readableClosed) {
+    const controller = this.#controller;
+    if (this.#readableClosed || controller === undefined) {
       return;
     }
     this.#readableClosed = true;
-    this.#controller.close();
+    controller.close();
   }
 
   #complete(): void {
