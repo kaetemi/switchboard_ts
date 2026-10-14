@@ -78,40 +78,6 @@ export interface Resolver {
 }
 
 /**
- * A resolver that also knows the slot tables of sharded types, so that a
- * router can send a channel for a shard slot to the slot's owner (wiki
- * page "Polyverse Switchboard Sharding", section "Routing").
- * `Switchboard.selectAndConnect` routes `(type, slot)` through
- * {@link slotOwner} when the resolver implements this interface and
- * {@link slotTable} has a table for the type; types without a slot table
- * keep the plain rule of the addressing page (`sorted[slot mod n]`).
- * `NamingResolver` implements it over the naming service's mirrored
- * tables, `StaticResolver` over a configured slot map.
- */
-export interface SlotResolver extends Resolver {
-  /** The slot table of [type], or undefined if the type has no slot space. */
-  slotTable(type: Name): SlotTable | undefined;
-  /**
-   * Where traffic for [slot] of [type] goes: the entry if the slot is owned
-   * or migrating (route to `SlotEntry.owner`, the old owner while
-   * migrating), undefined otherwise.
-   */
-  slotOwner(type: Name, slot: number): SlotEntry | undefined;
-  /** The distinct instances the slots of [type] are routed to. */
-  slotOwners(type: Name): Set<number>;
-  /** Changes of the slot tables. */
-  readonly slotEvents: AsyncIterable<SlotEvent>;
-  /**
-   * Asks the authority for the owner of [slot] of [type], bypassing the
-   * table: the naming service's `LOCATE`, which in a managed space assigns
-   * a free slot first. Resolves with the entry to route to (owned or
-   * migrating), or undefined when the slot stays free. Rejects like the
-   * underlying request (UNAVAILABLE while disconnected, say).
-   */
-  locateSlot(type: Name, slot: number): Promise<SlotEntry | undefined>;
-}
-
-/**
  * A resolver that can have an instance which registered without endpoints
  * dial the caller: the naming service's CONNECT (wiki page "Polyverse
  * Switchboard Identity and Credentials", section "Reverse connections").
@@ -130,6 +96,41 @@ export interface BrokeringResolver extends Resolver {
     intent: Uint8Array,
     options?: { timeout?: number | undefined; signal?: AbortSignal | undefined },
   ): Promise<string>;
+}
+
+/**
+ * A resolver that also knows the slot tables of sharded types, so that a
+ * router can send a channel for a shard slot to the slot's owner (wiki page
+ * "Polyverse Switchboard Sharding", section "Routing").
+ *
+ * The node routes `(type, slot)` through {@link slotOwner} when the
+ * resolver implements this interface and {@link slotTable} has a table for
+ * the type; types without a slot table keep the plain rule of the
+ * addressing page (`sorted[slot mod n]`). `NamingResolver` implements it
+ * over the naming service's mirrored tables; a static resolver can over a
+ * configured slot map.
+ */
+export interface SlotResolver extends Resolver {
+  /** The slot table of [type], or undefined if the type has no slot space. */
+  slotTable(type: Name): SlotTable | undefined;
+  /**
+   * Where traffic for [slot] of [type] goes: the entry if the slot is owned
+   * or migrating (route to `SlotEntry.owner`, the old owner while
+   * migrating), undefined otherwise.
+   */
+  slotOwner(type: Name, slot: number): SlotEntry | undefined;
+  /** The distinct instances the slots of [type] are routed to. */
+  slotOwners(type: Name): Set<number>;
+  /** Changes of the slot tables; each iteration is its own subscription. */
+  readonly slotEvents: AsyncIterable<SlotEvent>;
+  /**
+   * Asks the authority for the owner of [slot] of [type], bypassing the
+   * table: the naming service's `LOCATE`, which in a managed space assigns a
+   * free slot first. Resolves with the entry to route to (owned or
+   * migrating), or undefined when the slot stays free. Rejects like the
+   * underlying request (for example `UNAVAILABLE` while disconnected).
+   */
+  locateSlot(type: Name, slot: number): Promise<SlotEntry | undefined>;
 }
 
 /** A hook choosing the policy of a connection the node initiates; undefined: the node's outgoing policy. */

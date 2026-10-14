@@ -1,0 +1,3 @@
+# The kaetemi/switchboard_quic commit that native/sbq-vendor/ is a copy of (native/sbq there),
+# with "rlib" added to its crate-type. tool/sync-sbq.mjs reads it; CI checks the copy against it.
+c5b32652cdcfe91e496fe853b7dcb3a354325bbe

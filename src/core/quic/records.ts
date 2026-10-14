@@ -17,13 +17,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  */
 
 import { maxU48, readU32, readU48, writeU32, writeU48 } from '../bytes.ts';
-import { ProtocolError, Status, StatusCode } from '../status.ts';
 import {
   checkMuxStatus,
   decodeStatusPayload,
   statusForWire,
   statusFromWire,
-} from './wire-status.ts';
+} from '../mux/mux-protocol.ts';
+import { ProtocolError, Status, StatusCode } from '../status.ts';
 
 /** The command of a record: the top two bits of its header. Command 3 is reserved. */
 export const QuicRecordCommand = {

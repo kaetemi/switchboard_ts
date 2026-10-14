@@ -28,6 +28,9 @@
       "suspicious": {
         "noExplicitAny": "error"
       },
+      "complexity": {
+        "useLiteralKeys": "off"
+      },
       "style": {
         "useImportType": "error",
         "noNonNullAssertion": "warn"

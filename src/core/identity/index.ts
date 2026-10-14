@@ -3,3 +3,5 @@
 // random, and their tests (the wiki's credential vectors). Keep the
 // contract in `contract.ts`.
 export * from './contract.ts';
+export { createPeerIdentity, type PeerIdentityInit } from './peer-identity.ts';
+export { secureRandomBytes } from './secure-random.ts';
