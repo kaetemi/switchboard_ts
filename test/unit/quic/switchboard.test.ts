@@ -1,17 +1,20 @@
 // Switchboard nodes over the QUIC binding, end to end over the fake
 // provider: QuicSwitchboardBinding and QuicSwitchboardListener, the dial's
 // bounds and stack settings, identity under the rules of the binding page,
-// and the ends of connections. A port of `switchboard_quic`'s
-// `test/switchboard_test.dart` and `review_switchboard_test.dart`, as far as
-// the TS core reaches: the cases built on Talk (bulk payloads overtaking
-// their parents, whenWritable through Talk), the proxy and SlotChannel wait
-// for those layers and are listed as todo; the others carry their payloads
-// on raw channels instead of Talk requests.
+// Talk and its bulk payloads over independent streams, the proxy between
+// the frame mux and the binding, and the ends of connections. A port of
+// `switchboard_quic`'s `test/switchboard_test.dart` and
+// `review_switchboard_test.dart`; the nodes' `mem://` sides run over the
+// frame mux, as Dart's do. The man in the middle group and SlotChannel at
+// record cost are not ported yet (todo).
 import { beforeAll, describe, expect, test } from 'vitest';
 import { ChannelAddress, ServiceAddress } from '../../../src/core/address/index.ts';
 import { ReconnectingClient } from '../../../src/core/client/reconnecting-client.ts';
 import { type HolderKey, Right } from '../../../src/core/identity/contract.ts';
 import type { MuxChannel, MuxOptions } from '../../../src/core/mux/contract.ts';
+import { FrameMuxChannel } from '../../../src/core/mux/frame-mux-channel.ts';
+import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
+import { MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import { Name } from '../../../src/core/name.ts';
 import { serviceRecord } from '../../../src/core/naming/naming-protocol.ts';
 import { QuicBindingChannel } from '../../../src/core/quic/quic-binding-channel.ts';
@@ -23,11 +26,28 @@ import {
   QuicSwitchboardListener,
   type QuicSwitchboardListenerOptions,
 } from '../../../src/core/quic/quic-switchboard.ts';
+import {
+  encodeCloseRecord,
+  encodeDataRecord,
+  encodeOpenRecord,
+} from '../../../src/core/quic/records.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
+import { pipeChannels, proxyHandler } from '../../../src/core/switchboard/proxy.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
+import type { TalkChannel as TalkChannelLike } from '../../../src/core/talk/contract.ts';
+import {
+  installBulkRouting,
+  TalkBulkOpen,
+  TalkBulkReference,
+  TalkChannel,
+  TalkFrame,
+  TalkKind,
+  type TalkMessage,
+} from '../../../src/core/talk/index.ts';
+import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import {
   type FakeEndConfig,
   type FakeQuicConnector,
@@ -35,9 +55,11 @@ import {
   FakeQuicSession,
 } from '../../../src/testing/fake-quic-provider.ts';
 import { FakeVerifier, fakeCredential } from '../../support/node/fake-identity.ts';
-import { node as harnessNode, onCleanup, tagOf } from '../../support/node/harness.ts';
+import { node as harnessNode, onCleanup, tagOf, useMux } from '../../support/node/harness.ts';
 import {
+  bindingAndRaw,
   bytes,
+  collect,
   concat,
   expectCode,
   expectStatus,
@@ -50,6 +72,9 @@ import {
   within,
 } from './harness.ts';
 import { generateHolderKey } from './identity-fixtures.ts';
+
+// The nodes' in-process (`mem://`) connections run over the frame mux.
+useMux('frame');
 
 const echo = Name.of('echo');
 const npc = Name.of('npc');
@@ -93,19 +118,29 @@ async function listen(
   return listener;
 }
 
-/** Echoes every chunk of a channel back on it. */
+/** A Talk service answering every request with its payload. */
 const echoService: ChannelHandler = (incoming) => {
-  const channel = incoming.channel;
-  void (async () => {
-    try {
-      for await (const chunk of channel.readable) {
-        await channel.send(chunk);
-      }
-    } catch {
-      // The channel ended.
+  void incoming.talk().serve((m) => {
+    if (m.expectsReply) {
+      void m.reply(m.payload);
     }
-  })();
+  });
 };
+
+/** Whether [a] and [b] hold the same bytes. */
+function same(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
+}
+
+/** The payload of the reply to the request [procedure] with [payload] on [talk]. */
+async function ask(
+  talk: TalkChannel,
+  payload: Uint8Array,
+  procedure = 'ECHO',
+  ms = limit,
+): Promise<Uint8Array> {
+  return (await within(talk.request(procedure, payload, { timeout: ms }), ms)).payload;
+}
 
 /** Answers with the channel's type and the peer's identity, and closes. */
 const answer: ChannelHandler = (incoming) => {
@@ -114,45 +149,11 @@ const answer: ChannelHandler = (incoming) => {
   void incoming.channel.close().catch(() => {});
 };
 
-/** Sends [payload] on [channel] and reads until as many bytes came back. */
-async function exchange(channel: MuxChannel, payload: Uint8Array, ms = limit): Promise<Uint8Array> {
-  const reader = channel.readable.getReader();
-  // Without Talk a send is one subframe: at most the peer's record limit.
-  const sending = (async () => {
-    for (let at = 0; at < payload.length || at === 0; at += 16384) {
-      await channel.send(payload.subarray(at, at + 16384));
-    }
-  })();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  try {
-    while (received < payload.length) {
-      const result = await within(reader.read(), ms);
-      if (result.done) {
-        break;
-      }
-      chunks.push(result.value);
-      received += result.value.length;
-    }
-    await within(sending, ms);
-  } finally {
-    reader.releaseLock();
-  }
-  return concat(chunks);
-}
-
-/** Echoes [payload] on [channel], then closes it. */
-async function echoed(channel: MuxChannel, payload: Uint8Array, ms = limit): Promise<Uint8Array> {
-  const reply = await exchange(channel, payload, ms);
-  await within(channel.close());
-  return reply;
-}
-
 const echoAddress = (): ChannelAddress => new ChannelAddress({ type: echo });
 const npcAddress = (): ChannelAddress => new ChannelAddress({ type: npc });
 
 describe('two nodes', () => {
-  test('a request and its reply, each channel on a stream of its own, pooled by endpoint', async () => {
+  test('Talk request and reply, each channel on a stream of its own, pooled by endpoint', async () => {
     const network = new FakeQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
@@ -162,11 +163,11 @@ describe('two nodes', () => {
     const binding = new QuicSwitchboardBinding(network.connector());
     const client = node({ bindings: [binding] });
     expect(client.bindingSchemes).toEqual(new Set(['quic', 'https']));
-    const channel = await client.openChannelAt(listener.endpoint, echoAddress());
-    expect(channel).toBeInstanceOf(QuicBindingChannel);
-    expect(text(await echoed(channel, bytes('hello')))).toBe('hello');
-    const again = await client.openChannelAt('QUIC://Echo-1:4433#echo', echoAddress());
-    expect(text(await echoed(again, bytes('again')))).toBe('again');
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+    expect(talk.raw).toBeInstanceOf(QuicBindingChannel);
+    expect(text(await ask(talk, bytes('hello')))).toBe('hello');
+    const again = await client.openTalkAt('QUIC://Echo-1:4433#echo', echoAddress());
+    expect(text(await ask(again, bytes('again')))).toBe('again');
     expect(binding.dialled).toHaveLength(1);
     const connection = binding.dialled[0] as QuicBindingConnection;
     expect(connection.isInitiator).toBe(true);
@@ -180,7 +181,35 @@ describe('two nodes', () => {
     expect(config?.verifyCertificate).toBe(false);
   });
 
-  test.todo('a 3 MiB Talk bulk payload each way, its streams overtaking the parent (needs Talk)');
+  test('a 3 MiB bulk payload each way, its streams overtaking the parent and arriving out of order', async () => {
+    // The first channel's stream is slow both ways: the bulk streams opened
+    // after it arrive first; the others jitter.
+    const network = new FakeQuicNetwork({
+      delay: (info) => (info.ordinal === 1 ? 60 : (info.ordinal * 7) % 5),
+    });
+    const server = node();
+    server.registerService(echo, echoService);
+    const listener = await listen(network, server, 'bulk-1');
+    const client = node({ bindings: [new QuicSwitchboardBinding(network.connector())] });
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+    const payload = pattern(3 * 1024 * 1024, 3);
+    const reply = await within(talk.request('BIG', payload, { timeout: 30_000 }), 30_000);
+    expect(reply.isBulk).toBe(true);
+    expect(same(reply.payload, payload)).toBe(true);
+    // The bulk stream (2) arrived before its parent (1).
+    const [, accepted] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    expect(accepted.announced.indexOf(2)).toBeLessThan(accepted.announced.indexOf(1));
+    // Two at once, numbers 1 and 2 racing each other.
+    const twins = await within(
+      Promise.all([
+        talk.request('A', pattern(300_000, 1), { timeout: 30_000 }),
+        talk.request('B', pattern(200_000, 2), { timeout: 30_000 }),
+      ]),
+      30_000,
+    );
+    expect(same((twins[0] as TalkMessage).payload, pattern(300_000, 1))).toBe(true);
+    expect(same((twins[1] as TalkMessage).payload, pattern(200_000, 2))).toBe(true);
+  }, 60_000);
 
   test('many channels at once over jittered streams: beyond the channels a listener states the pool opens another connection, and a burst of opens waits for stream credit', async () => {
     const network = new FakeQuicNetwork({
@@ -194,86 +223,86 @@ describe('two nodes', () => {
     const client = node({ bindings: [binding] });
     // 120 channels kept open: beyond the 100 the listener states, the pool
     // dials another connection.
-    const channels: MuxChannel[] = [];
+    const talks: TalkChannel[] = [];
     for (let i = 0; i < 120; i++) {
-      channels.push(await client.openChannelAt(listener.endpoint, echoAddress()));
+      talks.push(await client.openTalkAt(listener.endpoint, echoAddress()));
       if (i === 0) {
         await until(() => binding.dialled[0]?.peerHello !== undefined);
       }
     }
     expect(binding.dialled[0]?.peerMaxChannels).toBe(100);
     expect(binding.dialled).toHaveLength(2);
-    // Exchanges on all of them at once; larger payloads on the channels of
-    // the second connection.
+    // Requests on all of them at once; bulk payloads on the channels of the
+    // second connection, the first having no stream left for them.
     const results = await within(
       Promise.all(
-        channels.map(async (channel, i) => {
+        talks.map(async (talk, i) => {
           const payload = pattern(i >= 100 ? 70000 + i : 100 + i, i);
-          const reply = await exchange(channel, payload, 60_000);
-          return reply.length === payload.length && reply.every((b, j) => b === payload[j]);
+          return same(await ask(talk, payload, 'ECHO', 60_000), payload);
         }),
       ),
       60_000,
     );
     expect(results.every((ok) => ok)).toBe(true);
-    await Promise.all(channels.map((channel) => channel.close()));
-    // As many opened at once on a pooled connection wait for stream credit
-    // instead of failing.
+    await Promise.all(talks.map((talk) => talk.close()));
+    // And as many opened at once on a pooled connection wait for stream
+    // credit instead of failing.
     const burst = await within(
       Promise.all(
         Array.from({ length: 150 }, async (_, i) => {
-          const channel = await client.openChannelAt(listener.endpoint, echoAddress());
-          const reply = await echoed(channel, pattern(10, i), 60_000);
-          return reply.every((b, j) => b === pattern(10, i)[j]) && reply.length === 10;
+          const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+          const reply = await ask(talk, pattern(10, i), 'ECHO', 60_000);
+          await talk.close();
+          return same(reply, pattern(10, i));
         }),
       ),
       60_000,
     );
     expect(burst.every((ok) => ok)).toBe(true);
-  });
+  }, 120_000);
 
-  test('whenWritable paces a sender at the stream window', async () => {
+  test('whenWritable paces a publisher at the stream window', async () => {
     const network = new FakeQuicNetwork();
     const server = node();
-    let served: MuxChannel | undefined;
+    let served: TalkChannelLike | undefined;
     server.registerService(echo, (incoming) => {
-      served = incoming.channel;
+      // The receiver takes nothing until told to.
+      served = incoming.talk();
     });
     const listener = await listen(network, server, 'pace-1', {
       config: { streamWindow: 64 * 1024 },
     });
     const client = node({ bindings: [new QuicSwitchboardBinding(network.connector())] });
-    const channel = await client.openChannelAt(listener.endpoint, echoAddress());
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
     const count = 400;
     let sent = 0;
     const publisher = (async () => {
       for (let i = 0; i < count; i++) {
-        await channel.whenWritable;
-        void channel.send(new Uint8Array(1000)).catch(() => {});
+        await talk.whenWritable;
+        void talk.send('EVENT', new Uint8Array(1000));
         sent++;
       }
     })();
     await until(() => served !== undefined);
     await settle(100);
     // The receiver takes nothing: the stack's window, plus the record being
-    // read, is all the sender got out.
-    expect(channel.isWritable).toBe(false);
+    // read, is all the publisher got out.
+    expect(talk.isWritable).toBe(false);
     expect(sent).toBeLessThan(80);
     const stalled = sent;
     await settle(100);
     expect(sent).toBe(stalled);
     let received = 0;
     const reading = (async () => {
-      for await (const chunk of (served as MuxChannel).readable) {
-        received += chunk.length;
-        if (received === count * 1000) {
+      for await (const _ of (served as TalkChannelLike).messages) {
+        if (++received === count) {
           return;
         }
       }
     })();
     await within(publisher);
     await within(reading);
-    expect(received).toBe(count * 1000);
+    expect(received).toBe(count);
   });
 
   test('https endpoints go to the connector, which may not dial them: the node moves to the next endpoint', async () => {
@@ -290,8 +319,8 @@ describe('two nodes', () => {
     const binding = new QuicSwitchboardBinding(network.connector());
     const client = node({ bindings: [binding], resolver });
     await expectCode(client.connect('https://both-1/sb'), StatusCode.unimplemented);
-    const channel = await client.openChannel(new ServiceAddress(echo));
-    expect(text(await echoed(channel, bytes('fell back')))).toBe('fell back');
+    const talk = await client.openTalk(new ServiceAddress(echo));
+    expect(text(await ask(talk, bytes('fell back')))).toBe('fell back');
     // WebTransport endpoints compare with their path, 443 by default.
     expect(binding.normalise('HTTPS://Hub.Example/sb#x')).toBe('https://hub.example:443/sb');
     expect(binding.normalise('quic://Hub:9/x')).toBe('quic://hub:9');
@@ -364,8 +393,8 @@ describe('dialling', () => {
     expect(binding.dialled).toHaveLength(0);
     // The next dial, not held, connects.
     connector.connectGate = undefined;
-    const channel = await client.openChannelAt(listener.endpoint, echoAddress());
-    expect(text(await echoed(channel, bytes('late')))).toBe('late');
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+    expect(text(await ask(talk, bytes('late')))).toBe('late');
     expect(binding.dialled).toHaveLength(1);
   });
 
@@ -637,12 +666,180 @@ describe('identity', () => {
 });
 
 describe('the proxy between the frame mux and the binding', () => {
-  test.todo(
-    'a frame mux client through a proxy to a QUIC backend (needs the frame mux, Talk and the proxy)',
-  );
-  test.todo(
-    'a QUIC client through a proxy to a frame mux backend (needs the frame mux, Talk and the proxy)',
-  );
+  test('a frame mux client through a proxy to a QUIC backend, bulk payloads included', async () => {
+    const network = new FakeQuicNetwork({
+      delay: (info) => (info.ordinal === 1 ? 30 : 0),
+    });
+    const backend = node();
+    backend.registerService(echo, echoService, { instance: 1 });
+    const backendListener = await listen(network, backend, 'backend-1', {
+      identityRules: QuicIdentityRules.none,
+    });
+    const resolver = new StaticResolver([
+      serviceRecord(new ServiceAddress(echo, 1), { endpoints: [backendListener.endpoint] }),
+    ]);
+    onCleanup(() => resolver.close());
+    const binding = new QuicSwitchboardBinding(network.connector());
+    const proxy = node({ bindings: [binding], resolver });
+    proxy.catchAll = proxyHandler(proxy);
+    const proxyUri = await proxy.listenMemory();
+    const client = node();
+    const talk = await client.openTalkAt(proxyUri, echoAddress());
+    expect(talk.raw).toBeInstanceOf(FrameMuxChannel);
+    expect(text(await ask(talk, bytes('through')))).toBe('through');
+    const payload = pattern(3 * 1024 * 1024, 5);
+    const big = await within(talk.request('BIG', payload, { timeout: 30_000 }), 30_000);
+    expect(big.isBulk).toBe(true);
+    expect(same(big.payload, payload)).toBe(true);
+    const twins = await within(
+      Promise.all([
+        talk.request('A', pattern(200_000, 1), { timeout: 30_000 }),
+        talk.request('B', pattern(150_000, 2), { timeout: 30_000 }),
+      ]),
+      30_000,
+    );
+    expect(same((twins[0] as TalkMessage).payload, pattern(200_000, 1))).toBe(true);
+    expect(same((twins[1] as TalkMessage).payload, pattern(150_000, 2))).toBe(true);
+  }, 60_000);
+
+  test('a QUIC client through a proxy to a frame mux backend: bulk twins forwarded in order', async () => {
+    // The parent stream is slow: the two bulk streams of the client reach
+    // the proxy before their references, the second one first.
+    const network = new FakeQuicNetwork({
+      delay: (info) => (info.ordinal === 1 ? 50 : info.ordinal === 2 ? 25 : 0),
+    });
+    const backend = node();
+    const received: Uint8Array[] = [];
+    backend.registerService(
+      echo,
+      (incoming) => {
+        void incoming.talk().serve((m) => {
+          received.push(m.payload);
+          if (m.expectsReply) {
+            void m.reply(`${m.payload.length}`);
+          }
+        });
+      },
+      { instance: 1 },
+    );
+    const backendUri = await backend.listenMemory();
+    const resolver = new StaticResolver([
+      serviceRecord(new ServiceAddress(echo, 1), { endpoints: [backendUri] }),
+    ]);
+    onCleanup(() => resolver.close());
+    const proxy = node({ resolver });
+    proxy.catchAll = proxyHandler(proxy);
+    const proxyListener = await listen(network, proxy, 'proxy-1', {
+      identityRules: QuicIdentityRules.none,
+    });
+    const client = node({ bindings: [new QuicSwitchboardBinding(network.connector())] });
+    const talk = await client.openTalkAt(proxyListener.endpoint, echoAddress());
+    const first = pattern(120_000, 1);
+    const second = pattern(90_000, 2);
+    const replies = await within(
+      Promise.all([
+        talk.request('A', first, { timeout: 30_000 }),
+        talk.request('B', second, { timeout: 30_000 }),
+      ]),
+      30_000,
+    );
+    expect(text((replies[0] as TalkMessage).payload)).toBe('120000');
+    expect(text((replies[1] as TalkMessage).payload)).toBe('90000');
+    expect(received).toHaveLength(2);
+    expect(same(received[0] as Uint8Array, first)).toBe(true);
+    expect(same(received[1] as Uint8Array, second)).toBe(true);
+    // The second bulk stream reached the proxy first.
+    const [, accepted] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    expect(accepted.announced.indexOf(3)).toBeLessThan(accepted.announced.indexOf(2));
+  }, 60_000);
+});
+
+/** The open payload of bulk channel [number] of the channel [parentId]. */
+function bulkOpen(parentId: number, number: number): Uint8Array {
+  return new TalkBulkOpen(parentId, number).encode();
+}
+
+/** A Talk `BULK` message [procedure] whose payload of [length] bytes is on bulk channel [number]. */
+function bulkMessage(procedure: string, number: number, length: number): Uint8Array {
+  return new TalkFrame({
+    kind: TalkKind.message,
+    procedure: Name.of(procedure),
+    bulk: true,
+    payload: new TalkBulkReference(number, length).encode(),
+  }).encode();
+}
+
+describe("Talk's bulk routing on a QUIC connection", () => {
+  test('after GOAWAY, a bulk channel for an open channel is admitted and goes to its Talk channel; a new channel is refused GOING_AWAY', async () => {
+    const [connection, raw] = await bindingAndRaw();
+    // What a Talk channel on the connection installs.
+    installBulkRouting(connection);
+    const atBinding = collect(connection);
+    const parent = await raw.openRaw(encodeOpenRecord(2, []));
+    await until(() => atBinding.length === 1);
+    const talk = new TalkChannel(atBinding[0] as MuxChannel);
+    void connection.goAway();
+    await raw.nextControlOf(MuxControlType.goAway);
+    const late = await raw.openRaw(encodeOpenRecord(4, []));
+    expect(await within(late.stopped)).toBe(StatusCode.goingAway);
+    // The message, then its payload on a bulk stream opened after the GOAWAY.
+    await parent.write(encodeDataRecord(bulkMessage('PUT', 1, 5)));
+    const bulk = await raw.openRaw(encodeOpenRecord(6, bulkOpen(2, 1)));
+    await bulk.write(concat([encodeDataRecord(bytes('hello')), encodeCloseRecord(Status.ok)]));
+    await bulk.finish();
+    const messages = talk.messages[Symbol.asyncIterator]();
+    const message = (await within(messages.next())).value as TalkMessage;
+    expect(message.procedureName).toBe('PUT');
+    expect(text(await within(message.bytes()))).toBe('hello');
+    // Routed to the Talk channel, never delivered to `incoming`.
+    expect(atBinding).toHaveLength(1);
+    await messages.return?.();
+  });
+
+  test('after GOAWAY, a bulk channel whose parent ended gracefully while a pipe waits for it is admitted (the parent is retained for the drain); one for a parent never admitted is not', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, goAwayGrace: 5000 } });
+    // What the node installs on every connection.
+    installBulkRouting(connection);
+    const atBinding = collect(connection);
+    // A proxy's pipe from the binding's channel 2 to a frame mux backend.
+    const [out, back] = memoryTransportPair({ delay: 0 });
+    const proxyOut = new FrameMuxConnection(out, { ...fast, isInitiator: true });
+    const backend = new FrameMuxConnection(back, { ...fast, isInitiator: false });
+    onCleanup(async () => {
+      await proxyOut.close();
+      await backend.close();
+    });
+    const atBackend = backend.incoming[Symbol.asyncIterator]();
+    const parent = await raw.openRaw(encodeOpenRecord(2, []));
+    // Another channel keeps the connection busy meanwhile.
+    await raw.openRaw(encodeOpenRecord(4, []));
+    await until(() => atBinding.length === 2);
+    const pipe = pipeChannels(atBinding[0] as MuxChannel, proxyOut.open(new Uint8Array(0)));
+    const far = (await within(atBackend.next())).value as MuxChannel;
+    const messages = new TalkChannel(far).messages[Symbol.asyncIterator]();
+    // A message referencing bulk channel 1, then the parent's graceful
+    // close, which overtakes the bulk stream: the pipe forwarded both and
+    // waits for the bulk channel, its parent retained for the drain.
+    await parent.write(
+      concat([encodeDataRecord(bulkMessage('PUT', 1, 5)), encodeCloseRecord(Status.ok)]),
+    );
+    await parent.finish();
+    await until(() => connection.channelWithId(2) === undefined);
+    expect(connection.retainedForDrain(2)).toBe(true);
+    void connection.goAway();
+    await raw.nextControlOf(MuxControlType.goAway);
+    const bulk = await raw.openRaw(encodeOpenRecord(6, bulkOpen(2, 1)));
+    await bulk.write(concat([encodeDataRecord(bytes('hello')), encodeCloseRecord(Status.ok)]));
+    await bulk.finish();
+    // Forwarded to the backend with its message.
+    const message = (await within(messages.next())).value as TalkMessage;
+    expect(message.procedureName).toBe('PUT');
+    expect(text(await within(message.bytes()))).toBe('hello');
+    const stray = await raw.openRaw(encodeOpenRecord(8, bulkOpen(10, 1)));
+    expect(await within(stray.stopped)).toBe(StatusCode.goingAway);
+    await messages.return?.();
+    await within(pipe);
+  });
 });
 
 describe('the end of a connection', () => {
@@ -655,8 +852,8 @@ describe('the end of a connection', () => {
     });
     const binding = new QuicSwitchboardBinding(network.connector());
     const client = node({ bindings: [binding] });
-    const channel = await client.openChannelAt(listener.endpoint, echoAddress());
-    await echoed(channel, bytes('x'));
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+    await ask(talk, bytes('x'));
     const connection = binding.dialled[0] as QuicBindingConnection;
     await server.close();
     expectStatus(await within(connection.peerGoAwayStatus), StatusCode.goingAway);
@@ -695,11 +892,11 @@ describe('the end of a connection', () => {
       identityRules: QuicIdentityRules.none,
     });
     const client = node({ bindings: [new QuicSwitchboardBinding(network.connector())] });
-    const channel = await client.openChannelAt(listener.endpoint, echoAddress());
-    await exchange(channel, bytes('x'));
+    const talk = await client.openTalkAt(listener.endpoint, echoAddress());
+    await ask(talk, bytes('x'));
     const [initiator] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
     initiator.lose('idle timeout');
-    expectStatus(await within(channel.done), StatusCode.connectionLost);
+    expectStatus(await within((talk.raw as MuxChannel).done), StatusCode.connectionLost);
   });
 });
 
@@ -735,17 +932,17 @@ describe('review cases', () => {
       { muxOptions: fast, initialBackoff: 10, jitter: 0 },
     );
     onCleanup(() => client.close());
-    const ready: MuxChannel[] = [];
-    client.openPersistent(echoAddress(), async (channel) => {
-      ready.push(channel);
+    const ready: TalkChannel[] = [];
+    client.openPersistentTalk(echoAddress(), async (talk) => {
+      ready.push(talk);
     });
     await until(() => ready.length === 1);
-    expect(text(await exchange(ready[0] as MuxChannel, bytes('one')))).toBe('one');
+    expect(text(await ask(ready[0] as TalkChannel, bytes('one')))).toBe('one');
     const [session] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
     session.lose();
     await until(() => ready.length === 2);
     expect(listener.accepted).toHaveLength(2);
-    expect(text(await exchange(ready[1] as MuxChannel, bytes('two')))).toBe('two');
+    expect(text(await ask(ready[1] as TalkChannel, bytes('two')))).toBe('two');
   });
 
   test.todo('SlotChannel accounts held sends at QUIC record cost (needs SlotChannel)');
