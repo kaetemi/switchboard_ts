@@ -77,6 +77,21 @@ export class WireLog {
   }
 }
 
+/** [transport] with up to [frames] incoming frames read ahead into a queue. */
+function queuedAhead(transport: FrameTransport, frames: number): FrameTransport {
+  const ahead: FrameTransport = {
+    readable: transport.readable.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>(undefined, undefined, { highWaterMark: frames }),
+    ),
+    writable: transport.writable,
+  };
+  return Object.assign(
+    ahead,
+    transport.maxFrameSize === undefined ? {} : { maxFrameSize: transport.maxFrameSize },
+    transport.remote === undefined ? {} : { remote: transport.remote },
+  );
+}
+
 /** [transport] with every frame written to it recorded in [log] as [side]'s. */
 function tapped(transport: FrameTransport, log: WireLog, side: WireSide): FrameTransport {
   const writer = transport.writable.getWriter();
@@ -118,6 +133,14 @@ export interface FrameMuxPairInit {
   readonly routeBulk?: boolean;
   /** Records what both sides write. */
   readonly wire?: WireLog;
+  /**
+   * Frames queue ahead of each mux, up to this many, as a stream
+   * transport's decoder queues the frames of one read: the mux then takes
+   * them one after the other without waiting for the transport between
+   * them. Undefined (the default): the memory transport hands each frame
+   * over when the mux reads.
+   */
+  readonly queued?: number;
 }
 
 /**
@@ -129,8 +152,12 @@ export function frameMuxPair(
 ): [FrameMuxConnection, FrameMuxConnection] {
   const [memoryA, memoryB] = memoryTransportPair(init.transport);
   const wire = init.wire;
-  const a = wire === undefined ? memoryA : tapped(memoryA, wire, 'initiator');
-  const b = wire === undefined ? memoryB : tapped(memoryB, wire, 'acceptor');
+  let a: FrameTransport = wire === undefined ? memoryA : tapped(memoryA, wire, 'initiator');
+  let b: FrameTransport = wire === undefined ? memoryB : tapped(memoryB, wire, 'acceptor');
+  if (init.queued !== undefined) {
+    a = queuedAhead(a, init.queued);
+    b = queuedAhead(b, init.queued);
+  }
   const client = new FrameMuxConnection(a, {
     isInitiator: true,
     ...quiet,
@@ -249,4 +276,85 @@ export class FrameMuxPeers {
     await this.client.close();
     await this.server.close();
   }
+}
+
+/**
+ * The far side of a frame mux's transport, driven with raw frames (Dart's
+ * `RawPeer` in `test/mux_harness.dart`). What {@link send} is given is
+ * queued for the mux all at once, as a stream transport's decoder queues
+ * the frames of one read: the mux takes them one after the other without
+ * waiting for the transport between them. Every frame the mux writes is in
+ * {@link written}, decoded.
+ */
+export class RawMuxPeer {
+  /** The transport the mux runs over. */
+  readonly transport: FrameTransport;
+  /** Every frame the mux wrote, in order. */
+  readonly written: MuxFrame[] = [];
+  #controller!: ReadableStreamDefaultController<Uint8Array>;
+  #closed = false;
+
+  constructor() {
+    this.transport = {
+      readable: new ReadableStream<Uint8Array>(
+        {
+          start: (controller) => {
+            this.#controller = controller;
+          },
+        },
+        { highWaterMark: Number.POSITIVE_INFINITY },
+      ),
+      writable: new WritableStream<Uint8Array>({
+        write: (chunk) => {
+          this.written.push(MuxFrame.decode(chunk.slice()));
+        },
+        close: () => this.close(),
+      }),
+      remote: 'raw peer',
+    };
+  }
+
+  /** Queues [frames] for the mux, in order, at once. */
+  send(...frames: MuxFrame[]): void {
+    if (this.#closed) {
+      throw new Error('raw peer closed');
+    }
+    for (const frame of frames) {
+      this.#controller.enqueue(frame.encode());
+    }
+  }
+
+  /** The CLOSEs the mux sent, as `id status` (the status's code). */
+  get closes(): string[] {
+    return this.written
+      .filter((f) => f.command === MuxCommand.close)
+      .map((f) => `${f.channelId} ${decodeStatusPayload(f.payload, 'CLOSE').code}`);
+  }
+
+  /** Ends the mux's readable. */
+  close(): void {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#controller.close();
+    }
+  }
+}
+
+/**
+ * A frame mux (the acceptor unless [isInitiator]) whose peer is a
+ * {@link RawMuxPeer}, with bulk routing installed; closed when the test
+ * finishes.
+ */
+export function rawMuxPair(
+  init: { options?: Partial<MuxOptions>; isInitiator?: boolean } = {},
+): [FrameMuxConnection, RawMuxPeer] {
+  const peer = new RawMuxPeer();
+  const connection = new FrameMuxConnection(peer.transport, {
+    isInitiator: init.isInitiator ?? false,
+    ...quiet,
+    ...init.options,
+  });
+  installBulkRouting(connection);
+  onTestFinished(() => connection.close());
+  return [connection, peer];
 }
