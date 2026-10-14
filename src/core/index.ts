@@ -5,13 +5,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 /**
- * `@polyverse/switchboard`: the runtime-neutral core. Status codes, names,
+ * `@kaetemi/switchboard`: the runtime-neutral core. Status codes, names,
  * byte helpers, addressing, the transport and channel contracts, the frame
  * mux, Talk, credentials and connection identity, the naming protocol,
  * client and service, resolvers, the reconnecting client, and the QUIC and
  * WebTransport binding over the provider contract. Nothing here imports a
  * Node, Bun, Deno or browser API that the others lack; the entry points
- * `@polyverse/switchboard/node` and `@polyverse/switchboard/web` add the
+ * `@kaetemi/switchboard/node` and `@kaetemi/switchboard/web` add the
  * runtime specific parts.
  *
  * Each directory's `index.ts` is owned by the thread porting that layer

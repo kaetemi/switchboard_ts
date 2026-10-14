@@ -4,13 +4,13 @@
 
 | Runtime | Import | Transports | QUIC and WebTransport |
 | --- | --- | --- | --- |
-| Node.js 22, 24, 26 | `@polyverse/switchboard/node` | TCP, WebSocket (client and server), in-memory | native provider |
-| Bun 1.x | `@polyverse/switchboard/node` | same, through Bun's Node compatibility | native provider |
-| Deno 2.x | `@polyverse/switchboard/node` with `--allow-net --allow-ffi` | same, through `node:` compatibility | native provider |
-| Browsers | `@polyverse/switchboard/web` | WebSocket | WebTransport API |
-| Edge runtimes | `@polyverse/switchboard` with your own transport | WebSocket where offered | none |
+| Node.js 22, 24, 26 | `@kaetemi/switchboard/node` | TCP, WebSocket (client and server), in-memory | native provider |
+| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider |
+| Deno 2.x | `@kaetemi/switchboard/node` with `--allow-net --allow-ffi` | same, through `node:` compatibility | native provider |
+| Browsers | `@kaetemi/switchboard/web` | WebSocket | WebTransport API |
+| Edge runtimes | `@kaetemi/switchboard` with your own transport | WebSocket where offered | none |
 
-The core entry `@polyverse/switchboard` uses only Web platform APIs that every runtime shares (typed arrays, Web Streams, `AbortSignal`, WebCrypto, timers) and never imports `node:` modules or `ws`.
+The core entry `@kaetemi/switchboard` uses only Web platform APIs that every runtime shares (typed arrays, Web Streams, `AbortSignal`, WebCrypto, timers) and never imports `node:` modules or `ws`.
 
 ## Endpoints
 
@@ -33,7 +33,7 @@ No JavaScript runtime offers the QUIC features Switchboard needs (bidirectional 
 An N-API addon written in Rust over `quinn` and `rustls`, mirroring the `sbq` shim that the Dart reference implementation uses, so both implementations share one QUIC stack and one WebTransport dialect. It serves raw QUIC and WebTransport, as client and as server, with the TLS exporter, certificate pins, self-signed certificate generation and stream priorities.
 
 ```ts
-import { Switchboard, nativeQuic, selfSignedCertificate } from '@polyverse/switchboard/node';
+import { Switchboard, nativeQuic, selfSignedCertificate } from '@kaetemi/switchboard/node';
 
 const node = new Switchboard({ quic: nativeQuic() });
 const endpoint = await node.listenQuic('0.0.0.0', 4433, { certificate: await selfSignedCertificate('edge.example.com') });
@@ -47,7 +47,7 @@ Prebuilt binaries ship as optional dependencies per platform (Linux x64 and arm6
 The W3C WebTransport API, as a client only.
 
 ```ts
-import { webTransport } from '@polyverse/switchboard/web';
+import { webTransport } from '@kaetemi/switchboard/web';
 const connector = webTransport('https://edge.example.com:4433/sb', {
   serverCertificateHashes: [{ algorithm: 'sha-256', value: hash }],
 });

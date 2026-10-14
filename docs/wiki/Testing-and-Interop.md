@@ -71,4 +71,4 @@ In CI the `interop` job checks out the two Dart repositories at the pinned commi
 
 ## Clocks
 
-Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@polyverse/switchboard/testing` and drive time with `advance(ms)` and `flush()`, the port of Dart's `fake_async`. Timeouts cannot be faked across a process boundary, so an interop scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
+Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@kaetemi/switchboard/testing` and drive time with `advance(ms)` and `flush()`, the port of Dart's `fake_async`. Timeouts cannot be faked across a process boundary, so an interop scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.

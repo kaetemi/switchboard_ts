@@ -1,6 +1,6 @@
 # Native QUIC provider
 
-The N-API addon that gives `@polyverse/switchboard/node` raw QUIC and WebTransport on Node.js, Bun and Deno. Owned by the "Port QUIC transport" thread; see `docs/design.md` section 3.1 and `docs/work-split.md` thread 5.
+The N-API addon that gives `@kaetemi/switchboard/node` raw QUIC and WebTransport on Node.js, Bun and Deno. Owned by the "Port QUIC transport" thread; see `docs/design.md` section 3.1 and `docs/work-split.md` thread 5.
 
 Planned layout:
 
