@@ -215,6 +215,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connection.ping` | `connection`, `payload` | `{rttMs}` |
 | `connection.goAway` | `connection`, `code` (default 33), `reason` | `null` |
 | `connection.close` | `connection` | `null` |
+| `connection.drain` | `connection` | `null`: `WT_DRAIN_SESSION` on a WebTransport connection; an argument error on any other |
 | `connection.identify` | `connection`, `intent`, `receiver` | `null`: identifies with the peer's credential |
 | `request` | `endpoint`, `service`, `instance`, `procedure`, payload, `timeoutMs`, `digest` | one request on a connection of its own, closed afterwards |
 
