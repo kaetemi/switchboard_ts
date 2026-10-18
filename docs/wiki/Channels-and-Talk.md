@@ -44,6 +44,7 @@ await server.close();
 Reading is pull based. A channel is an `AsyncIterable<Uint8Array>` of its subframes, and also has `readable`, a `ReadableStream<Uint8Array>` with a high-water mark of 0 for `pipeTo` and `pipeThrough`. Taking a subframe is what returns its flow-control credit to the sender, so a channel nobody reads applies backpressure to its sender once the window is used up, and only to that channel.
 
 - `break` out of `for await` (or cancelling `readable`) stops delivery: what arrives afterwards is discarded, and the channel stays open. Close it with `close(status?)`.
+- Read or close every channel you are given. What channels buffer unread, the ones the peer closed included, counts toward `receiveHighWaterMarkBytes`, and above it the connection stops reading its transport for every channel. `break` (or cancelling `readable`) drops what a channel buffered, and so does `close()` on a channel that has ended and that nothing reads; a channel closed while still open keeps what arrives for a reader until it ends, so cancel its `readable` if nothing will read it.
 - `incoming` has one consumer. Stopping its iteration closes the channels not taken yet, and every later one, with `UNAVAILABLE`: keep one loop (or one iterator) for the connection's lifetime.
 - `manualCredit = true` hands credit back to you: report what was consumed with `consumed(bytes)`; `grant(bytes)` raises the window at once. The Talk layer uses this to return credit only when the application took a message.
 
@@ -67,7 +68,7 @@ await writer.close();
 | `isWritable`, `whenWritable` | room for the largest subframe, and the promise of it |
 | `receiveWindow`, `bufferedBytes` | what the peer may still send, and what arrived and was not read |
 
-A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` and errors `writable`. Every promise the library hands out is pre-caught, so dropping one never produces an unhandled rejection.
+Close what you wrote through `writable` with `writer.close()`, which follows the writes before it: a write reaches the channel a microtask or more after `writer.write()` returns, so a `channel.close()` in the same turn goes first. A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` and errors `writable`. Every promise the library hands out is pre-caught, so dropping one never produces an unhandled rejection.
 
 ### Connection options
 

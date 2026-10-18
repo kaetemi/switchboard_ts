@@ -23,7 +23,7 @@ import type {
   MuxPriority,
 } from './contract.ts';
 import { MuxControlMessage, MuxCredit, MuxFrame, MuxLimits } from './mux-frame.ts';
-import { checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
+import { checkMuxBytes, checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
 
 /**
  * What a channel needs of its connection; the connection implements it
@@ -699,8 +699,10 @@ export class FrameMuxChannel implements MuxChannel {
    * @throws {SwitchboardError} FAILED_PRECONDITION if `!canSend`,
    *   FRAME_TOO_LARGE above {@link maxSubframeLength} on an ordinary
    *   channel (on a bulk one: when the peer leaves no room for a byte).
+   * @throws {TypeError} if [subframe] is not a `Uint8Array`.
    */
   send(subframe: Uint8Array): Promise<void> {
+    checkMuxBytes(subframe, `a subframe of channel ${this.id}`);
     if (!this.canSend) {
       throw this.#cannotSend();
     }
@@ -795,8 +797,10 @@ export class FrameMuxChannel implements MuxChannel {
    *
    * @throws {SwitchboardError} like `MuxConnection.open` (except after a
    *   GOAWAY), and FAILED_PRECONDITION when `!canSend`.
+   * @throws {TypeError} if [openPayload] is not a `Uint8Array`.
    */
   openAfter(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     if (!this.canSend) {
       throw this.#cannotSend();
     }
@@ -1060,6 +1064,13 @@ export class FrameMuxChannel implements MuxChannel {
    * or the peer did not confirm within `MuxOptions.closeConfirmTimeout`;
    * at once if the channel is closed already. Never rejects.
    *
+   * On a channel that has ended already (the peer's CLOSE arrived, or the
+   * connection ended) and whose {@link readable} nothing reads, it drops
+   * the subframes not delivered, as cancelling the readable does, so that
+   * they no longer count toward the connection's `bufferedBytes` and its
+   * receive high-water mark. A channel closed while still open keeps
+   * delivering what arrives until its end.
+   *
    * @throws {RangeError} for an application status code (256 and above).
    */
   close(status: Status = Status.ok): Promise<void> {
@@ -1081,6 +1092,11 @@ export class FrameMuxChannel implements MuxChannel {
       }
       // Nothing more is sent: what waits for room fails.
       this.#wakeWritable();
+    } else if (this.#state === 'closed' && !(this.#readable?.locked ?? false)) {
+      // The channel has ended and nothing reads it: closing it says
+      // nothing will. What it buffered is dropped, as a cancelled
+      // readable's is, and no longer holds the connection's receive pause.
+      this.#discard();
     }
     return this.#done.promise.then(() => {});
   }

@@ -12,7 +12,7 @@ import type {
   MuxOptions,
   MuxPriority,
 } from '../mux/contract.ts';
-import { checkMuxStatus, readSubframes } from '../mux/mux-protocol.ts';
+import { checkMuxBytes, checkMuxStatus, readSubframes } from '../mux/mux-protocol.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
@@ -280,12 +280,7 @@ export class QuicBindingChannel implements MuxChannel {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => {
-        if (!(chunk instanceof Uint8Array)) {
-          throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
-        }
-        return this.send(chunk);
-      },
+      write: (chunk) => this.send(chunk),
       close: () => this.close(),
       abort: (reason: unknown) => this.close(abortStatus(reason)),
     });
@@ -425,9 +420,7 @@ export class QuicBindingChannel implements MuxChannel {
   }
 
   send(subframe: Uint8Array): Promise<void> {
-    if (!(subframe instanceof Uint8Array)) {
-      throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
-    }
+    checkMuxBytes(subframe, `a subframe of channel ${this.id}`);
     if (!this.canSend) {
       throw this.#cannotSend();
     }
@@ -508,6 +501,7 @@ export class QuicBindingChannel implements MuxChannel {
    * (`hasOrderedChannels` is false).
    */
   openAfter(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     if (!this.canSend) {
       throw this.#cannotSend();
     }

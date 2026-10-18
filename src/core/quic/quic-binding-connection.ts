@@ -17,6 +17,7 @@ import {
 } from '../mux/contract.ts';
 import { MuxControlMessage, MuxControlType, MuxFrame } from '../mux/mux-frame.ts';
 import {
+  checkMuxBytes,
   checkMuxStatus,
   MuxIdent,
   maxControlPayloadLength,
@@ -1314,6 +1315,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   // Opening -------------------------------------------------------------------
 
   open(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     const entry = this.#openLocal(openPayload, false);
     entry.control.beginOpen().catch((error: unknown) => {
       this.#log('error', `${this}: opening channel ${entry.channel.id}`, error);
@@ -1327,9 +1329,6 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    * before (`openAfter`).
    */
   #openLocal(openPayload: Uint8Array, continuation: boolean): QuicChannelEntry {
-    if (!(openPayload instanceof Uint8Array)) {
-      throw new TypeError('an OPEN payload is a Uint8Array');
-    }
     if (this.#closing || (this.#goAwaySent && !continuation)) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closing');
     }

@@ -42,6 +42,7 @@ export async function connectWsWebSocket(
           maxPayload,
           followRedirects: false,
         }),
+        { clock: options.clock },
       ),
   });
 }

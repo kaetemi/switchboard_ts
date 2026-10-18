@@ -17,6 +17,7 @@ import {
   type WebSocketConnection,
   WebSocketReadyState,
 } from '../../core/transport/websocket-transport.ts';
+import { type Clock, systemClock, type TimerHandle } from '../../core/util/clock.ts';
 
 /** The module of the `ws` package. */
 export type WsModule = typeof import('ws');
@@ -90,6 +91,8 @@ const pollInterval = 10;
 export interface WsConnectionOptions {
   /** Told of every sign of life from the peer: a message, a ping or a pong. */
   readonly onActivity?: (() => void) | undefined;
+  /** Source of the timer that polls `bufferedAmount` while a wait for the output to drain is pending; default {@link systemClock}. */
+  readonly clock?: Clock | undefined;
 }
 
 /**
@@ -102,8 +105,9 @@ export function wsConnection(
   options: WsConnectionOptions = {},
 ): WebSocketConnection {
   const onActivity = options.onActivity;
+  const clock = options.clock ?? systemClock;
   const waiters: { readonly bytes: number; readonly resolve: () => void }[] = [];
-  let poll: ReturnType<typeof setTimeout> | undefined;
+  let poll: TimerHandle | undefined;
   // Checked on every send callback, and polled while someone waits: a send
   // callback does not always mean the bytes left (Bun's stand-in for `ws`
   // calls it at once).
@@ -118,7 +122,7 @@ export function wsConnection(
       }
     }
     if (waiters.length > 0 && poll === undefined) {
-      poll = setTimeout(() => {
+      poll = clock.setTimeout(() => {
         poll = undefined;
         check();
       }, pollInterval);

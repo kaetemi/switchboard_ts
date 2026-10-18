@@ -107,7 +107,10 @@ export interface WebSocketTransportOptions {
   readonly closeCodeFor?: (error: unknown) => number;
   /** The peer, for logs and `FrameTransport.remote`. */
   readonly remote?: string;
-  /** Source of the close timer. Default {@link systemClock}. */
+  /**
+   * Source of the close timer and, over the Node entry's `ws` adapter, of
+   * the poll of `bufferedAmount`. Default {@link systemClock}.
+   */
   readonly clock?: Clock;
   /** Receives the transport's diagnostics, as `Switchboard.Transport`. */
   readonly logger?: Logger;
@@ -148,6 +151,11 @@ const ignore = (): void => {};
  *   reading, and dropping, so that the peer closing is still noticed.
  * - Frames written while the WebSocket is closing are dropped. Frames are
  *   not copied: a frame written belongs to the transport.
+ * - Once the WebSocket ended on its own (the peer closed it, it failed,
+ *   {@link abort}) without {@link writable} being closed or aborted, the
+ *   writable is errored with the reason (`CONNECTION_LOST` for a close),
+ *   so that its `closed` settles and later writes reject rather than being
+ *   dropped for ever. Dart's sink completes instead.
  * - A connection that is still connecting is waited for: writes wait for
  *   it to open, and a close closes it once it has.
  *
@@ -223,6 +231,12 @@ export class WebSocketTransport implements FrameTransport {
   #aborted = false;
   #peerCloseCode: number | undefined;
   #peerCloseReason: string | undefined;
+  #writableController: WritableStreamDefaultController | undefined;
+  // Whether the user of `writable` closed or aborted it: its `closed` then
+  // settles as asked.
+  #closeAsked = false;
+  // Why the output ended when the WebSocket ended on its own.
+  #outputEndReason: unknown;
 
   /**
    * Runs the binding over [connection], which it owns from now on.
@@ -280,10 +294,17 @@ export class WebSocketTransport implements FrameTransport {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
-      start: () => this.#opened.promise.then(ignore, ignore),
+      start: (controller) => {
+        this.#writableController = controller;
+        return this.#opened.promise.then(ignore, ignore);
+      },
       write: (frame) => this.#send(frame),
-      close: () => this.#closeLocal(),
+      close: () => {
+        this.#closeAsked = true;
+        return this.#closeLocal();
+      },
       abort: () => {
+        this.#closeAsked = true;
         void this.#closeLocal();
       },
     });
@@ -297,9 +318,11 @@ export class WebSocketTransport implements FrameTransport {
     if (state === WebSocketReadyState.open) {
       this.#opened.resolve();
     } else if (state !== WebSocketReadyState.connecting) {
-      this.#opened.reject(SwitchboardError.of(StatusCode.unavailable, 'WebSocket is closed'));
+      const closed = SwitchboardError.of(StatusCode.unavailable, 'WebSocket is closed');
+      this.#opened.reject(closed);
       this.#end();
       this.#closed.resolve();
+      this.#outputEnded(closed);
     }
     this.#updateInput();
   }
@@ -371,6 +394,7 @@ export class WebSocketTransport implements FrameTransport {
     }
     this.#opened.reject(SwitchboardError.of(StatusCode.cancelled, 'WebSocket transport aborted'));
     this.#closed.resolve();
+    this.#outputEnded(SwitchboardError.of(StatusCode.connectionLost, 'the transport was aborted'));
     this.#updateInput();
   }
 
@@ -455,6 +479,7 @@ export class WebSocketTransport implements FrameTransport {
   }
 
   #onError(error: unknown): void {
+    this.#outputEndReason ??= error;
     if (!this.#opened.isSettled) {
       this.#opened.reject(error);
       return;
@@ -478,6 +503,12 @@ export class WebSocketTransport implements FrameTransport {
     this.#end();
     this.#stopCloseTimer();
     this.#closed.resolve();
+    this.#outputEnded(
+      SwitchboardError.of(
+        StatusCode.connectionLost,
+        `the WebSocket closed (${code}${reason === '' ? '' : ` ${reason}`})`,
+      ),
+    );
     this.#updateInput();
   }
 
@@ -490,6 +521,7 @@ export class WebSocketTransport implements FrameTransport {
       return;
     }
     this.#ended = true;
+    this.#outputEndReason ??= error;
     // A close the reader asks for after this tells the peer the same.
     this.#failureCode = this.#codeFor(error);
     if (this.#cancelled || !this.readable.locked) {
@@ -668,6 +700,19 @@ export class WebSocketTransport implements FrameTransport {
       this.#clock.clearTimeout(this.#closeTimer);
       this.#closeTimer = undefined;
     }
+  }
+
+  /**
+   * The WebSocket has closed. Unless {@link writable} itself was closed or
+   * aborted, it is errored with why the output ended (the first failure,
+   * else [reason]), so that its `closed` settles and later writes reject.
+   */
+  #outputEnded(reason: unknown): void {
+    if (this.#closeAsked) {
+      return;
+    }
+    this.#closeAsked = true;
+    this.#writableController?.error(this.#outputEndReason ?? reason);
   }
 
   #log(level: LogLevel, message: string, error?: unknown): void {

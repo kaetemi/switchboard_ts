@@ -361,10 +361,10 @@ export async function acceptWebSocket(
     }
   });
   const activity = { seen: false };
-  const connection = wsConnection(
-    upgraded,
-    interval === undefined ? {} : { onActivity: () => (activity.seen = true) },
-  );
+  const connection = wsConnection(upgraded, {
+    clock: options.clock,
+    ...(interval === undefined ? {} : { onActivity: () => (activity.seen = true) }),
+  });
   const transport = new WebSocketTransport(connection, {
     ...options,
     remote,

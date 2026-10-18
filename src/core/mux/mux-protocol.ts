@@ -61,6 +61,22 @@ export function checkMuxStatus(status: Status): void {
 }
 
 /**
+ * Refuses [value] unless it is a `Uint8Array` (a Node `Buffer` is one):
+ * the subframe or OPEN payload a caller gives `send`, `open` or
+ * `openAfter`, whichever binding carries it. The contract types them
+ * `Uint8Array`; anything else (a string from an untyped caller) would be
+ * copied into the frame as zeros.
+ *
+ * @throws {TypeError} for anything else.
+ */
+export function checkMuxBytes(value: unknown, what: string): asserts value is Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    const kind = value === null ? 'null' : typeof value;
+    throw new TypeError(`${what} must be a Uint8Array, not ${kind}`);
+  }
+}
+
+/**
  * [status] with its reason shortened so that its encoded payload (the
  * `u16` code and the bytes after it) is at most [maxPayload] bytes.
  *

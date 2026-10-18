@@ -37,6 +37,7 @@ import {
   MuxLimits,
 } from './mux-frame.ts';
 import {
+  checkMuxBytes,
   checkMuxStatus,
   decodeStatusPayload,
   fitStatus,
@@ -200,10 +201,9 @@ export class FrameMuxConnection implements MuxConnection {
   #peerIdentity: PeerIdentity | undefined;
   readonly #peerIdentified = new Deferred<PeerIdentity>();
   #identityEvent: Deferred<void> | undefined;
-  // Frames that arrived while an IDENT was verified; handled after it, in
-  // order, so that they see its outcome. The read loop does not read while
-  // verifying, so this holds only what a verification leaves behind.
-  readonly #heldFrames = new Fifo<Uint8Array>();
+  // Whether an IDENT is being verified: the read loop does not read
+  // meanwhile, so the frames after it wait in the transport and see its
+  // outcome.
   #verifyingIdent = false;
   // The peer's GOAWAY status as sent, for identify().
   #peerGoAwayReceived: Status | undefined;
@@ -591,7 +591,8 @@ export class FrameMuxConnection implements MuxConnection {
         throw new RangeError('holderKey is not the holder key the credential names');
       }
     }
-    const intent = options.intent === undefined ? empty : options.intent.slice();
+    // Copied with the constructor: a Buffer's slice() is a view.
+    const intent = options.intent === undefined ? empty : new Uint8Array(options.intent);
     const receiver = options.receiver;
     const receiverBytes = receiver === undefined ? empty : utf8Encode(receiver);
     const credentialBytes = credential.encode();
@@ -737,8 +738,10 @@ export class FrameMuxConnection implements MuxConnection {
    *   if no channel id is free or the peer's channel limit is reached;
    *   FRAME_TOO_LARGE if the OPEN frame would exceed the peer's frame
    *   limit.
+   * @throws {TypeError} if [openPayload] is not a `Uint8Array`.
    */
   open(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     return this.#openLink(openPayload, true).channel;
   }
 
@@ -773,7 +776,9 @@ export class FrameMuxConnection implements MuxConnection {
         `OPEN of ${size} bytes exceeds the peer limit of ${peerMaxFrame}`,
       );
     }
-    const payload = openPayload.slice();
+    // Copied with the constructor: a Buffer's slice() is a view, which the
+    // caller could change under the channel.
+    const payload = new Uint8Array(openPayload);
     const link = new MuxChannelLink(this.#host, this, {
       id,
       isLocallyOpened: true,
@@ -855,20 +860,25 @@ export class FrameMuxConnection implements MuxConnection {
    * Rejects with a {@link SwitchboardError} if the connection is closed or
    * ends before the PONG, with DEADLINE_EXCEEDED if
    * {@link FrameMuxConnection.maxPendingPings} later PINGs are sent before
-   * it arrives, and with the signal's reason when it aborts.
+   * it arrives, and with the signal's reason when it aborts. The promise
+   * is safe to drop: a rejection nobody awaits is not reported as
+   * unhandled.
    *
    * @throws {RangeError} if [payload] is longer than 125 bytes.
    */
   ping(payload?: Uint8Array, options: { signal?: AbortSignal } = {}): Promise<number> {
     const message = MuxControlMessage.ping(payload ?? this.#nextPingPayload());
+    // Rejected through a Deferred, so that a ping dropped on a closed
+    // connection is never an unhandled rejection.
+    const result = new Deferred<number>();
     if (this.#closing) {
-      return Promise.reject(
-        SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'),
-      );
+      result.reject(SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'));
+      return result.promise;
     }
     const signal = options.signal;
     if (signal?.aborted) {
-      return Promise.reject(signal.reason);
+      result.reject(signal.reason);
+      return result.promise;
     }
     if (this.#pings.length >= FrameMuxConnection.maxPendingPings) {
       this.#pings
@@ -881,9 +891,9 @@ export class FrameMuxConnection implements MuxConnection {
         );
     }
     const pending: PendingPing = {
-      payload: message.payload.slice(),
+      payload: new Uint8Array(message.payload),
       sent: this.#clock.now(),
-      result: new Deferred<number>(),
+      result,
     };
     this.#pings.push(pending);
     if (signal !== undefined) {
@@ -1106,7 +1116,7 @@ export class FrameMuxConnection implements MuxConnection {
       // frames that waited for it are going out: this one follows them.
       // send has handed the payload over: the caller may reuse it now.
       link.preOpen.push([
-        new MuxFrame(frame.command, frame.channelId, frame.payload.slice()),
+        new MuxFrame(frame.command, frame.channelId, new Uint8Array(frame.payload)),
         opens,
       ]);
       return;
@@ -1228,11 +1238,6 @@ export class FrameMuxConnection implements MuxConnection {
     }
     this.#receivedBytes += bytes.length;
     this.#noteReceive();
-    if (this.#verifyingIdent) {
-      // Waits for the IDENT like the rest.
-      this.#heldFrames.push(bytes);
-      return;
-    }
     this.#processFrame(bytes);
   }
 
@@ -1572,8 +1577,8 @@ export class FrameMuxConnection implements MuxConnection {
   /**
    * Verifies [ident], sent by the peer with [senderNonce] (the peer's) and
    * [receiverNonce] (this side's); then sets the identity or ends the
-   * connection with GOAWAY UNAUTHENTICATED, and handles the frames held
-   * meanwhile. Never rejects. An IDENT naming another receiver is refused
+   * connection with GOAWAY UNAUTHENTICATED, and lets the read loop take the
+   * frames that waited in the transport meanwhile. Never rejects. An IDENT naming another receiver is refused
    * before anything is awaited.
    */
   async #verifyIdent(
@@ -1610,12 +1615,10 @@ export class FrameMuxConnection implements MuxConnection {
     }
     this.#verifyingIdent = false;
     if (this.#closing) {
-      this.#heldFrames.clear();
       return;
     }
     if (identity === undefined) {
       this.#log('info', `${this}: IDENT refused: ${failure}`);
-      this.#heldFrames.clear();
       this.#fail(unauthenticated);
       return;
     }
@@ -1623,9 +1626,6 @@ export class FrameMuxConnection implements MuxConnection {
     this.#peerIdentity = identity;
     this.#peerIdentified.resolve(identity);
     this.#signalIdentity();
-    while (this.#heldFrames.length > 0 && !this.#verifyingIdent && !this.#closing) {
-      this.#processFrame(this.#heldFrames.shift() as Uint8Array);
-    }
     this.#resumeReading();
   }
 
@@ -1701,7 +1701,9 @@ export class FrameMuxConnection implements MuxConnection {
       return Promise.resolve({ value: undefined, done: true });
     }
     if (this.#incomingWaiter !== undefined) {
-      return Promise.reject(new Error('incoming channels have one consumer'));
+      const refused = new Deferred<IteratorResult<MuxChannel>>();
+      refused.reject(new Error('incoming channels have one consumer'));
+      return refused.promise;
     }
     this.#incomingWaiter = new Deferred<IteratorResult<MuxChannel>>();
     return this.#incomingWaiter.promise;
@@ -2005,7 +2007,6 @@ export class FrameMuxConnection implements MuxConnection {
     for (const pending of pings) {
       pending.result.reject(new SwitchboardError(status));
     }
-    this.#heldFrames.clear();
     const nonceWaiter = this.#peerNonceWaiter;
     this.#peerNonceWaiter = undefined;
     nonceWaiter?.reject(new SwitchboardError(status));

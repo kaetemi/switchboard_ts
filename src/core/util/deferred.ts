@@ -4,6 +4,8 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
+import { type Clock, systemClock } from './clock.ts';
+
 /**
  * A promise with its resolvers, settled at most once. `promise` never
  * reports an unhandled rejection: a rejection nobody awaits is swallowed,
@@ -46,21 +48,27 @@ export class Deferred<T> {
   }
 }
 
-/** A promise that resolves after [ms] milliseconds, or rejects when [signal] aborts. */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
+/**
+ * A promise that resolves after [ms] milliseconds of [clock] (default
+ * {@link systemClock}), or rejects when [signal] aborts. A rejection
+ * nobody awaits is not reported as unhandled.
+ */
+export function sleep(ms: number, signal?: AbortSignal, clock: Clock = systemClock): Promise<void> {
+  const slept = new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
       return;
     }
-    const timer = setTimeout(() => {
+    const timer = clock.setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
       resolve();
     }, ms);
     function onAbort(): void {
-      clearTimeout(timer);
+      clock.clearTimeout(timer);
       reject(signal?.reason);
     }
     signal?.addEventListener('abort', onAbort, { once: true });
   });
+  slept.catch(() => {});
+  return slept;
 }

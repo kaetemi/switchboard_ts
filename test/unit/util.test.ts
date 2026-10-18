@@ -18,6 +18,23 @@ describe('Deferred', () => {
     await expect(p).rejects.toThrow('stop');
     await sleep(1);
   });
+
+  test('sleep runs on the clock it is given', async () => {
+    const clock = new ManualClock();
+    let woke = false;
+    void sleep(100, undefined, clock).then(() => {
+      woke = true;
+    });
+    await clock.elapseAsync(99);
+    expect(woke).toBe(false);
+    await clock.elapseAsync(1);
+    expect(woke).toBe(true);
+    const controller = new AbortController();
+    const aborted = sleep(100, controller.signal, clock);
+    controller.abort(new Error('stop'));
+    await expect(aborted).rejects.toThrow('stop');
+    expect(clock.pendingCount).toBe(0);
+  });
 });
 
 describe('Emitter', () => {
