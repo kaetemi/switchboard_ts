@@ -4,18 +4,16 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Review finding (Talk, docs): the wiki page Channels-and-Talk says a
+// Review finding (Talk, docs): the wiki page Channels-and-Talk said a
 // received message's `signal` is "aborted when the requester cancels, the
 // responder timeout passes or the channel closes: pass it to what the
-// handler awaits". For a plain message (no reply expected) it never
-// aborts, also when the channel closes: `IncomingMessage.#markCancelled`
-// runs only for requests (`_abandon` from `#terminate` covers the requests
-// in `#incoming`), as `onCancel` never resolves for non-requests (Dart's
-// contract, kept by contract.ts). A handler that passes the signal of a
-// plain message to its work is never stopped. The request case is the
-// control. The plain-message test is `test.fails` while the two disagree:
-// either the signal aborts on the channel's end, or the wiki says "of a
-// request".
+// handler awaits", without saying that this is a request's. For a plain
+// message (no reply expected) it never aborts, also when the channel
+// closes: `IncomingMessage.#markCancelled` runs only for requests
+// (`_abandon` from `#terminate` covers the requests in `#incoming`), as
+// `onCancel` never resolves for non-requests (Dart's contract, kept by
+// contract.ts). The wiki now says it is a request's signal; these tests
+// pin both halves of what it says.
 
 import { expect, test } from 'vitest';
 import type { TalkMessage } from '../../../src/core/talk/contract.ts';
@@ -43,7 +41,7 @@ async function received(procedure: string, request: boolean): Promise<[TalkChann
   return [talk, got[0] as TalkMessage];
 }
 
-test('control: the signal of a request aborts when the channel closes', async () => {
+test('the signal of a request aborts when the channel closes', async () => {
   const [talk, message] = await received('Q', true);
   const signal = message.signal;
   await talk.close();
@@ -51,10 +49,10 @@ test('control: the signal of a request aborts when the channel closes', async ()
   expect(signal.aborted).toBe(true);
 });
 
-test.fails('the signal of a plain message aborts when the channel closes, as the wiki says', async () => {
+test('the signal of a plain message does not abort when the channel closes: only a request is cancelled', async () => {
   const [talk, message] = await received('P', false);
   const signal = message.signal;
   await talk.close();
   await flush();
-  expect(signal.aborted).toBe(true);
+  expect(signal.aborted).toBe(false);
 });

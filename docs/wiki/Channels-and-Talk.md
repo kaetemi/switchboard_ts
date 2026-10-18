@@ -120,7 +120,7 @@ node.registerService('demo', (incoming) =>
 
 `serve(handler)` takes every message and calls the handler for each without waiting between them, and resolves when the channel ends. It is the guarded form: a handler that throws or rejects has its request answered `ABORT INTERNAL`. A `for await (const message of talk.messages)` loop works too, but takes one message at a time, and an exception in its body leaves the request unanswered until the responder timeout. `messages` has one consumer and is iterated once; stopping the iteration answers the requests not taken, and every later one, `ABORT UNIMPLEMENTED`.
 
-A received `TalkMessage` has `procedure` (a `Name`) and `procedureName`, `payload`, `text()`, `json()`, `bytes()`, `expectsReply`, `expectsStream`, `isCancelled`, `signal` (aborted when the requester cancels, the responder timeout passes or the channel closes: pass it to what the handler awaits) and the reply family: `reply`, `replyItem`, `replyStream`, `replyAbort`, `extend`, the chained `replyRequest`, `startReplyRequest`, `replyStreamRequest` and their item forms, and `setReplyTimeout`.
+A received `TalkMessage` has `procedure` (a `Name`) and `procedureName`, `payload`, `text()`, `json()`, `bytes()`, `expectsReply`, `expectsStream`, `isCancelled`, `signal` (a request's is aborted when the requester cancels, the responder timeout passes or the channel closes: pass it to what the handler awaits; a plain message's never aborts) and the reply family: `reply`, `replyItem`, `replyStream`, `replyAbort`, `extend`, the chained `replyRequest`, `startReplyRequest`, `replyStreamRequest` and their item forms, and `setReplyTimeout`.
 
 ### Requests
 
