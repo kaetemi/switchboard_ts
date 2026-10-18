@@ -9,13 +9,13 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // `gatedPair`), plus what Dart's streams give for free (subscriptions that
 // pause, `StreamQueue`) and byte pipes for the stream transport.
 //
-// Time: every connection the helpers make runs on a `SteppingClock` (one
-// per pair, shared by both ends and by the memory pair), never on the
-// system clock. `clock.elapse(ms)` moves from timer to timer and lets the
-// microtasks each one starts run before the next, which is what
-// `fake_async`'s `elapse` does and what the mux needs: it re-arms its
-// keep-alive, grace and close timers in promise continuations (the read
-// loop, the close sequence), which a plain `ManualClock.advance` would not
+// Time: every connection the helpers make runs on a `ManualClock` (one per
+// pair, shared by both ends and by the memory pair), never on the system
+// clock, unless a test passes one. `clock.elapseAsync(ms)` moves from timer
+// to timer and lets the promise jobs each one starts run before the next,
+// which is what `fake_async`'s `elapse` does and what the mux needs: it
+// re-arms its keep-alive, grace and close timers in promise continuations
+// (the read loop, the close sequence), which a plain `advance` would not
 // let run between two timers. `settle()` is Dart's `pumpEventQueue`. A
 // test that never elapses never fires a timer, so nothing waits on real
 // time.
@@ -49,11 +49,17 @@ import {
 } from '../../../src/core/transport/memory-transport.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { SteppingClock, settle } from '../../support/node/stepping-clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 
-export { SteppingClock, settle };
+/**
+ * Lets promise work run, a few turns of the event loop
+ * ({@link ManualClock.settle}): Dart's `pumpEventQueue`.
+ */
+export function settle(): Promise<void> {
+  return ManualClock.settle();
+}
 
-/** Options of a test connection; `clock` defaults to the pair's {@link SteppingClock}. */
+/** Options of a test connection; `clock` defaults to the pair's {@link ManualClock}. */
 export type TestMuxOptions = Partial<MuxOptions>;
 
 /** Keep-alive off so that tests only see the frames they cause. */
@@ -75,11 +81,11 @@ export const rawOptions: TestMuxOptions = Object.freeze({
 /** An empty payload. */
 export const empty = new Uint8Array(0);
 
-/** The {@link SteppingClock} [connection] runs on. */
-export function clockOf(connection: MuxConnection): SteppingClock {
+/** The {@link ManualClock} [connection] runs on. */
+export function clockOf(connection: MuxConnection): ManualClock {
   const clock = connection.options.clock;
-  if (!(clock instanceof SteppingClock)) {
-    throw new Error(`${connection} does not run on a SteppingClock`);
+  if (!(clock instanceof ManualClock)) {
+    throw new Error(`${connection} does not run on a ManualClock`);
   }
   return clock;
 }
@@ -100,7 +106,7 @@ export interface PairOptions {
   readonly acceptor?: TestMuxOptions;
   /**
    * Shared by both connections and the memory pair; a new
-   * {@link SteppingClock} by default. The identity tests pass the system
+   * {@link ManualClock} by default. The identity tests pass the system
    * clock: Dart's run on real time, with real timeouts.
    */
   readonly clock?: Clock;
@@ -110,7 +116,7 @@ export interface PairOptions {
 
 /** Two connections over a memory pair, the first the initiator. */
 export function muxPair(options: PairOptions = {}): [FrameMuxConnection, FrameMuxConnection] {
-  const clock = options.clock ?? new SteppingClock();
+  const clock = options.clock ?? new ManualClock();
   const [a, b] = memoryTransportPair({ clock, ...options.transport });
   return [
     connect(a, true, options.initiator ?? quiet, clock),
@@ -232,7 +238,7 @@ export interface RawPairOptions {
 
 /** A connection over a memory pair, and a {@link RawPeer} on the other side. */
 export function rawPair(options: RawPairOptions = {}): [FrameMuxConnection, RawPeer] {
-  const clock = options.clock ?? new SteppingClock();
+  const clock = options.clock ?? new ManualClock();
   const [a, b] = memoryTransportPair({ clock, ...options.transport });
   return [
     connect(a, options.muxIsInitiator ?? true, options.options ?? rawOptions, clock),
@@ -412,7 +418,7 @@ export class GatedTransport implements FrameTransport {
 export function gatedPair(
   options: PairOptions = {},
 ): [FrameMuxConnection, FrameMuxConnection, GatedTransport] {
-  const clock = options.clock ?? new SteppingClock();
+  const clock = options.clock ?? new ManualClock();
   const [a, b] = memoryTransportPair({ clock, ...options.transport });
   const gate = new GatedTransport(a);
   return [
@@ -582,7 +588,7 @@ export function tracked<T>(promise: Promise<T>): {
  * timer causes. @throws {Error} after [max] ms.
  */
 export async function elapseUntil(
-  clock: SteppingClock,
+  clock: ManualClock,
   promise: Promise<unknown>,
   step = 1,
   max = 60_000,
@@ -594,7 +600,7 @@ export async function elapseUntil(
     if (elapsed >= max) {
       throw new Error(`still waiting after ${max} ms`);
     }
-    await clock.elapse(step);
+    await clock.elapseAsync(step);
     elapsed += step;
   }
   return elapsed;
@@ -898,7 +904,7 @@ export class ByteDrain implements ByteOutput {
   #credit: number;
   readonly #mode: 'open' | 'slow' | 'rate';
   readonly #rate: number;
-  readonly #clock: SteppingClock | undefined;
+  readonly #clock: ManualClock | undefined;
   readonly #target: ByteFeed | undefined;
   #ready: Deferred<void> | undefined;
   #failure: ((error: unknown) => void) | undefined;
@@ -909,7 +915,7 @@ export class ByteDrain implements ByteOutput {
     options: {
       readonly slow?: boolean;
       readonly rate?: number;
-      readonly clock?: SteppingClock;
+      readonly clock?: ManualClock;
       readonly target?: ByteFeed;
     } = {},
   ) {
@@ -1020,7 +1026,7 @@ export function framesIn(chunks: readonly Uint8Array[]): Uint8Array[] {
 
 /** A memory pair whose transports are typed as such, for tests that hold both. */
 export function memoryPair(
-  clock: SteppingClock,
+  clock: ManualClock,
   options: MemoryTransportOptions = {},
 ): [MemoryTransport, MemoryTransport] {
   return memoryTransportPair({ clock, ...options });

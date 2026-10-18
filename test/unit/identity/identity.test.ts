@@ -42,7 +42,7 @@ const hour = 60 * minute;
 
 // The mux harness's pairs, on real time: Dart's identity tests run on the
 // real clock (credential checks are WebCrypto work, and the identity
-// timeouts are real ones), where the harness defaults to a stepping clock.
+// timeouts are real ones), where the harness defaults to a manual clock.
 const muxPair = (options: PairOptions = {}) => harnessMuxPair({ clock: systemClock, ...options });
 const rawPair = (options: RawPairOptions = {}) =>
   harnessRawPair({ clock: systemClock, ...options });

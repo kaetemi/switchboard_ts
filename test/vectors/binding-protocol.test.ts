@@ -15,6 +15,7 @@ import {
 import { MovedStatus } from '../../src/core/naming/naming-protocol.ts';
 import { Status, StatusCode, SwitchboardError } from '../../src/core/status.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
+import { ManualClock } from '../../src/testing/manual-clock.ts';
 import { stubCredential } from '../support/identity/stub-verifier.ts';
 import {
   AnsweringTransport,
@@ -22,7 +23,6 @@ import {
   isControl,
   rawOptions,
   rawPair,
-  SteppingClock,
   settle,
 } from '../unit/mux/support.ts';
 
@@ -97,7 +97,7 @@ test('wrong receiver closes synchronously without entering the verifier', async 
   const connection = new FrameMuxConnection(transport, {
     ...rawOptions,
     identityVerifier: verifier,
-    clock: new SteppingClock(),
+    clock: new ManualClock(),
     isInitiator: false,
   });
   connection.localIdentity = 'receiver';

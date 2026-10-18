@@ -47,6 +47,7 @@ import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   bytes,
   currentRuntime,
@@ -55,7 +56,6 @@ import {
   onCleanup,
   rejectsWith,
 } from '../../support/node/harness.ts';
-import { SteppingClock, settle } from '../../support/node/stepping-clock.ts';
 
 /** Waits up to 10 s for the channels on a connection it leaves. */
 const patient: Partial<MuxOptions> = Object.freeze({
@@ -141,7 +141,7 @@ function isOnline(set: PeerSet, instance = 1): boolean {
 }
 
 /** A runtime of the current test's `mem://` registry whose transport pairs run on [clock]. */
-function steppingRuntime(clock: SteppingClock): SwitchboardRuntime {
+function steppingRuntime(clock: ManualClock): SwitchboardRuntime {
   return { ...currentRuntime(), transportPair: () => memoryTransportPair({ delay: 0, clock }) };
 }
 
@@ -150,7 +150,7 @@ function steppingRuntime(clock: SteppingClock): SwitchboardRuntime {
  * replacement for a node inside Dart's `fakeAsync`. Not closed by the
  * harness: the test closes it and checks that no timer is left.
  */
-function steppingNode(clock: SteppingClock, options: SwitchboardOptions = {}): Switchboard {
+function steppingNode(clock: ManualClock, options: SwitchboardOptions = {}): Switchboard {
   return new Switchboard({
     runtime: steppingRuntime(clock),
     clock,
@@ -163,14 +163,14 @@ function steppingNode(clock: SteppingClock, options: SwitchboardOptions = {}): S
  * Lets [closing] finish on [clock] (one second of it) and checks that
  * nothing is left: Dart's `async.elapse(1 s)` then `pendingTimers` empty.
  */
-async function closeAll(clock: SteppingClock, closing: Promise<unknown>[]): Promise<void> {
+async function closeAll(clock: ManualClock, closing: Promise<unknown>[]): Promise<void> {
   let closed = false;
   void Promise.all(closing).then(() => {
     closed = true;
   });
-  await clock.elapse(1000);
+  await clock.elapseAsync(1000);
   expect(closed, 'everything closed').toBe(true);
-  expect(clock.pending, 'no timer left').toBe(0);
+  expect(clock.pendingCount, 'no timer left').toBe(0);
 }
 
 let names = 0;
@@ -184,7 +184,7 @@ class Worker {
   readonly id: number;
   readonly name: string;
   readonly #mux: Partial<MuxOptions>;
-  readonly #clock: SteppingClock | undefined;
+  readonly #clock: ManualClock | undefined;
   sb: Switchboard | undefined;
   readonly raw: Uint8Array[] = [];
   readonly accepted: MuxConnection[] = [];
@@ -196,7 +196,7 @@ class Worker {
   handler: ((incoming: IncomingChannel) => void) | undefined;
 
   /** A worker of the current test; with [init.clock], its node runs on that clock. */
-  constructor(id: number, init: { mux?: Partial<MuxOptions>; clock?: SteppingClock } = {}) {
+  constructor(id: number, init: { mux?: Partial<MuxOptions>; clock?: ManualClock } = {}) {
     this.id = id;
     this.name = `worker-${id}-${names++}-${Math.floor(Math.random() * 2 ** 30)}`;
     this.#mux = init.mux ?? fast;
@@ -1129,13 +1129,13 @@ test('ready fails with CANCELLED if closed first; argument checks', async () => 
 
 describe('timing (stepping clock)', () => {
   test('a hanging credential fails setup within connectTimeout', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const credential = new Deferred<Uint8Array | undefined>();
     const consumer = steppingNode(clock, { credentialFor: () => credential.promise });
     const w = new Worker(1, { clock });
     void w.start();
-    await settle();
+    await ManualClock.settle();
     resolver.add(w.record());
     const set = PeerSet.watch(consumer, gpu, {
       resolver,
@@ -1145,28 +1145,28 @@ describe('timing (stepping clock)', () => {
       jitter: 0,
       clock,
     });
-    await clock.elapse(299);
+    await clock.elapseAsync(299);
     const peer = peerOf(set, 1);
     expect(peer.state).toBe(PeerState.connecting);
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     expect(peer.state).toBe(PeerState.offline);
     expect(code(peer.lastStatus)).toBe('internal');
     expect(peer.connection).toBeUndefined();
     // A credential delivered after its bound cannot open a channel.
     credential.resolve(bytes('late'));
-    await settle();
+    await ManualClock.settle();
     expect(w.raw).toEqual([]);
     await closeAll(clock, [set.close(), w.stop(), consumer.close(), resolver.close()]);
   });
 
   for (const hook of ['onConnect', 'onOpen'] as const) {
     test(`${hook} closing the set leaves no hook timeout behind`, async () => {
-      const clock = new SteppingClock();
+      const clock = new ManualClock();
       const resolver = new StaticResolver();
       const consumer = steppingNode(clock);
       const w = new Worker(1, { clock });
       void w.start();
-      await settle();
+      await ManualClock.settle();
       resolver.add(w.record());
       const ref: { set?: PeerSet } = {};
       const closeInHook = (): Promise<void> => {
@@ -1182,14 +1182,14 @@ describe('timing (stepping clock)', () => {
         onOpen: hook === 'onOpen' ? () => closeInHook() : undefined,
       });
       ref.set = set;
-      await clock.elapse(1000);
+      await clock.elapseAsync(1000);
       expect(set.isClosed).toBe(true);
       await closeAll(clock, [set.close(), w.stop(), consumer.close(), resolver.close()]);
     });
   }
 
   test('the backoff schedule, a lasting connection resets it, close leaves no timer', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const consumer = steppingNode(clock);
     const w = new Worker(1, { clock });
@@ -1204,7 +1204,7 @@ describe('timing (stepping clock)', () => {
     const events: string[] = [];
     set.on('event', (e) => events.push(`${e.type} ${clock.now()}`));
     expect(set.peers.size).toBe(0);
-    await settle();
+    await ManualClock.settle();
     // Attempt times: the attempt counter, sampled every 10 ms.
     const attempts: number[] = [];
     let seen = 0;
@@ -1214,28 +1214,28 @@ describe('timing (stepping clock)', () => {
         attempts.push(t);
         seen = current;
       }
-      await clock.elapse(10);
+      await clock.elapseAsync(10);
     }
     expect(attempts).toEqual([0, 500, 1500, 3500, 7500, 11_500]);
     expect(events).toEqual(['added 0', 'offline 0']);
     // The worker comes up: the next attempt (4 s later) connects.
     void w.start();
-    await clock.elapse(4000);
+    await clock.elapseAsync(4000);
     expect(peerOf(set, 1).isOnline).toBe(true);
     expect(events.at(-1)).toBe('online 15500');
     // A connection that lasts beyond maxBackoff resets the schedule: after
     // the worker goes away, an attempt at once (it fails, the worker is
     // down), then the first delay again, 500 ms.
-    await clock.elapse(5000);
+    await clock.elapseAsync(5000);
     void w.stop();
-    await clock.elapse(200);
+    await clock.elapseAsync(200);
     expect(peerOf(set, 1).state).toBe(PeerState.offline);
     expect(peerOf(set, 1).attempt).toBe(1);
     expect(events.at(-1)).toBe('offline 21010');
     void w.start();
-    await clock.elapse(299);
+    await clock.elapseAsync(299);
     expect(peerOf(set, 1).isOnline).toBe(false);
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     expect(peerOf(set, 1).isOnline).toBe(true);
     expect(events.at(-1)).toBe('online 21510');
     // Close: nothing left running.
@@ -1244,14 +1244,14 @@ describe('timing (stepping clock)', () => {
   });
 
   test('a GOAWAY: reconnected at once, not after the backoff', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const consumer = steppingNode(clock);
     const a = new Worker(1, { clock });
     const b = new Worker(1, { clock });
     void a.start();
     void b.start();
-    await settle();
+    await ManualClock.settle();
     // Two endpoints: the first goes away, the second answers at once.
     resolver.add(a.record({ endpoints: [a.uri, b.uri] }));
     const set = PeerSet.watch(consumer, gpu, {
@@ -1260,22 +1260,22 @@ describe('timing (stepping clock)', () => {
       jitter: 0,
       clock,
     });
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(peerOf(set, 1).endpoint).toBe(a.uri);
     void a.stop();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(peerOf(set, 1).isOnline).toBe(true);
     expect(peerOf(set, 1).endpoint).toBe(b.uri);
     await closeAll(clock, [set.close(), b.stop(), consumer.close(), resolver.close()]);
   });
 
   test('a hanging hook fails the attempt after connectTimeout', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const consumer = steppingNode(clock);
     const w = new Worker(1, { clock });
     void w.start();
-    await settle();
+    await ManualClock.settle();
     resolver.add(w.record());
     let calls = 0;
     const set = PeerSet.watch(consumer, gpu, {
@@ -1289,21 +1289,21 @@ describe('timing (stepping clock)', () => {
         return new Promise<void>(() => {});
       },
     });
-    await clock.elapse(299);
+    await clock.elapseAsync(299);
     const peer = peerOf(set, 1);
     expect(peer.state).toBe(PeerState.connecting);
     expect(peer.connection).toBeDefined();
-    await clock.elapse(2);
+    await clock.elapseAsync(2);
     expect(peer.state).toBe(PeerState.offline);
     expect(code(peer.lastStatus)).toBe('internal');
     expect(peer.lastStatus?.reason).toBe('onConnect timed out');
     expect(peer.connection).toBeUndefined();
     expect(peer.attempt).toBe(1);
     // Left with GOAWAY; the next attempt after the backoff.
-    await clock.elapse(200);
+    await clock.elapseAsync(200);
     expect(only(w.accepted).isOpen).toBe(false);
     expect(calls).toBe(1);
-    await clock.elapse(300);
+    await clock.elapseAsync(300);
     expect(peer.state).toBe(PeerState.connecting);
     expect(peer.attempt).toBe(2);
     expect(calls).toBe(2);
@@ -1317,13 +1317,13 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
   }
 
   test('offline with its status, online at once on a new connection with the per-peer channel opened there; the old one drains', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const consumer = steppingNode(clock);
     // It waits for the channels on the connection it leaves.
     const w = new Worker(1, { clock, mux: patient });
     void w.start();
-    await settle();
+    await ManualClock.settle();
     resolver.add(w.record());
     const opened: MuxChannel[] = [];
     const set = PeerSet.watch(consumer, gpu, {
@@ -1339,7 +1339,7 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
     });
     const events: string[] = [];
     set.on('event', (e) => events.push(describeEvent(e)));
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     const peer = peerOf(set, 1);
     expect(peer.isOnline).toBe(true);
     const first = peer.connection as MuxConnection;
@@ -1356,13 +1356,13 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
     void set.openTalk(1).then((talk) => {
       app = talk;
     });
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     const answers: string[] = [];
     const question = (text: string): void => {
       void ask(app as TalkChannel, text, 'Q').then((answer) => answers.push(answer));
     };
     question('before');
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(answers).toEqual(['1:before']);
     // The worker goes away, its connection staying up meanwhile.
     let workerLeft = false;
@@ -1370,7 +1370,7 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
       workerLeft = true;
     });
     void w.goAway();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     // At once (the backoff is 500 ms), on a new connection.
     expect(peer.isOnline).toBe(true);
     expect(peer.connection).not.toBe(first);
@@ -1387,13 +1387,13 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
     // The old connection is left to the application's channel.
     expect([...(w.accepted[0] as MuxConnection).channels]).toHaveLength(1);
     question('during');
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(answers).toEqual(['1:before', '1:during']);
     expect(firstClosed).toBe(false);
     expect(workerLeft).toBe(false);
     // Once that channel is closed, it closes.
     void app?.close();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(firstClosed).toBe(true);
     expect(workerLeft).toBe(true);
     expect(peer.isOnline).toBe(true);
@@ -1402,12 +1402,12 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
   });
 
   test('a second GOAWAY before the connection lasted maxBackoff: offline, the next attempt after the backoff; after a connection that lasted, at once again', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const resolver = new StaticResolver();
     const consumer = steppingNode(clock);
     const w = new Worker(1, { clock });
     void w.start();
-    await settle();
+    await ManualClock.settle();
     resolver.add(w.record());
     const set = PeerSet.watch(consumer, gpu, {
       resolver,
@@ -1419,33 +1419,33 @@ describe("a worker's GOAWAY on a live connection (stepping clock)", () => {
     });
     const events: string[] = [];
     set.on('event', (e) => events.push(describeEvent(e)));
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     const peer = peerOf(set, 1);
     expect(peer.isOnline).toBe(true);
     // The first GOAWAY: online again at once.
     void w.goAway();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(peer.isOnline).toBe(true);
     expect(w.accepted).toHaveLength(2);
     // The second, 100 ms into that connection: the backoff applies.
-    await clock.elapse(100);
+    await clock.elapseAsync(100);
     void w.goAway();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(peer.state).toBe(PeerState.offline);
     expect(code(peer.lastStatus)).toBe('goingAway');
     expect(peer.connection).toBeUndefined();
     expect(peer.nextAttemptAt).toBeDefined();
-    await clock.elapse(480);
+    await clock.elapseAsync(480);
     expect(peer.state).toBe(PeerState.offline);
     expect(w.accepted).toHaveLength(2);
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(peer.isOnline).toBe(true);
     expect(w.accepted).toHaveLength(3);
     // That connection lasts beyond maxBackoff: a GOAWAY on it reconnects
     // at once again.
-    await clock.elapse(5000);
+    await clock.elapseAsync(5000);
     void w.goAway();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
     expect(peer.isOnline).toBe(true);
     expect(w.accepted).toHaveLength(4);
     expect(events).toEqual([
