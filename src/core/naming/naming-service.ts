@@ -307,7 +307,8 @@ export class NamingService implements AsyncDisposable {
       holdLeft: () => this.#holdLeft,
       publishItem: (type, procedure, payload) => this.#publishItem(type, procedure, payload),
       emitSlotItem: (item) => {
-        if (!this.#closed) this.#emitter.emit('slotEvent', item);
+        // As #publish: the slot changes of the close itself still go out.
+        if (!this.#closedSignal.signal.aborted) this.#emitter.emit('slotEvent', item);
       },
     });
     if (this.assignmentHold > 0) {
@@ -570,8 +571,8 @@ export class NamingService implements AsyncDisposable {
   /**
    * Ends every subscription, aborts every held `REGISTER` with `GOING_AWAY`,
    * removes the records of every channel (publishing `DOWN` on the events,
-   * not to the channels), closes the channels with `GOING_AWAY`, and ends the
-   * events. Records made with {@link registerLocal} stay in {@link table}. No
+   * and the slots their owners free on the slot events, not to the
+   * channels), closes the channels with `GOING_AWAY`, and ends the events. Records made with {@link registerLocal} stay in {@link table}. No
    * timer is left running. Calling it again returns the same promise.
    */
   close(): Promise<void> {
