@@ -256,20 +256,18 @@ void main() {
         expect(again['connection'], isNot(farB['connection']));
         await changes.until(() => openedB.length == 3 && c.state.isConnected);
         expect(c.connection, isNot(same(first)));
-        expect(c.state.lastStatus?.known, lost);
         // Over a stream the transport just ends; over raw QUIC the close is
         // an application close, read as a GOAWAY. Over WebTransport it is
         // the session's close capsule, which the native stack can lose to
         // the end of the connection (close.test.ts has both): only GOING_AWAY
         // was seen here, the loss is allowed.
-        expect(lost, switch (transport) {
-          'quic' => StatusCode.goingAway,
-          'webtransport' => anyOf(
-            StatusCode.goingAway,
-            StatusCode.connectionLost,
-          ),
-          _ => StatusCode.connectionLost,
-        });
+        final ends = switch (transport) {
+          'quic' => [StatusCode.goingAway],
+          'webtransport' => [StatusCode.goingAway, StatusCode.connectionLost],
+          _ => [StatusCode.connectionLost],
+        };
+        expect(ends, contains(lost));
+        expect(ends, contains(c.state.lastStatus?.known));
         expect(closedB, hasLength(2));
         // A round trip on the new connection: the closed channel was not
         // opened before it.

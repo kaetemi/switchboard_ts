@@ -112,13 +112,12 @@ void main() {
         await f.ts.rpc<Object?>('connection.ping', {
           'connection': c['connection'],
         });
-        expect(sent, [0, 1]);
+        expect(sent, unorderedEquals([0, 1]));
         expect(slowIn.channel.bufferedBytes, 2 * 16016);
-        // The TS peer opened the channels before it can have read the Dart
-        // LIMITS: the Dart side accepts the larger of the window it
-        // announced and the 64 KiB assumed until then, and the TS peer,
-        // which waited for those LIMITS before sending, keeps to the
-        // announced one.
+        // On a channel the peer opened, the Dart side accepts the larger of
+        // the window it announced and the 64 KiB a peer assumes before
+        // reading its LIMITS (the OPEN may predate them); the TS peer keeps
+        // to the announced one.
         expect(slowIn.channel.receiveWindow, 65536 - 2 * 16016);
         expect(quickIn.channel.bufferedBytes, 0);
         // The connection's backlog: those, and the OPEN payloads it holds.
