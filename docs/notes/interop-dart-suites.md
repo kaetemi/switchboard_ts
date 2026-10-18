@@ -610,3 +610,34 @@ Each entry names the Dart file and test, then what both sides must observe. Wher
     - QUIC `switchboard_test.dart`: "a 3 MiB bulk payload each way, its streams overtaking the parent and arriving out of order".
     - `web_binding_test.dart`: "a nonce-bound IDENT from the browser, accepted by a listener with QuicIdentityRules.none" (`issue` then WHOAMI gives `browser-1`).
     - The X vector in `vectors/exporter_identity_vectors_test.dart` gives a fixed cross-check of the exporter-bound proof.
+
+### Coverage
+
+Where the scenarios above are checked now (`interop.md`, sections 11 and 12, has the detail).
+
+**In the TS-driven cells** (`test/interop/scenarios/`, the four pairings on every transport) **and the probes** (`test/interop/probe/`):
+- **3, 5, 8, 13 to 18, 20, 22:** the scenario files of the same names (`close`, `mux`, `talk`, `talk-wire`, `bulk`, `basics`, `naming`, `forward`, and the chains in `mesh`).
+- **10 to 12:** `identity.test.ts`, exporter-bound over QUIC.
+- **21:** `sharding.test.ts`: lazy and eager allocation, refused ASSIGN and DRAIN with RESUME, an owner going down mid-hand-over, the queue, the MOVED retry of `openChannelToSlot` and `openTalkToSlot`, never on RELOCATED.
+- **23:** `reconnect.test.ts`, on all four transports.
+- **24:** `probe/quic.test.ts`, a raw QUIC and WebTransport peer built on the native provider: HELLOs, records, the negative vectors, FRAME_TOO_LARGE, rejections with STOP_SENDING, resets both ways, the confirmation timeout, GOAWAY, application closes, WT_DRAIN_SESSION, keep-alive. One case is skipped in its four cells, with the reason: both implementations can close the session before their GOAWAY record is acknowledged, which loses it.
+- **1, 2, 6, 9 in part:** `probe/conformance.test.ts` over TCP and WebSocket: the preamble, LIMITS first, the channel window, the channel limit, the negative mux vectors.
+- **7 and 19 in part:** PING payloads and live peers keeping an idle connection open (`mux.test.ts`); the `switchboard` subprotocol and 1009 on an oversized message (`probe/conformance.test.ts`).
+
+**In the Dart driver** (`test/interop/dart_driver/`), for what the Dart node itself sees of a TS peer:
+- **4 (in part):** a paused Dart reader's held bytes and windows; a Dart send window stalled at the window the TS peer announced.
+- **6 (in part):** the LIMITS the Dart connection read; an OPEN past the TS channel limit; the pool opening a second connection at the limit.
+- **13 and 14 (handler side):** the item window and credit as a Dart handler reads them; the TS requester's timeout and cancel reaching `onCancel`.
+- **16 and 17:** `maxInlinePayload` refusing before the handler; `streamBulk` not held to the limit.
+- **21:** ASSIGN and DRAIN refusals by Dart handlers and the roll-back, against the TS naming service; the slot mirror; the Dart router's MOVED retry and RELOCATED with no retry.
+- **23:** the Dart ReconnectingClient on a TS server's GOAWAY, CLOSE statuses and a dropped connection, over all four transports.
+- **24 and 25:** the TS listener's HELLO equal to a Dart listener's; its GOAWAY code and reason in the QUIC session end; WT_DRAIN_SESSION; 64 parallel channels three times over, with bulk payloads.
+
+**Still open:**
+- **4:** idle window equality needs window introspection on the TS side; the connection-level backstop is not covered.
+- **6:** LIMITS sent mid-connection has no peer command, and unconfirmed rejections need a raw peer.
+- **7:** a silent peer ending CONNECTION_LOST over TCP and WebSocket needs a transport the test can silence (the QUIC probe's silent peer gets DEADLINE_EXCEEDED).
+- **17:** `reassemblyBudget` back-pressure.
+- **21:** a naming-service restart with re-claims by epoch (it needs a peer restarted on the same port); slot-request EXTEND deadlines.
+- **24:** what the native provider cannot produce: a unidirectional stream, datagrams, codeless resets on the control stream, opens beyond the peer's stream credit.
+- **19:** the handshake refusals (400, 426) and the text message (1003), which need a raw WebSocket client; the browser client comes with the browser peer, out of scope here.

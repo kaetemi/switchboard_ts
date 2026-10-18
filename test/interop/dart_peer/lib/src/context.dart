@@ -10,6 +10,7 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:switchboard/switchboard.dart';
 
@@ -104,9 +105,30 @@ class PeerContext {
   }) {
     final handle = handles.add('ch', channel);
     announce?.call(handle);
+    _report(channel.stream, channel.done, handle, listen: listen);
+    return handle;
+  }
+
+  /// Registers the slot channel [channel] and reports it as [trackChannel]
+  /// does a channel, under its own handle: its subframes and end are
+  /// `channel.data` and `channel.closed` across a replacement.
+  String trackSlotChannel(SlotChannel channel, {bool listen = true}) {
+    final handle = handles.add('sc', channel);
+    _report(channel.stream, channel.done, handle, listen: listen);
+    return handle;
+  }
+
+  /// Reports a channel's end ([done]), and with [listen] the subframes of
+  /// its [stream] first, under [handle].
+  void _report(
+    Stream<Uint8List> stream,
+    Future<Status> done,
+    String handle, {
+    required bool listen,
+  }) {
     final read = Completer<void>();
     if (listen) {
-      channel.stream.listen(
+      stream.listen(
         (subframe) => out.event('channel.data', {
           'channel': handle,
           'hex': hex(subframe),
@@ -118,11 +140,10 @@ class PeerContext {
       read.complete();
     }
     unawaited(() async {
-      final status = await channel.done;
+      final status = await done;
       await read.future;
       out.event('channel.closed', {'channel': handle, ...statusJson(status)});
     }());
-    return handle;
   }
 
   /// Reports an error no command answers (a service's, say) as a
@@ -133,9 +154,17 @@ class PeerContext {
   }
 
   /// Closes every handle's object, newest first, and forgets them all.
+  /// The reconnecting clients stop first: closing their connections and
+  /// their persistent channels' channels would otherwise make them
+  /// reconnect and open those again.
   Future<int> closeAll() async {
     final objects = handles.all;
     handles.clear();
+    for (final o in objects) {
+      if (o is ReconnectingClient) {
+        o.stop();
+      }
+    }
     for (final o in objects) {
       try {
         switch (o) {
@@ -143,12 +172,20 @@ class PeerContext {
             await t.close().timeout(_closeTimeout, onTimeout: () {});
           case final MuxChannel c:
             await c.close().timeout(_closeTimeout, onTimeout: () {});
+          case final SlotChannel c:
+            await c.close().timeout(_closeTimeout, onTimeout: () {});
           case final MuxConnection c:
             await c.close().timeout(_closeTimeout, onTimeout: () {});
           case final TalkStream s:
             s.cancel();
           case final NamingHandle n:
             await n.close().timeout(_closeTimeout, onTimeout: () {});
+          case final PersistentChannel p:
+            await p.close().timeout(_closeTimeout, onTimeout: () {});
+          case final PersistentTalk p:
+            await p.close().timeout(_closeTimeout, onTimeout: () {});
+          case final ReconnectingClient r:
+            await r.close().timeout(_closeTimeout, onTimeout: () {});
         }
       } on Object catch (_) {
         // Already closed or failing: nothing left to release.

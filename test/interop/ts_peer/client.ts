@@ -19,6 +19,7 @@ import {
   nativeQuicAvailability,
   QuicBindingConnection,
   type Resolver,
+  SlotChannel,
   Status,
   StatusCode,
   Switchboard,
@@ -42,6 +43,7 @@ import {
   statusArg,
   stringArg,
 } from './protocol.ts';
+import { ReconnectCommands, reconnectOps } from './reconnect.ts';
 import { chunks, pattern } from './services.ts';
 
 /** The client commands. */
@@ -71,10 +73,12 @@ export class Client {
   #node: Switchboard | undefined;
 
   readonly #naming: NamingCommands;
+  readonly #reconnect: ReconnectCommands;
 
   constructor(ctx: PeerContext) {
     this.#ctx = ctx;
     this.#naming = new NamingCommands(ctx, (resolver) => this.#newNode(resolver));
+    this.#reconnect = new ReconnectCommands(ctx);
   }
 
   #identity: NodeIdentity | undefined;
@@ -87,7 +91,9 @@ export class Client {
   /** Whether {@link command} answers [op]. */
   static answers(op: string): boolean {
     return (
-      (clientOps as readonly string[]).includes(op) || (namingOps as readonly string[]).includes(op)
+      (clientOps as readonly string[]).includes(op) ||
+      (namingOps as readonly string[]).includes(op) ||
+      (reconnectOps as readonly string[]).includes(op)
     );
   }
 
@@ -124,8 +130,13 @@ export class Client {
     const h = this.#ctx.handles;
     if ((namingOps as readonly string[]).includes(op)) {
       return this.#naming.command(op, cmd, (channel) =>
-        this.#adoptTalk(channel, this.#ctx.trackConnection(channel.connection)),
+        channel instanceof SlotChannel
+          ? this.#adoptTalk(channel)
+          : this.#adoptTalk(channel, this.#ctx.trackConnection(channel.connection)),
       );
+    }
+    if ((reconnectOps as readonly string[]).includes(op)) {
+      return this.#reconnect.command(op, cmd);
     }
     switch (op) {
       case 'connect': {
@@ -250,31 +261,19 @@ export class Client {
     return this.#adoptTalk(ch, connection);
   }
 
-  /** [ch] as a Talk channel handle on [connection]'s, its messages reported and its requests refused. */
-  #adoptTalk(ch: MuxChannel, connection: string): Json {
+  /**
+   * [ch] as a Talk channel handle on [connection]'s, its messages reported
+   * and its requests refused; a slot channel has no one connection, and
+   * its handle is reported as `slotChannel`.
+   */
+  #adoptTalk(ch: MuxChannel | SlotChannel, connection?: string): Json {
     const ctx = this.#ctx;
-    const channel = ctx.trackChannel(ch, false);
-    const talk = new TalkChannel(ch, ctx.config.talk);
-    const handle = ctx.handles.add('t', talk);
-    void (async () => {
-      try {
-        for await (const m of talk.messages) {
-          void (async () => {
-            ctx.out.event('talk.message', {
-              talk: handle,
-              requestId: m.requestId,
-              ...(await messageJson(m)),
-            });
-            if (m.canReply) {
-              await m.replyAbort(Status.of(StatusCode.unimplemented));
-            }
-          })().catch(() => {});
-        }
-      } catch {
-        // A channel abort from the far side ends the messages.
-      }
-    })();
-    return { talk: handle, channel, connection };
+    const channel =
+      ch instanceof SlotChannel ? ctx.trackSlotChannel(ch, false) : ctx.trackChannel(ch, false);
+    const talk = reportTalk(ctx, new TalkChannel(ch, ctx.config.talk));
+    return ch instanceof SlotChannel
+      ? { talk, slotChannel: channel }
+      : { talk, channel, connection };
   }
 
   #talkStream(cmd: Json): Json {
@@ -345,11 +344,43 @@ export class Client {
   }
 }
 
+/**
+ * [talk] as a handle: the messages the far side sends on it are reported as
+ * `talk.message`, and its requests refused with UNIMPLEMENTED.
+ */
+export function reportTalk(ctx: PeerContext, talk: TalkChannel): string {
+  const handle = ctx.handles.add('t', talk);
+  void (async () => {
+    try {
+      for await (const m of talk.messages) {
+        void (async () => {
+          ctx.out.event('talk.message', {
+            talk: handle,
+            requestId: m.requestId,
+            ...(await messageJson(m)),
+          });
+          if (m.canReply) {
+            await m.replyAbort(Status.of(StatusCode.unimplemented));
+          }
+        })().catch(() => {});
+      }
+    } catch {
+      // A channel abort from the far side ends the messages.
+    }
+  })();
+  return handle;
+}
+
 /** The OPEN payload: `openHex` as is, else `address` encoded. */
 export function openPayload(cmd: Json): Uint8Array {
   if (cmd['openHex'] !== undefined) {
     return bytesOf(cmd['openHex']);
   }
+  return addressOf(cmd).encode();
+}
+
+/** The command's `address`: `{type, typeHex, instance, shard, host, payload}`, every field optional. */
+export function addressOf(cmd: Json): ChannelAddress {
   const a = objectArg(cmd, 'address') ?? {};
   const type = stringArg(a, 'type');
   const typeHex = stringArg(a, 'typeHex');
@@ -364,7 +395,7 @@ export function openPayload(cmd: Json): Uint8Array {
     shard: intArg(a, 'shard'),
     host: stringArg(a, 'host'),
     payload: bytesOf(a['payload']),
-  }).encode();
+  });
 }
 
 /**

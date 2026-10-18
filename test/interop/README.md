@@ -16,10 +16,13 @@ test/interop/
   matrix.ts           pairings × transports, skip reasons, describeCells()
   chain.ts            chains of three or more peers, every role in either language, describeChains()
   scenarios/          the scenarios: basics, talk, talk-wire, bulk, close and GOAWAY, mux limits,
-                      protocol errors, forward, identity, naming and sharding, mesh (proxy, relay,
-                      forwarding and naming chains)
+                      protocol errors, forward, identity, naming, sharding (managed and lazy
+                      spaces, refused hand-overs, the MOVED retry of slot-routed opens), mesh
+                      (proxy, relay, forwarding and naming chains), the reconnecting client
   oracle.test.ts      the wiki vectors against the Dart codecs; the TS codecs against Dart, fuzzed
-  probe/              raw byte conformance: hand-built frames against each server's listeners
+  probe/              raw byte conformance: hand-built mux frames against each server's TCP and
+                      WebSocket listeners (conformance), hand-built QUIC binding records against
+                      its raw QUIC and WebTransport listeners and dialler (quic)
 ```
 
 ## Running
@@ -96,7 +99,7 @@ Version 1. The peer is started as `<peer> [--config <json>] [--log <level>] [--w
 - **Commands**, one JSON object per line on stdin: `{"id": 7, "op": "talk.request", ...}`. Each gets exactly one response line, `{"id": 7, "ok": true, "value": ...}` or `{"id": 7, "ok": false, "error": {...}}`. Commands run concurrently, so responses can come out of order.
 - **Errors** are `{"kind", "type", "message"}` plus `code`, `reason` and `body` (the status payload's bytes after the code, hex, as received) for kind `status`: `status` (a Switchboard status: an abort, a refused channel, a protocol error), `format` (malformed input to a codec), `argument` (a bad command), `other`. `type` is the implementation's error class and differs between implementations; tests compare `kind` and `code`.
 - **Events** are unsolicited lines `{"event": "channel.closed", "channel": "ch3", "code": 5, "reason": ""}`.
-- **Handles**: every object a command or a service creates gets a string handle that is never reused within the process: `c` connections, `ch` channels, `t` Talk channels, `s` streams.
+- **Handles**: every object a command or a service creates gets a string handle that is never reused within the process: `c` connections, `ch` channels, `t` Talk channels, `s` streams, `n` naming clients, `sc` slot channels, `r` reconnecting clients, `p` persistent channels.
 - **Lifetime**: the peer exits on `shutdown`, at the end of stdin (so a test runner that dies leaves no orphan), on SIGTERM or SIGINT, and after the watchdog (default 600 s, exit code 3).
 
 Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are optional on input). JSON numbers carry 48-bit ids and `u32` windows exactly.
@@ -113,7 +116,7 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
 | `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
 | `identity` | none | what the peer presents and verifies (below) |
-| `naming` | none | `{assignmentHoldMs}` (default 0): serve a naming service as `_ns` instance 1, listed in its own table at the peer's endpoints |
+| `naming` | none | `{assignmentHoldMs, holdingSettleMs, handoverTimeoutMs, assignBackoffMs, assignBackoffMaxMs, holderGraceMs, resumeAttempts}` (the hold default 0, the others the library's defaults): serve a naming service as `_ns` instance 1, listed in its own table at the peer's endpoints |
 | `proxy` | none | `{endpoint, types, revealOwners}`: `proxyHandler` for each of `types` (default `echo`), forwarding to their instance 1 at `endpoint` |
 | `relay` | none | `{endpoint, types}`: a `RelayService` at `_relay` (`allowEndpoints`, no identity required) relaying `types` (default `echo`) to their instance 1 at `endpoint` |
 
@@ -125,7 +128,7 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 
 | Op | Arguments | Value |
 | --- | --- | --- |
-| `naming.open` | `endpoint`, `watch` (default true) | `{naming}`: a started naming client of the naming service at `endpoint`; its table's changes are `naming.event {naming, up, type, instance, endpoints, metadata}`, and the slot requests it gets (all accepted at once, `ASSIGN` answered holding) `naming.slot {naming, request, type, slot, epoch, to}` |
+| `naming.open` | `endpoint`, `watch` (default true) | `{naming}`: a started naming client of the naming service at `endpoint`; its table's changes are `naming.event {naming, up, type, instance, endpoints, metadata}`, its mirrored slot tables' changes `naming.table {naming, type, slot, state, owner, to, holder, epoch}` (the new entry, the state by name), and the slot requests its handler gets `naming.slot {naming, request, type, slot, epoch, to, holder}` (`request` is `assign`, `drain`, `forward`, `resume` or `revoke`; `holder` is the `ASSIGN`'s, null otherwise), answered as `naming.slotAnswers` set |
 | `naming.synced` | `naming` | `null` once the table first synced |
 | `naming.register` | `naming`, `type`, `instance`, `endpoints` (default the peer's own), `metadata` | `{instance}` |
 | `naming.unregister` | `naming`, `type`, `instance` | `null` |
@@ -133,9 +136,18 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 | `naming.claim` | `naming`, `type`, `slot`, `holding` | `{epoch}` |
 | `naming.release` | `naming`, `type`, `slot`, `keepStorage` | `null` |
 | `naming.locate` | `naming`, `type`, `slot` | `{state, owner, epoch}`, the state by name |
-| `naming.migrate` | `naming`, `type`, `slot`, `to` (0: the allocator chooses) | `{phases}`: the hand-over's phases by name, once it is done |
+| `naming.migrate` | `naming`, `type`, `slot`, `to` (0: the allocator chooses) | `{phases}`: the hand-over's phases by name, once it is done; each phase is also `naming.phase {naming, type, slot, phase}` as it comes, so a rolled-back hand-over's phases are there when the command fails |
+| `naming.declareHolding` | `naming`, `type`, `slots` | `{discard}`: the slots the `HOLDING` response lists as no longer held |
+| `naming.slotAnswers` | `naming`, `assign`, `drain`, `forward`, `resume` | `null`: how the handler answers from now on, each absent one unchanged. `assign`: `holding` (the default), `notHolding`; the others: `ok` (the default); any: `wait` (held until `naming.slotRelease` or until the request is cancelled) or `{code, reason}` (refused with that status) |
+| `naming.slotRelease` | `naming`, `request`, `type`, `slot`, `answer` (default `holding` or `ok`) | `null`: answers the request held with `wait` |
+| `naming.slotOwner` | `naming`, `type`, `slot`, `refresh` | `{owner}`: `resolveSlotOwner` of the client's node |
+| `naming.slotChannel` | `naming`, `type`, `slot`, `payload` | `{slotChannel}`: `openChannelToSlot` of the client's node; its subframes and end are `channel.data` and `channel.closed` under that handle, across a `MOVED` retry |
+| `naming.slotTalk` | `naming`, `type`, `slot`, `payload` | `{talk, slotChannel}`: a Talk channel over `openChannelToSlot`, as `naming.channel` reports one |
 | `naming.channel` | `naming`, `address` (`type`, `instance`, `shard`, `payload`) | `{talk, channel, connection}`: a Talk channel opened through the resolver, as `talk.open` reports it |
-| `naming.close` | `naming` | `null` |
+| `naming.close` | `naming` | `null`; the handle is gone from then on |
+| `slot.send` | `slotChannel`, `hex` | `null`: one subframe |
+| `slot.close` | `slotChannel`, `code`, `reason` or `statusHex` | `null` |
+| `slot.state` | `slotChannel` | `{retried}`: whether a `MOVED` was retried |
 
 `chain.ts` runs scenarios of three or more peers (`describeChains`): every role played by either implementation, eight cells per transport for three roles, started from the backend to the client.
 
@@ -196,7 +208,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | --- | --- | --- |
 | `ping` | | `"pong"` |
 | `info` | | the READY object and `handles`, the number of live handles |
-| `reset` | | closes every handle's object (newest first) and forgets them: `{closed}`; the listeners stay |
+| `reset` | | closes every handle's object (newest first, the reconnecting clients stopped before anything, so that none reconnects meanwhile) and forgets them: `{closed}`; the listeners stay |
 | `shutdown` | | `null`, then the peer exits |
 | `decode` | `kind`, `hex` | the reference decoder's fields and `reencoded` (see the oracle) |
 | `decodeMany` | `kind`, `hexes` | `[{ok: true, value} \| {ok: false, error}]`, one per input |
@@ -215,12 +227,31 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connection.ping` | `connection`, `payload` | `{rttMs}` |
 | `connection.goAway` | `connection`, `code` (default 33), `reason` | `null` |
 | `connection.close` | `connection` | `null` |
+| `connection.drain` | `connection` | `null`: `WT_DRAIN_SESSION` on a WebTransport connection; an argument error on any other |
 | `connection.identify` | `connection`, `intent`, `receiver` | `null`: identifies with the peer's credential |
 | `request` | `endpoint`, `service`, `instance`, `procedure`, payload, `timeoutMs`, `digest` | one request on a connection of its own, closed afterwards |
+| `accepted.goAway` | `code` (default 33), `reason` | `{connections}`: GOAWAY on every open connection the listeners accepted, without waiting for them to end; each is a handle from then on, reporting `connection.goAway` and `connection.closed` whether or not its peer identified. A connection is there once the node adopted it: over QUIC a dialler can be connected before, and a request on the connection makes sure |
+| `accepted.close` | | `{connections}`: closes every open connection the listeners accepted, the same way |
 
 An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes); `talk.request`, `talk.stream` and `talk.send` also take `bulkPattern: {length, chunk, declared}`, an empty payload with the `BIG` pattern of `length` bytes as a bulk source in pieces of `chunk` bytes (default 1000), its length declared unless `declared` is false. Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.
 
 Connections report `connection.goAway {connection, code, reason, body}` when the far side sends GOAWAY and `connection.closed {connection, code, reason, body}` when they end; channels report `channel.closed {channel, code, reason, body}` (`body`: the status payload's bytes after the code, hex). An error no command answers (in a service, say) is `peer.error {error}`.
+
+### Reconnecting client
+
+The `reconnect` commands run a `ReconnectingClient` of the peer's implementation against an endpoint: the frame mux over a transport for `tcp://` and `ws://` (the unnamed constructor, a transport connector), the QUIC binding for `quic://` and `https://` (`ReconnectingClient.connections` with `connectQuicBinding` in Dart, a `quicConnector` in TS), without verifying the listener's certificate. Its connections take the peer's `mux` and `talk` options. The channels it opens are `t` and `ch` handles the commands above drive, on `c` handles reporting `connection.goAway` and `connection.closed`; the server side of a scenario uses `accepted.goAway`, `accepted.close`, the `echo` service's `GOAWAY`, and `connection.close` on the connection a `raw` channel reported.
+
+| Op | Arguments | Value |
+| --- | --- | --- |
+| `reconnect.open` | `endpoint`, `initialBackoffMs`, `maxBackoffMs`, `backoffFactor`, `jitter`, `connectTimeoutMs`, `defaultPayload` (hex), `autoStart` (default true) | `{reconnect}`, the library's defaults for what is absent. Each change of its state (not the state at the start) is `reconnect.state {reconnect, phase, attempt, lastStatus, retryMs, connection}`: `lastStatus` as `{code, reason, body}` or null, `retryMs` the delay of the attempt scheduled (`nextAttemptAt` less `since`, rounded) or null, `connection` the handle while connected (null if a Dart client, whose states arrive a microtask late, already left it). Each channel the endpoint opens towards it is `reconnect.incoming {reconnect, channel, connection, id, type, instance, shard, host, payload}`, then its subframes and its end as for `open` |
+| `reconnect.talk` | `reconnect`, `address`, `openTimeoutMs` | `{talk, channel, connection}`: `openTalk`, waiting at most `openTimeoutMs` for a connection (default 30 000; 0 fails at once while there is none) |
+| `reconnect.channel` | `reconnect`, `address`, `openTimeoutMs` | `{channel, id, connection}`: `openChannel`, a raw channel as `open` makes |
+| `reconnect.persistent` | `reconnect`, `address`, `talk` (default true), `request` (`{procedure}` and a payload argument) | `{persistent}`: `openPersistentTalk`, or `openPersistent` with `talk` false. Each channel it opens is `persistent.opened {persistent, channel, connection, talk}` (`talk` for a Talk channel, which gets `request` and reports its outcome as `persistent.reply {persistent, talk, ...message}` or `{persistent, talk, error}`); each end is `persistent.closed {persistent, code, reason, body}` (`onClosed`), the end for good `persistent.done` with the same fields |
+| `reconnect.stop` | `reconnect` | the state after `stop()`, as `reconnect.state` reports it |
+| `reconnect.start` | `reconnect` | `null` |
+| `reconnect.now` | `reconnect`, `force` | `null`: `reconnectNow` |
+| `reconnect.close` | `reconnect` | `null`, once `close()` completed |
+| `persistent.close` | `persistent` | `{code, reason, body}`: the status `done` completed with |
 
 ### Oracle kinds
 
@@ -245,10 +276,30 @@ Connections report `connection.goAway {connection, code, reason, body}` when the
 
 The kinds without a note also answer `reencoded`. The oracle test compares the Dart peer's answers with the TS peer's oracle (`ts_peer/oracle.ts`, the same JSON from the TS codecs) on the wiki vectors and on random and mutated inputs. One difference is documented rather than compared: Dart parses an endpoint as a `Uri` and sends its normalised text (scheme and host lower-cased, characters escaped), where TS carries endpoints as written and refuses what a URI cannot hold (`endpointProblem` in `src/core/naming/naming-protocol.ts`); for such an input the test checks that what Dart sends instead decodes alike in TS.
 
+## QUIC probe
+
+`probe/quic.test.ts` is the conformance probe's counterpart for the QUIC binding (scenario 24 of `docs/notes/interop.md`). `probe/quic.ts` opens raw QUIC connections (ALPN `switchboard`) and WebTransport sessions (offering `switchboard`, the certificate pinned to READY's `certificateSha256`) through the native provider directly, and writes and reads the records by hand, so nothing of `src/core/quic` is involved; `ProbeListener` listens with a certificate of its own for the peers to dial with `connect`. Every case runs against the Dart peer and the TS peer, over both transports:
+
+- **The probe dials.** The server's `HELLO`, first on the control stream, byte for byte; the probe's `HELLO` (late, or with a further field) accepted; the wiki's negative control and record vectors and the state-dependent errors (a second `HELLO` or channel-0 OPEN, a control message before `HELLO`, CLOSE, FIN, a reset or `STOP_SENDING` on the control stream, the wrong parity, an open id again, FIN before, inside or without a CLOSE record) closing the session `PROTOCOL_ERROR`, a header over the record limit `FRAME_TOO_LARGE`; Talk on an echo channel record by record, a channel before the control stream, a reply inline up to the probe's record limit and on a `_bulk` stream beyond it; CLOSE records both ways (the wiki's vectors, `MOVED`'s fields), a rejection (CLOSE `NOT_FOUND`, FIN, `STOP_SENDING`), resets both ways (a code above 255 reads `UNKNOWN`), `STOP_SENDING` as an early close, the confirmation timeout's `STOP_SENDING` and reset; `GOAWAY` both ways, application closes as `GOAWAY` with their status, `WT_DRAIN_SESSION`; a peer taking two channels (its `HELLO`, `RESOURCE_EXHAUSTED` with `STOP_SENDING`), the control stream timeout and the keep-alive `PING`.
+- **The peer dials the probe.** The client's control stream (OPEN of channel 0, `HELLO`), its OPEN, DATA and CLOSE records byte for byte, the probe's rejection and reset as the client reports them, `PING`, `GOAWAY`, the probe's application close and `WT_DRAIN_SESSION` read as `GOAWAY`, and `connection.drain` reaching the probe.
+
+Session close codes are compared through the server peer's `quicCode` oracle (raw QUIC: the status as the error code; WebTransport: the code read back from its HTTP/3 form). The probe needs the native addon whatever the server: without it the file skips with the reason, and `SWITCHBOARD_NATIVE=required` fails instead. A case an implementation fails against the spec is skipped in its cell with the reason in the name. Run it alone with `npx vitest run --project interop test/interop/probe/quic.test.ts` and the variables above.
+
 ## Test vectors
 
 `test/vectors/wiki-vectors.json` holds the wiki's vectors with the wiki commit; `tool/extract-wiki-vectors.mjs` regenerates it from a checkout of `kaetemi/sway` (`wiki/switchboard/`). Tests name vectors through `test/support/vectors.ts` (`wikiBytes('test-vectors/names/api')`, `wikiVectorsIn('test-vectors/talk-messages/')`, `skippedWikiVector(id, reason)`), always with string literals: `test/vectors/coverage.test.ts` reads the test sources for them, fails on an id the file does not have, and, once a test names any vector of a wiki table, on every vector of that table no test names. `SWITCHBOARD_VECTORS_STRICT=1` checks every table.
 
 ## Dart driver
 
-`dart_driver/` is a Dart package whose tests run the Dart Switchboard in process against the TS peer, which `lib/ts_peer.dart` spawns with Node (`SWITCHBOARD_NODE`, else `node` on PATH) and drives over this protocol: the Dart side is then observable as in the Dart repositories' own two-peer tests, the TS side is the port behind its peer. `node tool/dart-peer.mjs driver [-- <dart test arguments>]` runs it with the SDK and Dart checkouts the peer build uses (it writes the driver's `pubspec_overrides.yaml` too). Its groups: a Dart node against the TS peer over each transport (requests, item windows, aborts, bulk both ways, plain messages, GOAWAY, raw channels), a Dart credential identifying to the TS peer and the TS peer in return, the TS peer as the requester of a service implemented in the Dart test, and Dart-encoded Talk frames decoded alike by the TS peer's oracle. A group whose transport the TS peer cannot serve is skipped with the reason. The Dart peer's library `switchboard_dart_peer.dart` exports what the driver shares with it: the test authorities and the byte helpers.
+`dart_driver/` is a Dart package whose tests run the Dart Switchboard in process against the TS peer, which `lib/ts_peer.dart` spawns with Node (`SWITCHBOARD_NODE`, else `node` on PATH) and drives over this protocol: the Dart side is then observable as in the Dart repositories' own two-peer tests, the TS side is the port behind its peer. The driver is for what the TS-driven cells cannot see: what the Dart node itself observes of a TS peer (its own statuses and windows, the LIMITS and HELLO it read, what its handlers, clients and slot handlers are asked). `node tool/dart-peer.mjs driver [-- <dart test arguments>]` runs it with the SDK and Dart checkouts the peer build uses (it writes the driver's `pubspec_overrides.yaml` too). 59 tests in six files, run one file at a time (`dart_test.yaml`), with the fixture they share in `test/support.dart`:
+
+| File | Tests | What the Dart side observes |
+| --- | --- | --- |
+| `ts_peer_test.dart` | 35 | a Dart node against the TS peer over each transport (requests, item windows, aborts, bulk both ways, plain messages, GOAWAY, raw channels), a Dart credential identifying to the TS peer and the TS peer in return, the TS peer as the requester of a service implemented in the Dart test, and Dart-encoded Talk frames decoded alike by the TS peer's oracle |
+| `flow_test.dart` | 4 | a paused Dart reader holding what the TS peer sent within the window it announced, and the receive window the Dart side keeps on a channel the peer opened, while the TS peer keeps sending on another channel (TCP, WebSocket); the LIMITS of a TS peer taking two channels as the Dart connection reads them, an OPEN sent before them beyond the limit refused `RESOURCE_EXHAUSTED`, the Dart pool opening a second connection at the limit; a channel the TS peer never reads stalling at the window it announced while another flows |
+| `reconnect_test.dart` | 8 | the Dart `ReconnectingClient` against the TS peer over each transport: its states and its persistent channels when the TS peer sends GOAWAY (moved at once, an application channel finishing on the old connection), closes a persistent channel `PERMISSION_DENIED` (stays closed) or `UNAVAILABLE` (re-opened), or drops the connection |
+| `quic_test.dart` | 5 | the Dart QUIC binding against the TS raw QUIC and WebTransport listeners: their `HELLO` against the one a Dart listener configured as the Dart peer's sends, the QUIC session end after the TS listener's GOAWAY with a code and a reason, 64 channels in parallel three times over with bulk payloads on one connection, `WT_DRAIN_SESSION` (`connection.drain`) |
+| `talk_handler_test.dart` | 4 | a Dart Talk service under a TS requester (TCP, WebSocket): the item window and credit of a TS stream request as the handler reads them, the TS requester's timeout and cancel reaching `onCancel`, TS bulk payloads against the Dart `maxInlinePayload` (refused before the handler beyond it, streamed reads not held to it) |
+| `sharding_test.dart` | 3 | Dart sharded instances, naming clients and a slot router against the TS peer's naming service (`naming: {}`) and its `raw` service: claims confirmed through `ASSIGN` (the holder named, `notHolding`, refusals failing the claim), hand-overs rolled back with `RESUME` when the new owner refuses the `ASSIGN` or the old one the `DRAIN`, the `MOVED` retry of `openChannelToSlot` on a TS backend's CLOSE, never on `RELOCATED` |
+
+A group whose transport the TS peer cannot serve is skipped with the reason. The Dart peer's library `switchboard_dart_peer.dart` exports what the driver shares with it: the test authorities and the byte helpers.

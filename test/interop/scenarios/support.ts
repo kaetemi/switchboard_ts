@@ -8,9 +8,11 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // peer, payload helpers, and the services every server peer has.
 
 import { createHash } from 'node:crypto';
+import { expect } from 'vitest';
 import { hexBytes, hexString, utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
+import { StatusCode } from '../../../src/core/status.ts';
 import type { CellPeers } from '../matrix.ts';
-import type { ChannelIncomingEvent, ServiceConfig } from '../protocol.ts';
+import type { ChannelIncomingEvent, PeerEvent, ServiceConfig, Transport } from '../protocol.ts';
 
 /** [text] as the peers write bytes: upper-case hex. */
 export const hex = (text: string): string => hexString(utf8Encode(text));
@@ -83,4 +85,23 @@ export async function nextSubframe(peers: CellPeers, far: string, seen: number):
     await peers.server.events.waitForCount({ event: 'channel.data', channel: far }, seen + 1)
   ).slice(seen);
   return String(event?.['hex']);
+}
+
+/**
+ * Expects the `channel.closed` (or `persistent.closed`) [event] of a channel
+ * that was open when the far side ended the connection to carry [code], the
+ * connection's status. Over WebTransport it may carry `UNKNOWN` "no
+ * application error code" instead: the session's `WT_SESSION_GONE` reset
+ * has no code, and a receiver that reads it before the session's close
+ * ends the channel `UNKNOWN` (the QUIC binding page: such a reset "reads as
+ * UNKNOWN, unless the connection is ending"). The side ending the session
+ * holds the resets back until its close is acknowledged, which makes this
+ * rare, not impossible: seen in every pairing, Dart to Dart too.
+ */
+export function expectEndedWith(event: PeerEvent, code: number, transport: Transport): void {
+  if (transport === 'webtransport' && event['code'] === StatusCode.unknown) {
+    expect(event['reason']).toBe('no application error code');
+  } else {
+    expect(event['code']).toBe(code);
+  }
 }

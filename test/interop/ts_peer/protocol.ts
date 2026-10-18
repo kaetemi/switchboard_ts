@@ -148,6 +148,18 @@ export function intArg(cmd: Json, key: string): number | undefined {
   throw new ArgumentProblem(`${key}: integer expected, got ${JSON.stringify(v)}`);
 }
 
+/** An optional number argument. */
+export function numberArg(cmd: Json, key: string): number | undefined {
+  const v = cmd[key];
+  if (v === undefined || v === null) {
+    return undefined;
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return v;
+  }
+  throw new ArgumentProblem(`${key}: number expected, got ${JSON.stringify(v)}`);
+}
+
 /** An optional string argument. */
 export function stringArg(cmd: Json, key: string): string | undefined {
   const v = cmd[key];
@@ -250,6 +262,15 @@ export class Handles<Kinds extends Record<string, object>> {
       throw new ArgumentProblem(`no ${what} with handle ${String(handle)}`);
     }
     return entry.object as Kinds[P];
+  }
+
+  /** Forgets [object]'s handle. */
+  remove(object: object): void {
+    const handle = this.#names.get(object);
+    if (handle !== undefined) {
+      this.#names.delete(object);
+      this.#objects.delete(handle);
+    }
   }
 
   /** Every registered object with its prefix, newest first. */

@@ -164,6 +164,23 @@ class TsPeer {
     return _eventStream.stream.firstWhere(match).timeout(timeout);
   }
 
+  /// The first [count] events satisfying [match], once that many were
+  /// logged.
+  Future<List<Map<String, Object?>>> waitForCount(
+    bool Function(Map<String, Object?> event) match,
+    int count, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    List<Map<String, Object?>> seen() =>
+        _events.where(match).take(count).toList();
+    if (seen().length < count) {
+      await _eventStream.stream
+          .firstWhere((e) => match(e) && seen().length >= count)
+          .timeout(timeout);
+    }
+    return seen();
+  }
+
   /// Every event so far.
   List<Map<String, Object?>> get events => List.unmodifiable(_events);
 

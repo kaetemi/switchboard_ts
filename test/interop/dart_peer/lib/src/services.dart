@@ -104,13 +104,14 @@ void _serveRaw(
       'connection': connection,
       'service': spec.type,
       'id': incoming.channel.id,
-      ..._addressJson(incoming.address),
+      ...addressJson(incoming.address),
       'identity': incoming.peerIdentity?.identity,
     }),
   );
 }
 
-Map<String, Object?> _addressJson(ChannelAddress a) => {
+/// [a] as the `channel.incoming` event names it.
+Map<String, Object?> addressJson(ChannelAddress a) => {
   'type': a.type?.toString(),
   'instance': a.instance,
   'shard': a.shard,

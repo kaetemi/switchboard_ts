@@ -3,11 +3,12 @@
 State on 2026-10-14, for the session that picks this up. Repository
 `kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs
 went into `claude/switchboard-ts-design-s5r9na`, from which `main` was
-initialised). Updated by the docs pass for what changed around this thread
-and, by the lead, for the merge of `claude/ts-peer` (the TS peer).
+initialised). Updated by the docs pass for what changed around this thread,
+by the lead for the merge of `claude/ts-peer` (the TS peer), and on
+2026-10-18 for branch `claude/interop-2-c9hpc0` (phase 4).
 The longer background is `../notes/interop.md` (sections 1 to 9 are the
-phase 1 design, section 10 the phase 2 status); the peer protocol is
-specified in `test/interop/README.md` in the repository.
+phase 1 design, sections 10 to 12 the status of phases 2 to 4); the peer
+protocol is specified in `test/interop/README.md` in the repository.
 
 ## Merged
 
@@ -33,8 +34,9 @@ tests are every TS cell, and each skipped suite names what it waits on.
 
 ## Unmerged
 
-Nothing. The first thread branch `claude/switchboard-ts-interop-x2iz7c` and
-`claude/ts-peer` hold no commit `main` lacks.
+`claude/interop-2-c9hpc0` until the lead merges its PR. The first thread
+branch `claude/switchboard-ts-interop-x2iz7c` and `claude/ts-peer` hold no
+commit `main` lacks.
 
 ## Done since (branch `claude/ts-peer`, merged into `main`)
 
@@ -45,17 +47,45 @@ scenarios, the oracle for every codec, the Dart driver and the CI steps:
 see `../notes/interop.md`, section 11. 3686 interop tests pass, none
 skipped, with the native addon.
 
+## Done since (branch `claude/interop-2-c9hpc0`)
+
+Section 12 of `../notes/interop.md` has the detail. 4540 interop tests
+pass in required mode and 4 are skipped with their reason; the Dart driver
+passes 59 tests. Nothing in `src/**` changed.
+
+* **Sharding** (`scenarios/sharding.test.ts`): managed and lazy spaces,
+  refused hand-overs (RESUME, roll-back), an owner going down mid-hand-over,
+  the queue, and the MOVED retry of `openChannelToSlot`, `openTalkToSlot`
+  and `resolveSlotOwner`, with the slot handler and `sc` slot channel
+  commands in both peers.
+* **The reconnecting client** (`scenarios/reconnect.test.ts`) against a
+  server's GOAWAY and close, on all four transports.
+* **QUIC records** (`probe/quic.test.ts`): a raw QUIC and WebTransport
+  peer on the native provider, against both peers in both directions.
+* **The Dart driver**: 24 more tests, for what the TS cells do not see
+  from the Dart side.
+* **The close races of CI run 157**: the first was the peers reporting a
+  channel's end before its last subframes (fixed in both peers); the
+  second is a WebTransport session-gone race both implementations share,
+  which the scenarios accept as the binding page allows.
+
+Reported to the lead, not patched: both QUIC bindings can close the
+session before their GOAWAY record is acknowledged, which loses it. The
+probe's case for it is skipped in its four cells with that reason.
+
 ## Remaining
 
-1. Sharding beyond a static space and one hand-over: managed and lazy
-   spaces, refused hand-overs (RESUME, roll-back), and the MOVED retry of
-   slot-routed opens once the node routes by slot.
-2. The reconnecting client against a server's GOAWAY and close (scenario
-   23 of the notes) and the QUIC record-level cases (24): they need a raw
-   QUIC probe or more peer commands.
-3. A browser peer (the web entry in Chromium) as a third implementation of
-   the client half.
-4. More of the Dart repositories' two-peer tests in the Dart driver.
+1. Out of scope: a browser peer (the web entry in Chromium) as a third
+   implementation of the client half, listed under "Not started" in the
+   work split.
+2. Each needing a piece the harness does not have (a transport the test
+   can silence, a peer restarted on the same port, a raw WebSocket client,
+   window introspection on the TS side), listed in section D, "Coverage",
+   of `../notes/interop-dart-suites.md`: keep-alive against a silent peer
+   over TCP and WebSocket, LIMITS sent mid-connection, a naming-service
+   restart with re-claims by epoch, slot-request EXTEND deadlines,
+   `reassemblyBudget` back-pressure, the WebSocket handshake refusals, and
+   what the native QUIC provider cannot produce.
 
 Conventions:
 * The lead merges with real merge commits. Keep branch history granular,
