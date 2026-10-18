@@ -297,8 +297,8 @@ Two ways, in order of cost:
   porting the two-peer tests of the Dart suites listed in section 5 where
   the Dart side is in-process and fully observable. The existing Dart tests
   themselves cannot point at a TS process: they build both ends in memory
-  (`MemoryTransport.pair`, the memory binding and the in-memory provider) and many
-  use `fake_async`.
+  (`MemoryTransport.pair`, the in-process binding and the in-memory provider)
+  and many use `fake_async`.
 
 ## 5. The Dart test suites
 
@@ -322,7 +322,7 @@ By how the tests build their peers:
 * **Codec only** (no connection): `test/vectors/*`, `address`, `bytes`,
   `name`, `status`, `naming_protocol`, QUIC `vectors_test`. Directly
   reusable as data (section 6).
-* **In-memory pairs** (`MemoryTransport.pair`, `RawPeer`, the memory binding,
+* **In-memory pairs** (`MemoryTransport.pair`, `RawPeer`, the in-process binding,
   the in-memory QUIC provider): most of `mux_*`, `talk_*`, `identity_test`, the
   QUIC `binding_test` and its 27 review cases. These are the wire rules,
   and the scenarios worth porting run over real sockets instead.
