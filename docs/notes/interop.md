@@ -651,3 +651,154 @@ Differences found, none a failing cell:
   connection closed over QUIC reads as GOING_AWAY at the far side
   (CONNECTION_LOST over streams); instance ids are global across types, so
   a service registered with a naming service rarely keeps instance 1.
+
+## 12. Phase 4 status (sharding, the reconnecting client, QUIC records, the driver; branch `claude/interop-2-c9hpc0`)
+
+Landed on the branch, every cell green in required mode
+(`SWITCHBOARD_INTEROP=required`, `SWITCHBOARD_NATIVE=required`):
+4540 interop tests pass in about 3.5 minutes here, and 4 are skipped: the
+probe's GOAWAY-lost case in its four cells, with the reason (below). The
+Dart driver passes 59 tests. Nothing in `src/**` changed.
+
+* **Sharding (scenario 21)**, `scenarios/sharding.test.ts`, 23 tests in the
+  16 cells. The server peer serves the naming service; the client peer's
+  naming clients are the sharded instances and the router, registering the
+  server's endpoint, where a `raw` service takes every instance of the
+  routed types, so the test sees each channel a router opens there and
+  answers it. Covered: lazy LOCATE by spare capacity (both naming services
+  hand out the same owners as `sharding_test.dart` for capacities 1 and 3),
+  the holder before spare capacity, capacity 0, eager allocation in
+  proportion, a refused ASSIGN failing LOCATE with UNAVAILABLE and its
+  reason; the hand-over seen from both instances and a router (requests
+  with their epochs and holders, the mirrors going through `migrating`),
+  ASSIGN or DRAIN refused (rolled back, RESUME, epoch unchanged), the old
+  or the new owner going down mid-hand-over, one hand-over per space with
+  the others queued, the MIGRATE refusals; `resolveSlotOwner`, a free slot
+  (UNAVAILABLE static, located managed, OUT_OF_RANGE, NOT_FOUND), and the
+  MOVED retry of `openChannelToSlot` and `openTalkToSlot`: once, at the
+  owner it names, the open payload again; the router asking when it names
+  none; a newer table entry winning; surfaced when there is nowhere else
+  to go, after a second MOVED, after the first subframe either way; never
+  on RELOCATED. Peer commands (README, "Mesh"): `naming.slotAnswers` and
+  `naming.slotRelease` (holding, notHolding, ok, wait, or a refusal),
+  `naming.phase` and `naming.table` events, `naming.declareHolding`,
+  `naming.slotOwner`, `naming.slotChannel`, `naming.slotTalk` and the
+  `slot.*` commands on the new `sc` handles; the naming service's hand-over,
+  backoff and settle options in the configuration.
+* **The reconnecting client (scenario 23)**, `scenarios/reconnect.test.ts`,
+  14 tests in the 16 cells (all four transports, not only the ws and
+  webtransport of the table): each peer's own `ReconnectingClient`
+  (transport connector over tcp and ws, the QUIC binding connector over
+  quic and https) against the server's close and GOAWAY, the planned
+  restart at once and the backoff when it comes again within maxBackoff,
+  persistent raw and Talk channels reopened with their subscription, opens
+  waiting for a connection, stop, start, close and a forced reconnect
+  (application channels finish on the old connection, which then closes
+  GOING_AWAY), terminal against retryable persistent close statuses, pushed
+  channels, the default payload, bulk payloads both ways. The backoff runs
+  without jitter, so states and retry delays are compared exactly, never
+  timings. Commands: `reconnect.*`, `persistent.close`, and `accepted.goAway`
+  and `accepted.close` on the server, whose handles the client's connection
+  otherwise never gets (the client does not identify).
+* **QUIC records (scenario 24)**, `probe/quic.test.ts` with `probe/quic.ts`:
+  a raw probe, not peer commands. The peers' commands drive each
+  implementation's public API, which only ever writes valid records, in its
+  own order and at its own time: nothing there sends a malformed or early
+  record, a FIN inside a record, a reset with a chosen code, STOP_SENDING
+  or a HELLO with chosen fields, and nothing shows the bytes and stream
+  signals that come back. The probe goes through the native provider
+  directly (`connect` and `connectWebTransport` with the peer's certificate
+  pinned, `listen` and `listenWebTransport` so that the peers dial it),
+  builds and reads every record itself, independently of `src/core/quic`,
+  and runs every case against both peers over raw QUIC and WebTransport,
+  in both directions: the HELLOs (a listener states 32752, 127 channels and
+  EXPORTER, a dialler 32752, 65536 and EXPORTER), the wiki's record,
+  control-stream and `_bulk` vectors, the negative vectors and the
+  state-dependent protocol errors, FRAME_TOO_LARGE, rejections (CLOSE and
+  STOP_SENDING with the status), reset codes both ways (above 255 UNKNOWN),
+  the confirmation timeout, GOAWAY both ways, application closes read as a
+  GOAWAY with their status, WT_DRAIN_SESSION both ways (with the peers'
+  `connection.drain`), `maxChannels`, keep-alive. Close codes are compared
+  through the `quicCode` oracle. Not covered, because the provider cannot
+  produce them: a unidirectional stream, datagrams, codeless resets on the
+  control stream, opens beyond the peer's stream credit.
+* **The Dart driver**: 24 tests more, 59 in six files, for what the TS
+  cells do not see from the Dart side (`interop-dart-suites.md`, section D,
+  "Coverage"): a paused Dart reader's windows and the LIMITS it read, the
+  Dart ReconnectingClient on a TS server's GOAWAY and close, the Dart QUIC
+  binding against TS listeners (their HELLO equal to a Dart listener's, the
+  GOAWAY code and reason in the session end, 64 parallel channels three
+  times over, WT_DRAIN_SESSION), a Dart Talk service under a TS requester,
+  Dart slot handlers refusing against the TS naming service.
+* **The close races of CI run 157**:
+  1. *Subframes sent before the CLOSE arriving after it* (Dart client, TS
+     server, TCP): test-side. The peers reported `channel.closed` from
+     `done`, which settles while subframes that arrived before the CLOSE
+     still wait in the channel's pull-based stream, so the event could
+     overtake the last `channel.data`. Both peers now report the end only
+     once the channel's stream has ended (`trackChannel`). Not reproduced
+     in more than 4000 local attempts; CI run 165 hit it again on `main`
+     before the lead took the fix there.
+  2. *The connection-close scenario over WebTransport*: implementation-side
+     and shared by both implementations, reproduced Dart to Dart (2 to 8 %
+     of runs for the channel, about 1 % for the connection). The far side's
+     channels can end UNKNOWN "no application error code" when the
+     session's WT_SESSION_GONE reset is read before the session's close
+     (the binding page allows it: such a reset "reads as UNKNOWN, unless
+     the connection is ending"), and the far end can see the dialler's
+     provider shut its QUIC context down (H3_NO_ERROR "shutdown") when the
+     closing connection was its last session, before the session's close.
+     The scenario accepts exactly those outcomes over WebTransport, and
+     `expectEndedWith` (scenarios/support.ts) does the same where a channel
+     is open when the far side ends a WebTransport session (reconnect, the
+     probe). Raw QUIC always gives GOING_AWAY. Reported to the lead.
+
+Differences and reference behaviour found, none a failing cell:
+
+* **GOAWAY record lost (both implementations).** With no channel open,
+  `goAway()` leads straight to the application close, and the shutdown
+  waits only for the stream directions the binding finished, not the
+  control stream, so the GOAWAY record can be lost with the session,
+  against the binding page's rule that a side closes only once the data it
+  wrote on every stream is acknowledged (Dart
+  `quic_binding_connection.dart` around 1194 to 1360, TS
+  `quic-binding-connection.ts` around 1471 to 1640). Lost in 7 of 16
+  targeted Dart runs and 1 of 8 TS runs. The probe's case is kept and
+  skipped in its four cells with the reason; reported to the lead. A fix
+  could wait for a PONG after the GOAWAY, or a bounded time, before the
+  close.
+* **The session-gone reset is read before the session's close more often
+  by the TS peer** (3 of 8 probe runs over WebTransport, none seen with the
+  Dart peer as the probe's server, though Dart readers show it in the close
+  and reconnect scenarios). Both bindings check whether the connection is
+  ending when the codeless reset arrives (TS `QuicBindingChannel`'s reset
+  handling reads `closing`, set once `session.done` settles); the TS
+  provider may settle the reset first more often. Accepted as above.
+* A server closing the connection reads as CONNECTION_LOST over TCP and
+  WebSocket, so a reconnecting client backs off; over raw QUIC and
+  WebTransport it is an application close read as GOAWAY GOING_AWAY, so
+  the client restarts at once. `stop()` and `close()` send GOAWAY
+  GOING_AWAY; after `close()` a persistent channel's `done` is GOING_AWAY
+  and opens fail FAILED_PRECONDITION.
+* Over QUIC a GOAWAY on the control stream can overtake a reply still on
+  its channel's stream, so a scenario does not trigger a GOAWAY with a
+  request on the channel whose reply it waits for; and the listener adopts
+  a connection only after the HELLO exchange, so a request on it makes sure
+  the server knows it before acting on it.
+* Both peers send STOP_SENDING with the status on a failure close and
+  never on an OK close; both close an unanswered keep-alive with
+  DEADLINE_EXCEEDED; a close after a GOAWAY other than GOING_AWAY carries
+  the GOAWAY's status, code 0 otherwise. A stack may acknowledge data and
+  lose it unread when the session ends, so a receiver keeps reading up to
+  the close.
+* A LOCATE refused by every candidate fails after the naming service's
+  `handoverTimeout`, with the instance's reason; the scenarios run the
+  service with 2 s.
+
+Out of scope, and not started here: the browser peer (the web entry in
+Chromium as a third implementation of the client half), listed under "Not
+started" in the work split. Still open in the driver's terms (section D,
+"Coverage", of `interop-dart-suites.md`): keep-alive against a silenced
+transport, LIMITS sent mid-connection, a naming-service restart with
+re-claims by epoch (it needs a TS peer restarted on the same port),
+slot-request EXTEND deadlines, `reassemblyBudget` back-pressure.

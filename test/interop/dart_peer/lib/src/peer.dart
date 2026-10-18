@@ -93,6 +93,10 @@ class _Peer {
   late final Map<String, Object?> _ready;
   bool _stopping = false;
 
+  /// The connections the listeners accepted that have not ended, in the
+  /// order accepted.
+  final Set<MuxConnection> _accepted = Set.identity();
+
   Future<void> run() async {
     final timer = Timer(watchdog, () {
       stderr.writeln('dart_peer: watchdog after $watchdog, exiting');
@@ -123,6 +127,10 @@ class _Peer {
     // identifyInReturn the node identifies in return on those whose peer
     // asked (the QUIC listener does so itself).
     node.connections.listen((c) {
+      if (!c.isInitiator) {
+        _accepted.add(c);
+        unawaited(c.done.then((_) => _accepted.remove(c)));
+      }
       unawaited(c.peerIdentified.then((_) => ctx.trackConnection(c, node)));
       if (id.identifyInReturn &&
           identity.credential != null &&
@@ -260,12 +268,34 @@ class _Peer {
           requiredString(cmd, 'kind'),
           objectArg(cmd, 'fields') ?? const {},
         );
+      case 'accepted.goAway':
+        final status = statusArg(cmd, code: StatusCode.goingAway.code);
+        return {'connections': _eachAccepted((c) => c.goAway(status))};
+      case 'accepted.close':
+        return {'connections': _eachAccepted((c) => c.close())};
       default:
         if (Client.answers(op)) {
           return client.command(op, cmd);
         }
         throw ArgumentError('unknown op $op');
     }
+  }
+
+  /// Runs [action] on every open connection the listeners accepted,
+  /// without waiting for it, and answers their handles: each is tracked
+  /// from then on, its GOAWAY and its end reported, whether or not its peer
+  /// identified.
+  List<String> _eachAccepted(Future<void> Function(MuxConnection c) action) {
+    final handles = <String>[];
+    for (final c in List.of(_accepted)) {
+      if (c.isOpen) {
+        handles.add(ctx.trackConnection(c, node));
+        // Throws at once for a status a GOAWAY cannot carry; completes once
+        // the connection ended.
+        action(c).ignore();
+      }
+    }
+    return handles;
   }
 
   static Map<String, Object?> _attempt(Map<String, Object?> Function() f) {
