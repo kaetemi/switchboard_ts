@@ -62,9 +62,9 @@ Information for the lead and the other threads, not instructions.
   when a replacement takes over, as Dart calls `BulkRoutes.follow`. Its
   held bytes default to `defaultMuxOptions.initialWindow` (64 KiB) as in
   Dart.
-- `TestClock` (`test/support/naming/test-clock.ts`) ports fake_async
-  (`await clock.elapse(ms)`); the node thread's `SteppingClock` is similar,
-  one could absorb the other later.
+- `TestClock` (`test/support/naming/test-clock.ts`) ported fake_async
+  (`await clock.elapse(ms)`); with the node thread's `SteppingClock` it was
+  folded into `ManualClock.elapseAsync` in the third round.
 - `NamingClient.renew()` is not implemented yet: it needs a core
   `Credential.decode`.
 - `NamingCredentialIssuer` is the service's hook for CONNECT credentials.

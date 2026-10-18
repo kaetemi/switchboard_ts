@@ -12,11 +12,11 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // by their bytes, unless expired. Real signatures cannot be used here: the
 // Dart test runs on fake_async with Dart's own Ed25519, while WebCrypto
 // signs and verifies on a thread pool, whose answers arrive after an
-// unknown number of event-loop turns, out of reach of the `TestClock` the
+// unknown number of event-loop turns, out of reach of the `ManualClock` the
 // tests step time with. (The RENEW case on real time uses the real issuer
 // and verifier.) The connection identity stands for the node's: the naming
 // tests run without nodes. Issuers, verifiers and connections read the
-// wall time they are given, so that a test on a `TestClock` passes
+// wall time they are given, so that a test on a `ManualClock` passes
 // `() => clock.now()` to all of them and to the naming service's
 // `wallTime`.
 

@@ -52,6 +52,7 @@ import {
 } from '../../../src/core/talk/contract.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   Connector,
@@ -79,7 +80,6 @@ import {
   SwitchableConnector,
   zone,
 } from '../../support/naming/sharding-harness.ts';
-import { TestClock } from '../../support/naming/test-clock.ts';
 import { frameLink } from '../../support/talk/frame-link.ts';
 
 // SlotEntry, SlotSpace and LocateResponse compare by value, as in Dart.
@@ -613,7 +613,7 @@ test('close while a slot is locked resumes it', async () => {
 });
 
 test('a handler running longer than slotHandlerMaxDuration is answered DEADLINE_EXCEEDED', async () => {
-  const clock = new TestClock();
+  const clock = new ManualClock();
   const h = new Harness({ clock, handoverTimeout: 5000 });
   const log: string[] = [];
   const client = async (id: number, handler: RecordingHandler): Promise<NamingClient> => {
@@ -625,9 +625,9 @@ test('a handler running longer than slotHandlerMaxDuration is answered DEADLINE_
     c.slotHandler = handler;
     void c.start();
     void c.register(zone, [], { instance: id });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void c.defineSlots(zone, { count: 4, mode: SlotMode.static, capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     return c;
   };
 
@@ -647,20 +647,20 @@ test('a handler running longer than slotHandlerMaxDuration is answered DEADLINE_
       claimed = e;
     },
   );
-  await clock.elapse(990);
+  await clock.elapseAsync(990);
   expect(claimed).toBeUndefined();
-  await clock.elapse(ms50);
+  await clock.elapseAsync(ms50);
   expectStatus(claimed, StatusCode.unavailable);
   expect((claimed as SwitchboardError).status.reason).toContain('deadlineExceeded');
   // Its late outcome is not served.
   loading.resolve(AssignResult.holding);
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   expect(handlerA.revoked).toEqual(['zone/1']);
   expect(a.servedSlots(zone)).toEqual(new Map());
   // A DRAIN that never completes: the migration is rolled back.
   handlerA.assign = async () => AssignResult.holding;
   void a.claim(zone, 2);
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   handlerA.drain = () => new Deferred<void>().promise;
   log.length = 0;
   let migrated: unknown;
@@ -674,7 +674,7 @@ test('a handler running longer than slotHandlerMaxDuration is answered DEADLINE_
       migrated = e;
     }
   })();
-  await clock.elapse(1100);
+  await clock.elapseAsync(1100);
   expect(log).toEqual(['A DRAIN 2 e2 to2', 'A RESUME 2 e1']);
   expectStatus(migrated, StatusCode.unavailable);
   expect(h.service.slotTable(zone)?.get(2).owner).toBe(1);
@@ -682,7 +682,7 @@ test('a handler running longer than slotHandlerMaxDuration is answered DEADLINE_
   void b.close();
   void h.close();
   await pump();
-  await clock.elapse(ms50 * 2);
+  await clock.elapseAsync(ms50 * 2);
   expect(clock.pendingCount).toBe(0);
 });
 
@@ -699,7 +699,7 @@ test('rejects a negative slotHandlerMaxDuration', () => {
 });
 
 test('close leaves no timers while a handler runs', async () => {
-  const clock = new TestClock();
+  const clock = new ManualClock();
   const h = new Harness({ clock });
   const log: string[] = [];
   const client = new NamingClient(new Connector(h).call, { reconnectDelay, clock });
@@ -708,16 +708,16 @@ test('close leaves no timers while a handler runs', async () => {
   client.slotHandler = handler;
   void client.start();
   void client.register(zone, [], { instance: 1 });
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   void client.defineSlots(zone, { count: 2, mode: SlotMode.static, capacity: 0 });
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   client.claim(zone, 0).catch(() => {});
-  await clock.elapse(1000);
+  await clock.elapseAsync(1000);
   expect(log).toEqual(['A ASSIGN 0 e1 h0']);
   void client.close();
   void h.close();
   await pump();
-  await clock.elapse(ms50 * 2);
+  await clock.elapseAsync(ms50 * 2);
   expect(clock.pendingCount).toBe(0);
 });
 
@@ -751,30 +751,30 @@ test('declareHolding of a type this client does not register is sent at once and
 });
 
 describe("the channel's request limit", () => {
-  async function closeWithoutTimers(clock: TestClock, client: NamingClient): Promise<void> {
+  async function closeWithoutTimers(clock: ManualClock, client: NamingClient): Promise<void> {
     void client.close();
     await pump();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(clock.pendingCount).toBe(0);
   }
 
   test("a router's SLOTS refused for it is sent once it allows", async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     // The WATCH holds the only request the channel takes.
     const naming = new ScriptedNaming({ maxOutgoingRequests: 1, clock });
     const client = new NamingClient(naming.connect, { reconnectDelay, clock });
     void client.start();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(naming.log).toEqual(['WATCH']);
     let defined = false;
     void client.defineSlots(room, { count: 4, mode: SlotMode.static, capacity: 0 }).then(() => {
       defined = true;
     });
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(naming.log).toEqual(['WATCH']);
     expect(defined).toBe(false);
     naming.watch.resolve();
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     // Sent by itself, once, on the same channel.
     expect(naming.log).toEqual(['WATCH', 'SLOTS room']);
     expect(defined).toBe(true);
@@ -784,19 +784,19 @@ describe("the channel's request limit", () => {
   });
 
   test('the slot state is restored in order, what was refused sent later and only once', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const naming = new ScriptedNaming({ maxOutgoingRequests: 2, clock });
     const client = new NamingClient(naming.connect, { reconnectDelay, clock });
     client.slotHandler = new RecordingHandler('A', log);
     void client.start();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // Served before the registration, as after a naming service restart.
     for (const slot of [0, 1, 2]) {
       naming.server
         .request('ASSIGN', new AssignRequest(zone, slot, { epoch: 4 }).encode())
         .catch(() => {});
     }
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(client.servedSlots(zone)).toEqual(
       new Map([
         [0, 4],
@@ -814,7 +814,7 @@ describe("the channel's request limit", () => {
     void client.declareHolding(zone, [3]).then((d) => {
       discard = d;
     });
-    await clock.elapse(200);
+    await clock.elapseAsync(200);
     expect(naming.log).toEqual([
       'WATCH',
       'REGISTER zone/1',
@@ -835,14 +835,14 @@ describe("the channel's request limit", () => {
     );
     expect(log.filter((l) => l.includes('REVOKE'))).toEqual([]);
     naming.watch.resolve();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(client.isSynced).toBe(true);
     expect(naming.connects).toBe(1);
     await closeWithoutTimers(clock, client);
   });
 
   test('a WATCH refused for it waits instead of dropping the channel', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const connector = new Connector(h, { options: limited(1) });
     const client = new NamingClient(connector.call, { reconnectDelay, clock });
@@ -852,7 +852,7 @@ describe("the channel's request limit", () => {
       defined = true;
     });
     void client.start();
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(defined).toBe(true);
     expect(client.isSynced).toBe(true);
     expect(client.slotTable(room)?.count).toBe(4);
@@ -863,7 +863,7 @@ describe("the channel's request limit", () => {
   });
 
   test('claims, releases and locates beyond it wait for their turn', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const client = new NamingClient(new Connector(h, { options: limited(4) }).call, {
       reconnectDelay,
@@ -872,22 +872,22 @@ describe("the channel's request limit", () => {
     client.slotHandler = new RecordingHandler('A', log);
     void client.start();
     void client.register(zone, [], { instance: 1 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void client.defineSlots(zone, { count: 16, mode: SlotMode.static, capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const slots = Array.from({ length: 16 }, (_, slot) => slot);
     let epochs: number[] | undefined;
     void Promise.all(slots.map((slot) => client.claim(zone, slot))).then((e) => {
       epochs = e;
     });
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(epochs).toEqual(Array(16).fill(1));
     expect(client.servedSlots(zone).size).toBe(16);
     let located: LocateResponse[] | undefined;
     void Promise.all(slots.map((slot) => client.locate(zone, slot))).then((l) => {
       located = l;
     });
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(located).toEqual(Array(16).fill(new LocateResponse(SlotState.owned, 1, 1)));
     let released = false;
     void Promise.all(slots.map((slot) => client.release(zone, slot, { keepStorage: true }))).then(
@@ -895,7 +895,7 @@ describe("the channel's request limit", () => {
         released = true;
       },
     );
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(released).toBe(true);
     expect(h.service.slotTable(zone)?.owners).toEqual(new Set());
     await closeWithoutTimers(clock, client);
@@ -904,12 +904,12 @@ describe("the channel's request limit", () => {
   });
 
   test('calls waiting for it fail with UNAVAILABLE when the channel is lost', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const naming = new ScriptedNaming({ maxOutgoingRequests: 2, clock });
     naming.answerClaims = false;
     const client = new NamingClient(naming.connect, { reconnectDelay: 10_000, clock });
     void client.start();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // One in flight beside the WATCH, two waiting.
     const outcomes = new Map<number, unknown>();
     for (const slot of [0, 1, 2]) {
@@ -922,11 +922,11 @@ describe("the channel's request limit", () => {
         },
       );
     }
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(naming.log).toEqual(['WATCH', 'CLAIM zone/0 e0']);
     expect(outcomes.size).toBe(0);
     void naming.server.close();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // The one in flight with the channel's end, the others with
     // UNAVAILABLE, never sent.
     expect(outcomes.size).toBe(3);
@@ -948,7 +948,7 @@ describe('declared deadlines, no heartbeat', () => {
    * is [handler].
    */
   async function start(
-    clock: TestClock,
+    clock: ManualClock,
     h: Harness,
     id: number,
     handler: SlotHandler | undefined,
@@ -974,24 +974,24 @@ describe('declared deadlines, no heartbeat', () => {
     c.slotHandler = handler ?? options.handlerFor?.(c);
     void c.start();
     void c.register(zone, [], { instance: id });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void c.defineSlots(zone, { count: 4, mode: SlotMode.static, capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     return c;
   }
 
-  async function finish(clock: TestClock, h: Harness, clients: NamingClient[]): Promise<void> {
+  async function finish(clock: ManualClock, h: Harness, clients: NamingClient[]): Promise<void> {
     for (const c of clients) {
       void c.close();
     }
     void h.close();
     await pump();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(clock.pendingCount).toBe(0);
   }
 
   test('a load that declares 5 min outlasts a 60 s handover timeout with one EXTEND', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const loading = new Deferred<AssignResult>();
     let seen: SlotRequestContext | undefined;
@@ -1019,17 +1019,17 @@ describe('declared deadlines, no heartbeat', () => {
         error = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const context = seen as SlotRequestContext;
     expect(context).toBeDefined();
     expect([context.type.toString(), context.slot, context.epoch]).toEqual(['zone', 2, 1]);
-    await clock.elapse(4 * 60_000);
+    await clock.elapseAsync(4 * 60_000);
     expect(error).toBeUndefined();
     expect(epoch).toBeUndefined();
     expect(context.isCancelled).toBe(false);
     expect(gate?.stateOf(2)).toBe(SlotGateState.loading);
     loading.resolve(AssignResult.holding);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(epoch).toBe(1);
     expect(gate?.serves(2)).toBe(true);
     // Exactly one EXTEND, the estimate plus the client's buffer.
@@ -1042,7 +1042,7 @@ describe('declared deadlines, no heartbeat', () => {
   });
 
   test('a load that declares nothing and runs past the handover timeout is cancelled, and sends nothing', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const handler = new RecordingHandler('A', log);
@@ -1057,31 +1057,31 @@ describe('declared deadlines, no heartbeat', () => {
         error = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const context = handler.contexts.get('ASSIGN 2') as SlotRequestContext;
     let cancelled = false;
     void context.onCancel.then(() => {
       cancelled = true;
     });
-    await clock.elapse(handover - ms50);
+    await clock.elapseAsync(handover - ms50);
     expect(error).toBeUndefined();
     expect(cancelled).toBe(false);
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(cancelled).toBe(true);
     expect(context.isCancelled).toBe(true);
     expectStatus(error, StatusCode.unavailable);
     // Extending what can no longer be answered does nothing.
     context.extend({ deadline: 60_000 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(extends_).toEqual([]);
     loading.resolve(AssignResult.holding);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(handler.revoked).toEqual(['zone/2']);
     await finish(clock, h, [c]);
   });
 
   test("the handler deadline is the instance's own: it gives up first, and the estimate is lowered to slotHandlerMaxDuration", async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const handler = new RecordingHandler('A', log);
@@ -1098,13 +1098,13 @@ describe('declared deadlines, no heartbeat', () => {
         error = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(extends_.map(extension)).toEqual([
       { deadline: 120_000 + clientBuffer, renew: undefined },
     ]);
-    await clock.elapse(120_000 - ms50);
+    await clock.elapseAsync(120_000 - ms50);
     expect(error).toBeUndefined();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expectStatus(error, StatusCode.unavailable);
     expect((error as SwitchboardError).status.reason).toContain('deadlineExceeded');
     await finish(clock, h, [c]);
@@ -1112,7 +1112,7 @@ describe('declared deadlines, no heartbeat', () => {
 
   test('a DRAIN whose wait for work in flight times out drains anyway, and the migration completes', async () => {
     const drainTimeout = 30_000;
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const sbA = new Switchboard();
     const sbB = new Switchboard();
@@ -1139,7 +1139,7 @@ describe('declared deadlines, no heartbeat', () => {
     });
     const owner = gateA as SlotGate;
     void a.claim(zone, 2).catch(() => {});
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(owner.serves(2)).toBe(true);
     // A request for the slot that outlives drainTimeout.
     const untimed: Partial<TalkOptions> = { requestTimeout: 0, replyTimeout: 0, clock };
@@ -1149,7 +1149,7 @@ describe('declared deadlines, no heartbeat', () => {
     const held = new Deferred<void>();
     void callee.serve((m) => owner.serveRequest(m, 2, () => held.promise));
     caller.request('GET').catch(() => {});
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const [operator] = h.link();
     const phases: string[] = [];
     const migrate = operator.streamRequest(
@@ -1174,13 +1174,13 @@ describe('declared deadlines, no heartbeat', () => {
         outcome = e;
       },
     );
-    await clock.elapse(drainTimeout - ms50);
+    await clock.elapseAsync(drainTimeout - ms50);
     expect(phases).toEqual(['draining']);
     expect(lifeA.drained).toEqual([]);
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     // Drained anyway, on a DRAIN that is still current.
     expect(lifeA.drained).toEqual(['drain 2 e2 to2 cancelled false']);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(outcome).toBe('done');
     expect(phases).toEqual(['draining', 'assigning', 'forwarding', 'done']);
     expect(h.service.slotTable(zone)?.get(2).owner).toBe(2);
@@ -1202,7 +1202,7 @@ describe('declared deadlines, no heartbeat', () => {
   });
 
   test('MIGRATE passes the deadline the old owner declares on DRAIN on to the requester', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const handlerA = new RecordingHandler('A', log);
@@ -1216,7 +1216,7 @@ describe('declared deadlines, no heartbeat', () => {
     const a = await start(clock, h, 1, handlerA, extendsA);
     const b = await start(clock, h, 2, handlerB, []);
     void a.claim(zone, 2);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // The operator, on a raw channel.
     const [operator] = h.link();
     const declared: [number | undefined, number | undefined][] = [];
@@ -1244,7 +1244,7 @@ describe('declared deadlines, no heartbeat', () => {
         outcome = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const buffer = talkOptions(serverOptions).extendBuffer;
     expect(phases).toEqual(['draining']);
     expect(declared).toEqual([
@@ -1255,10 +1255,10 @@ describe('declared deadlines, no heartbeat', () => {
     ]);
     // Far past the operator's own request timeout, and the handover
     // timeout.
-    await clock.elapse(120_000);
+    await clock.elapseAsync(120_000);
     expect(outcome).toBeUndefined();
     draining.resolve();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(outcome).toBe('done');
     expect(phases).toEqual(['draining', 'assigning', 'forwarding', 'done']);
     // Each later step declared the handover timeout.

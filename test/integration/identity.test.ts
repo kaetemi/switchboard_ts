@@ -30,7 +30,7 @@ import { afterAll, describe, expect, onTestFinished, test } from 'vitest';
 import { ChannelAddress } from '../../src/core/address/index.ts';
 import { bytesEqual, utf8Decode, utf8Encode } from '../../src/core/bytes.ts';
 import { CredentialKind, Right } from '../../src/core/identity/contract.ts';
-import { Credential } from '../../src/core/identity/credential.ts';
+import type { Credential } from '../../src/core/identity/credential.ts';
 import { CredentialIssuer } from '../../src/core/identity/credential-issuer.ts';
 import { CredentialVerifier } from '../../src/core/identity/credential-verifier.ts';
 import { Ed25519HolderKey } from '../../src/core/identity/holder-key.ts';
@@ -52,6 +52,7 @@ import {
 } from '../../src/node/index.ts';
 import {
   authoritySeed,
+  forged,
   hmacAuthority,
   issueCredential,
   rogue,
@@ -108,13 +109,6 @@ function gateCredential(): Promise<Credential> {
 /** `npc-8`, a bearer credential of the mesh's HMAC issuer, which may open `npc`. */
 function bearerCredential(): Promise<Credential> {
   return issueCredential({ identity: 'npc-8', scopes: [[Right.open, 'npc']], by: hmacAuthority });
-}
-
-/** [credential] with the last byte of its signature flipped: an IDENT nobody can verify. */
-function forged(credential: Credential): Credential {
-  const bytes = credential.encode();
-  bytes[bytes.length - 1] = (bytes[bytes.length - 1] as number) ^ 0x01;
-  return Credential.decode(bytes);
 }
 
 interface NodeOptions extends SwitchboardOptions {
