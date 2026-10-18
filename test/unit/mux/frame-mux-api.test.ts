@@ -196,6 +196,31 @@ describe('the writable of a channel', () => {
     await mux.close();
   });
 
+  test('writer.close() follows the writes before it; channel.close() does not', async () => {
+    const [mux, raw] = rawPair();
+    const channel = mux.open(empty);
+    expect(await raw.nextHex()).toBe('12 02 00');
+    const writer = channel.writable.getWriter();
+    void writer.write(hexBytes('01'));
+    void writer.write(hexBytes('02'));
+    const closing = writer.close();
+    expect(await raw.nextHex()).toBe('02 02 00 01');
+    expect(await raw.nextHex()).toBe('02 02 00 02');
+    expect(await raw.nextHex()).toBe('22 02 00');
+    raw.send('22 02 00');
+    await closing;
+    // A write reaches the channel a microtask or more after it is queued
+    // (design section 12, item 18): a close() of the channel in the same
+    // turn goes first, and the write fails.
+    const other = mux.open(empty);
+    expect(await raw.nextHex()).toBe('12 04 00');
+    const late = other.writable.getWriter().write(hexBytes('03'));
+    void other.close();
+    await expectRejectsStatus(late, StatusCode.failedPrecondition);
+    expect(await raw.nextHex()).toBe('22 04 00');
+    await mux.close();
+  });
+
   test('abort closes with the reason as a status', async () => {
     const [mux, raw] = rawPair();
     const reasons: [unknown, Status][] = [

@@ -68,7 +68,7 @@ await writer.close();
 | `isWritable`, `whenWritable` | room for the largest subframe, and the promise of it |
 | `receiveWindow`, `bufferedBytes` | what the peer may still send, and what arrived and was not read |
 
-A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` and errors `writable`. Every promise the library hands out is pre-caught, so dropping one never produces an unhandled rejection.
+Close what you wrote through `writable` with `writer.close()`, which follows the writes before it: a write reaches the channel a microtask or more after `writer.write()` returns, so a `channel.close()` in the same turn goes first. A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` and errors `writable`. Every promise the library hands out is pre-caught, so dropping one never produces an unhandled rejection.
 
 ### Connection options
 
