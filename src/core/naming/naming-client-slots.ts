@@ -219,6 +219,10 @@ export interface ClientCall {
   readonly procedure: Name;
   readonly payload: Uint8Array;
   readonly response: Deferred<TalkMessage>;
+  /** The caller's signal: an abort takes the call out of the queue, and cancels it once sent when {@link cancelsSent}. */
+  readonly signal: AbortSignal | undefined;
+  /** Whether an abort cancels the request once sent; otherwise it runs to its answer. */
+  readonly cancelsSent: boolean;
 }
 
 /** The remembered `HOLDING` declarations of one type. */
@@ -904,10 +908,37 @@ export class ClientSlots {
    * once one of these requests completes, or after `reconnectDelay` when none
    * is in flight (other requests hold the limit). Waiting requests reject
    * with `UNAVAILABLE` when the channel is lost.
+   *
+   * Aborting [signal] rejects the call with its reason: a call still waiting
+   * leaves the queue unsent, and one sent is cancelled (Talk cancels the
+   * request) unless [cancelsSent] is false, when it runs to its answer and
+   * the abort has no effect.
    */
-  call(session: ClientSession, procedure: Name, payload: Uint8Array): Promise<TalkMessage> {
-    const call: ClientCall = { procedure, payload, response: new Deferred() };
+  call(
+    session: ClientSession,
+    procedure: Name,
+    payload: Uint8Array,
+    signal?: AbortSignal,
+    cancelsSent = true,
+  ): Promise<TalkMessage> {
+    const call: ClientCall = { procedure, payload, response: new Deferred(), signal, cancelsSent };
     session.calls.push(call);
+    if (signal !== undefined) {
+      // Added before Talk's own listener (the request is started below), so
+      // that the call rejects with the reason rather than Talk's CANCELLED.
+      const onAbort = (): void => {
+        const queued = session.calls.indexOf(call);
+        if (queued >= 0) {
+          session.calls.splice(queued, 1);
+        } else if (!cancelsSent) {
+          return;
+        }
+        call.response.reject(signal.reason);
+      };
+      signal.addEventListener('abort', onAbort, { once: true });
+      const remove = (): void => signal.removeEventListener('abort', onAbort);
+      call.response.promise.then(remove, remove);
+    }
     this.#pumpCalls(session);
     return call.response.promise;
   }
@@ -919,6 +950,7 @@ export class ClientSlots {
       try {
         response = session.channel.startRequest(call.procedure.toString(), call.payload, {
           name: call.procedure,
+          ...(call.cancelsSent && call.signal !== undefined && { signal: call.signal }),
         }).response;
       } catch (error) {
         if (
@@ -965,7 +997,12 @@ export class ClientSlots {
     return session;
   }
 
-  async claim(type: Name, slot: number, holding: boolean): Promise<number> {
+  async claim(
+    type: Name,
+    slot: number,
+    holding: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<number> {
     const session = this.usableSession();
     const response = await this.call(
       session,
@@ -974,6 +1011,7 @@ export class ClientSlots {
         holding,
         epoch: this.served.get(type.key)?.get(slot)?.epoch ?? 0,
       }).encode(),
+      signal,
     );
     const epoch = ClaimResponse.decode(response.payload).epoch;
     const served = this.served.get(type.key)?.get(slot);
@@ -981,12 +1019,21 @@ export class ClientSlots {
     return epoch;
   }
 
-  async release(type: Name, slot: number, keepStorage: boolean): Promise<void> {
+  async release(
+    type: Name,
+    slot: number,
+    keepStorage: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const session = this.usableSession();
+    // Once sent, a RELEASE runs to its answer: cancelled, the slot could be
+    // free at the naming service and still served here.
     await this.call(
       session,
       Procedures.release,
       new ReleaseRequest(type, slot, { keepStorage }).encode(),
+      signal,
+      false,
     );
     this.served.get(type.key)?.delete(slot);
     this.draining.delete(slotKey(type, slot));
@@ -1002,12 +1049,13 @@ export class ClientSlots {
     }
   }
 
-  async locate(type: Name, slot: number): Promise<LocateResponse> {
+  async locate(type: Name, slot: number, signal: AbortSignal | undefined): Promise<LocateResponse> {
     const session = this.usableSession();
     const response = await this.call(
       session,
       Procedures.locate,
       new LocateRequest(type, slot).encode(),
+      signal,
     );
     return LocateResponse.decode(response.payload);
   }

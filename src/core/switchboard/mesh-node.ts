@@ -28,7 +28,7 @@ import { ChannelPolicies } from './channel-policy.ts';
 import type { ChannelHandler, ChannelPolicy } from './contract.ts';
 import type { RelayService } from './relay.ts';
 import type { Switchboard } from './switchboard.ts';
-import { bounded, goAwayQuietly } from './waits.ts';
+import { bounded, checkAborted, goAwayQuietly } from './waits.ts';
 
 const logName = 'Switchboard.Naming';
 
@@ -161,6 +161,14 @@ export interface MeshPublishOptions {
    * that listens nowhere and is reached through `CONNECT` or a relay.
    */
   readonly endpoints?: readonly string[] | undefined;
+  /**
+   * Withdraws the registration while it has not been answered
+   * (`NamingClient.register`), and rejects with the signal's reason. For
+   * {@link MeshNode.publishSharded} it also stops the waits for `SLOTS`
+   * and `HOLDING`, after which the type is unregistered again and the gate
+   * closed, as on any failure.
+   */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /**
@@ -515,6 +523,7 @@ export class MeshNode implements AsyncDisposable {
     return this.client.register(type, options.endpoints ?? this.switchboard.listeningEndpoints, {
       instance: options.instance ?? 0,
       ...(metadata !== undefined && { metadata }),
+      signal: options.signal,
       onAssigned: (id) => {
         if (this.#leaving) {
           return;
@@ -583,6 +592,7 @@ export class MeshNode implements AsyncDisposable {
         'the naming client has another slot handler',
       );
     }
+    checkAborted(options.signal);
     this.client.slotHandler = this.gates;
     const gate = new SlotGate(this.switchboard, this.client, name, {
       lifecycle,
@@ -617,8 +627,12 @@ export class MeshNode implements AsyncDisposable {
         lazy: space.lazy,
         shared: space.shared,
         capacity: options.capacity ?? 1,
+        signal: options.signal,
       });
-      const declared = held.length > 0 ? this.client.declareHolding(name, held) : undefined;
+      const declared =
+        held.length > 0
+          ? this.client.declareHolding(name, held, { signal: options.signal })
+          : undefined;
       // Observed at once, so that a HOLDING failing while SLOTS is pending
       // (its slots are checked before it is sent) is not an unhandled
       // rejection; awaited below.
@@ -659,12 +673,12 @@ export class MeshNode implements AsyncDisposable {
    * (`SlotGate.claim`): the slot is loaded before this resolves. Resolves
    * with its epoch. Rejects with `ALREADY_EXISTS` if another instance owns
    * it, `FAILED_PRECONDITION` if [type] is not published sharded here, and
-   * like `NamingClient.claim`.
+   * like `NamingClient.claim` (`signal` cancels it as that says).
    */
   async claimSlot(
     type: NameLike,
     slot: number,
-    options: { holding?: boolean } = {},
+    options: { holding?: boolean; signal?: AbortSignal | undefined } = {},
   ): Promise<number> {
     return this.#gateOf(type).claim(slot, options);
   }
@@ -672,13 +686,14 @@ export class MeshNode implements AsyncDisposable {
   /**
    * Releases [slot] of [type] (`SlotGate.release`) and stops serving it
    * here; `keepStorage` keeps this instance its holder. Rejects like
-   * `NamingClient.release`, and with `FAILED_PRECONDITION` if [type] is not
-   * published sharded here.
+   * `NamingClient.release` (`signal` withdraws a `RELEASE` not sent yet, as
+   * that says), and with `FAILED_PRECONDITION` if [type] is not published
+   * sharded here.
    */
   async releaseSlot(
     type: NameLike,
     slot: number,
-    options: { keepStorage?: boolean } = {},
+    options: { keepStorage?: boolean; signal?: AbortSignal | undefined } = {},
   ): Promise<void> {
     return this.#gateOf(type).release(slot, options);
   }

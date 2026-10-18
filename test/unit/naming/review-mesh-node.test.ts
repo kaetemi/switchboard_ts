@@ -98,3 +98,33 @@ test('leave settles within its bounds when an unload hangs and the naming servic
   expect(lifecycle.unloading).toBe(1);
   expect(warnings.some((w) => w.includes('npc gate not closed within 100 ms'))).toBe(true);
 });
+
+// Design section 5: the sharded calls of the mesh node take the signal of
+// the naming client's calls they make.
+test('publishSharded, claimSlot and releaseSlot reject with the reason of an aborted signal', async () => {
+  const host = node();
+  const service = new NamingService({ assignmentHold: 0, holdingSettle: 0 });
+  onCleanup(() => service.close());
+  host.registerService(Services.naming, service.handler, { instance: 1 });
+  const uri = await host.listenMemory();
+  const n = node();
+  const joined = MeshNode.join(n, uri, { watch: false, reconnectDelay: 20, leaveTimeout: 100 });
+  onCleanup(() => joined.leave());
+  const reason = new Error('given up');
+  const signal = AbortSignal.abort(reason);
+  const space = { count: 4, mode: SlotMode.static, endpoints: [] };
+  await expect(joined.publishSharded(npc, new Flushing(), { ...space, signal })).rejects.toBe(
+    reason,
+  );
+  expect(joined.gates.get(npc)).toBeUndefined();
+  const lifecycle = new Flushing();
+  lifecycle.flushed.resolve();
+  const gate = await within(joined.publishSharded(npc, lifecycle, space), 2000);
+  await expect(joined.claimSlot(npc, 1, { signal })).rejects.toBe(reason);
+  expect(gate.servedSlots.has(1)).toBe(false);
+  await within(joined.claimSlot(npc, 1), 2000);
+  await expect(joined.releaseSlot(npc, 1, { signal })).rejects.toBe(reason);
+  // Nothing was sent: still served here.
+  expect(gate.servedSlots.has(1)).toBe(true);
+  expect(service.records(npc)).toHaveLength(1);
+});
