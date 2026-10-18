@@ -46,7 +46,12 @@ import type {
 import { pipeChannels, proxyHandler } from '../../../src/core/switchboard/proxy.ts';
 import { EndpointResolver, StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
-import { TalkBulkOpen, TalkChannel, type TalkMessage } from '../../../src/core/talk/index.ts';
+import {
+  installBulkRouting,
+  TalkBulkOpen,
+  TalkChannel,
+  type TalkMessage,
+} from '../../../src/core/talk/index.ts';
 import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import { systemClock } from '../../../src/core/util/clock.ts';
@@ -66,6 +71,8 @@ import {
   testMux,
   until,
 } from '../../support/node/harness.ts';
+import { flush as flushMicrotasks } from '../../support/talk/helpers.ts';
+import { memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
 const chat = Name.of('chat');
 
@@ -207,6 +214,37 @@ describe('pipeChannels', () => {
     expect(items).toEqual(['a']);
     await p.pipe;
   });
+
+  if (!overFrameMux()) {
+    // TS only, over independent channels (the in-memory mux of the Talk
+    // tests, unordered): the mux harness's are ordered, and run twice.
+    it('a pipe that does not linger after its parent ended gracefully refuses a late bulk channel for it at once', async () => {
+      // Never advanced: a bulk channel held for a decision would stay open.
+      const clock = new ManualClock();
+      const [proxyIn, peer] = memoryMuxPair({ ordered: false, mux: { clock } });
+      const [proxyOut, backend] = memoryMuxPair({ mux: { clock } });
+      installBulkRouting(proxyIn);
+      onCleanup(async () => {
+        for (const connection of [proxyIn, peer, proxyOut, backend]) await connection.close();
+      });
+      // The proxy's own channel toward the peer, piped to the backend.
+      const parent = proxyIn.open(new Uint8Array(0));
+      const atPeer = await peer.accept();
+      const outbound = proxyOut.open(new Uint8Array(0));
+      const atBackend = await backend.accept();
+      const piped = pipeChannels(parent, outbound);
+      // The peer closes it gracefully with no bulk payload referenced: the
+      // pipe does not linger for bulk channels.
+      await atPeer.close();
+      expectCode(await parent.done, StatusCode.ok);
+      expectCode(await atBackend.done, StatusCode.ok);
+      await piped;
+      const late = peer.open(new TalkBulkOpen(parent.id, 1).encode());
+      await flushMicrotasks(20);
+      expect(late.state).toBe('closed');
+      expectCode(await late.done, StatusCode.failedPrecondition);
+    });
+  }
 
   if (overFrameMux()) {
     it('a bulk drain timeout forwards failure and cancels the twins', async () => {
