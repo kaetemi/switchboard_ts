@@ -280,7 +280,12 @@ export class QuicBindingChannel implements MuxChannel {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => this.send(chunk),
+      write: (chunk) => {
+        if (!(chunk instanceof Uint8Array)) {
+          throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
+        }
+        return this.send(chunk);
+      },
       close: () => this.close(),
       abort: (reason: unknown) => this.close(abortStatus(reason)),
     });
@@ -420,6 +425,9 @@ export class QuicBindingChannel implements MuxChannel {
   }
 
   send(subframe: Uint8Array): Promise<void> {
+    if (!(subframe instanceof Uint8Array)) {
+      throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
+    }
     if (!this.canSend) {
       throw this.#cannotSend();
     }

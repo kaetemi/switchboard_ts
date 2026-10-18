@@ -1,12 +1,11 @@
-// Review finding (QUIC binding, docs/notes/review-quic.md): a channel's `writable` takes
-// whatever is written to it. The frame mux refuses a chunk that is not a Uint8Array with a
-// TypeError (the writable's `write` in frame-mux-channel.ts); QuicBindingChannel's writable hands
-// it to `send()` unchecked (quic-binding-channel.ts, the constructor), so a string goes out as a
-// DATA record of zero bytes, one per UTF-16 code unit, and an ArrayBuffer leaves an output item
-// whose record header cannot be written: every later `send()`, and `close()`, then throws a
-// RangeError and the channel can neither send nor close. Both cases are `test.fails` until the
-// binding refuses such chunks as the frame mux does; the fix turns them into plain tests.
-// In-memory provider, virtual time.
+// Review finding (QUIC binding, docs/notes/review-quic.md): a channel's `writable` took
+// whatever was written to it. The frame mux refuses a chunk that is not a Uint8Array with a
+// TypeError (the writable's `write` in frame-mux-channel.ts); QuicBindingChannel's writable handed
+// it to `send()` unchecked, so a string went out as a DATA record of zero bytes, one per UTF-16
+// code unit, and an ArrayBuffer left an output item whose record header could not be written:
+// every later `send()`, and `close()`, then threw a RangeError and the channel could neither send
+// nor close. The writable, `send()` and `open()`/`openAfter()` now refuse such values with a
+// TypeError, as the frame mux's writable does. In-memory provider, virtual time.
 import { describe, expect, test } from 'vitest';
 import type { MuxChannel, MuxOptions } from '../../../src/core/mux/contract.ts';
 import { QuicBindingConnection } from '../../../src/core/quic/quic-binding-connection.ts';
@@ -51,7 +50,7 @@ function thrown(action: () => unknown): unknown {
 }
 
 describe('review: QuicBindingChannel.writable takes Uint8Array chunks only', () => {
-  test.fails('a string written to the writable is refused with a TypeError, not sent as zero bytes', async () => {
+  test('a string written to the writable is refused with a TypeError, not sent as zero bytes', async () => {
     const clock = new ManualClock();
     const { client, server, local, remote } = await channelPair(clock);
     const writer = local.writable.getWriter();
@@ -75,7 +74,7 @@ describe('review: QuicBindingChannel.writable takes Uint8Array chunks only', () 
     await clock.elapseAsync(60_000);
   });
 
-  test.fails('an ArrayBuffer written to the writable is refused, and the channel can still send and close', async () => {
+  test('an ArrayBuffer written to the writable is refused, and the channel can still send and close', async () => {
     const clock = new ManualClock();
     const { client, server, local, remote } = await channelPair(clock);
     const writer = local.writable.getWriter();
@@ -86,13 +85,37 @@ describe('review: QuicBindingChannel.writable takes Uint8Array chunks only', () 
     await clock.elapseAsync(1);
     writer.releaseLock();
     expect(refused).toBeInstanceOf(TypeError);
-    // Today every later send and the close throw the RangeError of the record header.
+    // Before the fix every later send and the close threw the RangeError of the record header.
     expect(thrown(() => local.send(bytes('ok')))).toBeUndefined();
     const reader = remote.readable.getReader();
     const reading = reader.read();
     await clock.elapseAsync(1);
     expect(text((await reading).value as Uint8Array)).toBe('ok');
     expect(thrown(() => local.close())).toBeUndefined();
+    void client.close();
+    void server.close();
+    await clock.elapseAsync(60_000);
+  });
+
+  test('send(), open() and openAfter() refuse what is not a Uint8Array with a TypeError', async () => {
+    const clock = new ManualClock();
+    const { client, server, local, remote } = await channelPair(clock);
+    const notBytes = [
+      'hi' as unknown as Uint8Array,
+      new ArrayBuffer(4) as unknown as Uint8Array,
+      undefined as unknown as Uint8Array,
+    ];
+    for (const value of notBytes) {
+      expect(thrown(() => local.send(value))).toBeInstanceOf(TypeError);
+      expect(thrown(() => client.open(value))).toBeInstanceOf(TypeError);
+      expect(thrown(() => local.openAfter(value))).toBeInstanceOf(TypeError);
+    }
+    // Nothing was queued: the channel still sends.
+    await local.send(bytes('ok'));
+    const reader = remote.readable.getReader();
+    const reading = reader.read();
+    await clock.elapseAsync(1);
+    expect(text((await reading).value as Uint8Array)).toBe('ok');
     void client.close();
     void server.close();
     await clock.elapseAsync(60_000);

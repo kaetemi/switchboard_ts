@@ -1335,6 +1335,9 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    * before (`openAfter`).
    */
   #openLocal(openPayload: Uint8Array, continuation: boolean): QuicChannelEntry {
+    if (!(openPayload instanceof Uint8Array)) {
+      throw new TypeError('an OPEN payload is a Uint8Array');
+    }
     if (this.#closing || (this.#goAwaySent && !continuation)) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closing');
     }
