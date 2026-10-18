@@ -289,7 +289,9 @@ export class ToyMuxConnection implements MuxConnection {
 
   get peerIdentity(): PeerIdentity | undefined {
     const identity = this.#peerIdentity;
-    return identity === undefined || identity.isExpired() ? undefined : identity;
+    return identity === undefined || identity.isExpired(this.options.wallTime?.())
+      ? undefined
+      : identity;
   }
 
   get peerIdentified(): Promise<PeerIdentity> {
@@ -456,7 +458,8 @@ export class ToyMuxConnection implements MuxConnection {
     }
     let credential: Credential;
     try {
-      credential = await verifier.verify(credentialBytes);
+      const now = this.options.wallTime?.();
+      credential = await verifier.verify(credentialBytes, now === undefined ? undefined : { now });
     } catch {
       refused();
       return;

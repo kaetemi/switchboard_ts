@@ -498,13 +498,16 @@ export class FrameMuxConnection implements MuxConnection {
    * Who the peer proved to be with its last valid IDENT, or undefined if
    * it has not identified (or `MuxOptions.identityVerifier` is undefined,
    * so its IDENT was ignored); undefined again once the credential has
-   * expired, by wall time, until a valid IDENT with a renewed one arrives.
+   * expired, by `MuxOptions.wallTime`, until a valid IDENT with a renewed
+   * one arrives.
    * Frames after an IDENT wait for its verification, so a channel opened
    * right after it sees that identity.
    */
   get peerIdentity(): PeerIdentity | undefined {
     const identity = this.#peerIdentity;
-    return identity === undefined || identity.isExpired() ? undefined : identity;
+    return identity === undefined || identity.isExpired(this.options.wallTime?.())
+      ? undefined
+      : identity;
   }
 
   /** Resolves with the first valid IDENT of the peer; never settles without one, never rejects. */
@@ -1593,6 +1596,7 @@ export class FrameMuxConnection implements MuxConnection {
           senderNonce,
           receiverNonce,
           localIdentity: this.localIdentity,
+          now: this.options.wallTime?.(),
           requireNamedIdent: this.options.requireNamedIdent,
         });
       } catch (e) {

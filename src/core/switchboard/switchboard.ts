@@ -18,6 +18,7 @@ import type {
   HolderKey,
   PeerIdentity,
 } from '../identity/contract.ts';
+import { CredentialVerifier as WallTimeVerifier } from '../identity/credential-verifier.ts';
 import {
   type MuxChannel,
   type MuxConnection,
@@ -118,7 +119,11 @@ export interface SwitchboardOptions {
   resolver?: Resolver | undefined;
   /** The application payload of every channel the node opens without one; empty by default. Never used implicitly with {@link credentialFor}. */
   defaultPayload?: PayloadLike;
-  /** The mux options of every connection, accepted or initiated. */
+  /**
+   * The mux options of every connection, accepted or initiated. Without a
+   * `wallTime`, a {@link verifier} that is a `CredentialVerifier` gives its
+   * own, so that credential expiry is read on one wall clock.
+   */
   muxOptions?: Partial<MuxOptions> | undefined;
   /** The Talk defaults of `openTalk`, `openTalkAt` and `IncomingChannel.talk`. */
   talkOptions?: Partial<TalkOptions> | undefined;
@@ -518,11 +523,15 @@ export class Switchboard implements AsyncDisposable {
     const given = options.muxOptions ?? {};
     this.clock = options.clock ?? given.clock ?? systemClock;
     this.logger = options.logger ?? given.logger ?? noopLogger;
+    const verifier = options.verifier ?? given.identityVerifier;
+    const wallTime =
+      given.wallTime ?? (verifier instanceof WallTimeVerifier ? verifier.wallTime : undefined);
     this.muxOptions = muxOptions({
       ...given,
       clock: given.clock ?? this.clock,
       logger: given.logger ?? this.logger,
       ...(options.verifier === undefined ? {} : { identityVerifier: options.verifier }),
+      ...(wallTime === undefined ? {} : { wallTime }),
     });
     this.talkOptions = talkOptions(options.talkOptions);
     this.resolver = options.resolver;

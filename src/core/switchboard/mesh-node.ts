@@ -140,7 +140,8 @@ export interface MeshNodeOptions {
   readonly watch?: boolean | undefined;
   /**
    * Wall time in ms since the epoch, which the renewal is scheduled by
-   * (credentials expire by it); default `Date.now`.
+   * (credentials expire by it); default the node's `muxOptions.wallTime`,
+   * else `Date.now`.
    */
   readonly wallTime?: (() => number) | undefined;
   /** The timers of the node and its naming client; default the node's clock. */
@@ -358,7 +359,7 @@ export class MeshNode implements AsyncDisposable {
     this.leaveTimeout = options.leaveTimeout ?? 5000;
     this.brokeredPolicy = options.brokeredPolicy ?? ChannelPolicies.scoped();
     this.renewCredential = options.renewCredential ?? true;
-    this.wallTime = options.wallTime ?? Date.now;
+    this.wallTime = options.wallTime ?? switchboard.muxOptions.wallTime ?? Date.now;
     this.clock = clock;
     this.logger = logger;
   }
