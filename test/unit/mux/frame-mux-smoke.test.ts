@@ -7,12 +7,13 @@ import type { MuxChannel } from '../../../src/core/mux/contract.ts';
 import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
-import { SteppingClock, settle } from './support.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
+import { settle } from './support.ts';
 
 const quiet = { keepAliveInterval: undefined, goAwayGrace: 2000 } as const;
 
 function pair(): [FrameMuxConnection, FrameMuxConnection] {
-  const clock = new SteppingClock();
+  const clock = new ManualClock();
   const [a, b] = memoryTransportPair({ clock });
   return [
     new FrameMuxConnection(a, { isInitiator: true, ...quiet, clock }),

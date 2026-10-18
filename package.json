@@ -65,19 +65,12 @@
     "check": "npm run lint && npm run typecheck && npm run test"
   },
   "peerDependencies": {
-    "ws": "^8.18.0"
+    "ws": "^8.21.0"
   },
   "peerDependenciesMeta": {
     "ws": {
       "optional": true
     }
-  },
-  "optionalDependencies": {
-    "@kaetemi/switchboard-quic-darwin-arm64": "3.0.0-dev.1",
-    "@kaetemi/switchboard-quic-darwin-x64": "3.0.0-dev.1",
-    "@kaetemi/switchboard-quic-linux-arm64-gnu": "3.0.0-dev.1",
-    "@kaetemi/switchboard-quic-linux-x64-gnu": "3.0.0-dev.1",
-    "@kaetemi/switchboard-quic-win32-x64-msvc": "3.0.0-dev.1"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

@@ -29,6 +29,7 @@ import { StatusCode, SwitchboardError, statusCodeName } from '../../../src/core/
 import type { ServiceEvent } from '../../../src/core/switchboard/contract.ts';
 import type { TalkChannel, TalkMessage, TalkOptions } from '../../../src/core/talk/contract.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   type FakeFrame,
   type FakeTalkChannel,
@@ -37,7 +38,6 @@ import {
   fakeTalkPair,
 } from './fake-talk.ts';
 import { type LinkedTalkChannel, talkLink } from './talk-link.ts';
-import { flushMicrotasks } from './test-clock.ts';
 
 export const ms10 = 10;
 export const ms50 = 50;
@@ -89,7 +89,7 @@ export function throwsWith(action: () => unknown, code: StatusCode): Switchboard
 
 /** Lets pending microtasks and deliveries run (the Dart tests' `pump()`). */
 export function pump(): Promise<void> {
-  return flushMicrotasks();
+  return ManualClock.settle();
 }
 
 /** Waits [ms] of real time. */
@@ -130,7 +130,7 @@ export async function isSettled(promise: Promise<unknown>): Promise<boolean> {
       settled = true;
     },
   );
-  await flushMicrotasks();
+  await ManualClock.settle();
   return settled;
 }
 

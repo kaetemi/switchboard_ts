@@ -1,10 +1,12 @@
 // The prebuilt QUIC addons' packages agree with each other: the manifests
 // under native/npm/<target>/, the table of targets in native/README.md, the
 // prefix the loader requires (src/node/quic/native-provider.ts), the
-// optionalDependencies of package.json and the release workflow
-// (.github/workflows/release.yml). The release workflow runs this file before
-// it builds anything.
+// optionalDependencies tool/prebuilt-deps.mjs adds to the packed package and
+// the release workflow (.github/workflows/release.yml). The release workflow
+// runs this file before it builds anything.
+import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 
 const root = new URL('../../../', import.meta.url);
@@ -88,10 +90,21 @@ describe('the per-platform packages', () => {
     });
   }
 
-  test('package.json lists each as an optional dependency, pinned to its version', () => {
-    expect(main['optionalDependencies']).toEqual(
+  test('the pack step adds each as an optional dependency, pinned to its version', () => {
+    // Not in the repository's package.json: npm ci cannot resolve packages
+    // that are not published, and npm 11 refuses a lock file without them.
+    expect(main['optionalDependencies']).toBeUndefined();
+    const printed = execFileSync(
+      process.execPath,
+      [fileURLToPath(new URL('tool/prebuilt-deps.mjs', root))],
+      {
+        encoding: 'utf8',
+      },
+    );
+    expect(JSON.parse(printed)).toEqual(
       Object.fromEntries(directories.map((directory) => [`${prefix}${directory}`, version])),
     );
+    expect(read('.github/workflows/release.yml')).toContain('node tool/prebuilt-deps.mjs --apply');
   });
 
   test('the release workflow builds, packs and publishes each, by hand only', () => {

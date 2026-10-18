@@ -22,6 +22,7 @@ import { Name } from '../../../src/core/name.ts';
 import { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { connectTcp, listenTcp } from '../../../src/node/transport/tcp.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   AnsweringTransport,
   clockOf,
@@ -41,7 +42,6 @@ import {
   type RawPeer,
   rawOptions,
   rawPair,
-  SteppingClock,
   Subframes,
   Subscription,
   settle,
@@ -422,7 +422,7 @@ describe('DATA waits for the peer LIMITS', () => {
     // Dart's peer answers the LIMITS during the constructor's write, and
     // the wait is over when the constructor returns. Here the answer is
     // queued as the LIMITS is written and read in a later microtask.
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const transport = new AnsweringTransport((frame) =>
       isControl(MuxFrame.decode(frame), MuxControlType.limits) ? [hexBytes(limitsHex(256))] : [],
     );

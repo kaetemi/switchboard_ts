@@ -14,8 +14,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  *
  * Dart reads the socket with an RFC 6455 implementation of its own, to
  * bound a message before it is assembled; `ws` does the same with
- * `maxPayload` (checked against every fragment's header), and negotiates
- * no compression with `perMessageDeflate: false`.
+ * `maxPayload` (checked against every fragment's header) and
+ * `maxFragments` (the count of a message's frames, from `ws` 8.21), and
+ * negotiates no compression with `perMessageDeflate: false`.
  */
 
 import {
@@ -39,6 +40,15 @@ import { type AcceptedTransport, listenOn, uriHost } from './tcp.ts';
 import { requireWs, wsConnection } from './ws-common.ts';
 
 const loggerName = 'Switchboard.Transport';
+
+/**
+ * Most frames an incoming message may arrive in, its first frame and
+ * continuations counted (Dart's `WebSocketServerTransport.maxMessageFragments`).
+ * Clients fragment at the size of a buffer, at least kilobytes, so only a
+ * client cutting a message into slivers reaches it. Enforced by `ws` 8.21
+ * or later; an older `ws` has no such cap.
+ */
+export const maxMessageFragments = 4096;
 
 /** Options of {@link acceptWebSocket}. Durations in milliseconds. */
 export interface WebSocketAcceptOptions
@@ -271,12 +281,14 @@ function startPings(
  * The transport then behaves as {@link WebSocketTransport} does, over `ws`:
  * a message over `maxFrameSize` (default 1 MiB; 0 for no limit), counted
  * over its fragments before they are buffered, fails it with
- * `FRAME_TOO_LARGE` and closes with 1009; a WebSocket protocol violation
- * fails it with a `ProtocolError` (1002, 1007 for bad UTF-8 in a close
- * reason); a text message with a `ProtocolError` and close code 1003.
- * Pings are answered; a close from the client is echoed. Unlike Dart's,
- * a message over the limit is refused by `ws` at once, so the mux has no
- * chance to send its GOAWAY before the close frame.
+ * `FRAME_TOO_LARGE` and closes with 1009; a message in more than
+ * {@link maxMessageFragments} frames fails it with `FRAME_TOO_LARGE` too,
+ * but `ws` closes with 1008 where Dart closes with 1009; a WebSocket
+ * protocol violation fails it with a `ProtocolError` (1002, 1007 for bad
+ * UTF-8 in a close reason); a text message with a `ProtocolError` and
+ * close code 1003. Pings are answered; a close from the client is echoed.
+ * Unlike Dart's, a message over a limit is refused by `ws` at once, so the
+ * mux has no chance to send its GOAWAY before the close frame.
  *
  * Rejects with a `SwitchboardError` `INVALID_ARGUMENT` for a refused
  * upgrade (after answering it), `UNSUPPORTED` when the `ws` package is
@@ -317,6 +329,7 @@ export async function acceptWebSocket(
     clientTracking: false,
     perMessageDeflate: false,
     maxPayload: max,
+    maxFragments: maxMessageFragments,
     handleProtocols: (protocols) =>
       protocols.has(webSocketSubprotocol) ? webSocketSubprotocol : false,
   });

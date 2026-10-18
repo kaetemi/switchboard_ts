@@ -51,9 +51,7 @@ function locateTs(): Availability {
   return existsSync(tsPeerMain)
     ? { path: tsPeerMain }
     : {
-        reason:
-          'no TS peer yet (test/interop/ts_peer/ lands once the mux and Talk are ported, ' +
-          'threads 1 and 2)',
+        reason: `no TS peer at ${tsPeerMain}`,
       };
 }
 

@@ -588,3 +588,66 @@ For the other threads:
   GOAWAY the Dart peer closes the connection once no channel is left,
   without sending GOAWAY back (wiki mux.md, "SHOULD close"); an OPEN after
   its own GOAWAY is refused with GOING_AWAY; window cost is payload + 16.
+
+## 11. Phase 3 status (the TS peer and the matrix, branch `claude/ts-peer`)
+
+Landed, every cell green in required mode (`SWITCHBOARD_INTEROP=required`,
+`SWITCHBOARD_NATIVE=required`): 3686 interop tests, none skipped, in about
+4 minutes here.
+
+* **The TS peer** (`test/interop/ts_peer/`, public Node entry only): every
+  command, event and service of the README, run as `node .../main.ts`
+  (type stripping, Node 22.18 or later), READY with `certificateSha256`
+  from `selfSignedCertificate`. `tsTransportGaps` is empty when the native
+  addon loads; without it the TS cells over raw QUIC and WebTransport skip
+  with the reason.
+* **Protocol additions, in both peers**: the echo procedures `BIGSTRM`,
+  `BIGITEMS`, `HOW`, `EXTEND`, `STATUS`; the `forward` behaviour and
+  `anyInstance`; `bulkPattern` sources; `talk.extend`; status bodies in
+  errors and events and `statusHex`; `identity` (shared test authorities,
+  `connection.identify`, `connection.identified`); `naming`, `proxy`,
+  `relay` and the `naming.*` commands; a QUIC binding on the listening
+  node so that intermediaries dial QUIC.
+* **Scenarios**: basics, talk, talk-wire, bulk, close and GOAWAY, mux,
+  protocol-errors, forward, identity, naming (with a slot hand-over:
+  DRAIN, ASSIGN, FORWARD in protocol order) in the 16 pairing cells;
+  proxy, relay, forward and naming chains of three peers (`chain.ts`) in
+  8 implementation cells per transport; the probe against both servers.
+* **Oracle**: the TS peer's oracle answers every kind of the Dart peer's;
+  the Dart oracle gained the naming, sharding, MOVED, credential, slot key,
+  QUIC record, HELLO, QUIC code and exporter kinds. No vector table is
+  `todo` any more.
+* **Dart driver** (`test/interop/dart_driver/`, `node tool/dart-peer.mjs
+  driver`): 35 Dart-written tests against the TS peer.
+* **CI**: the interop job builds the native addon too and runs the TS
+  cells and the driver.
+
+Differences found, none a failing cell:
+
+* The TS WebSocket listener refuses a message over the limit through the
+  `ws` package, which closes with 1009 before the mux can send GOAWAY
+  FRAME_TOO_LARGE; the Dart listener sends the GOAWAY, then 1009. Already
+  documented in `acceptWebSocket`; the probe asserts each server's reaction.
+* Endpoints in naming payloads: Dart parses them as `Uri` and sends the
+  normalised text (scheme and host lower-cased, characters escaped), TS
+  carries them as written and refuses what a URI cannot hold. Documented in
+  `endpointProblem`; the oracle checks that what Dart sends instead decodes
+  alike in TS, which held for every input found (three seeds × 10 000).
+* A fresh TS server sends its LIMITS a little later after accepting than
+  the Dart one (19 ms against 5 ms for the first connection of a new
+  process, measured once), so a Dart client opening channels at once can
+  run past the TS server's channel limit before it knows it; the server then
+  refuses the extra channel with RESOURCE_EXHAUSTED, a valid outcome. The
+  mux scenario waits for a PONG first.
+* Names: TS `webTransportExporterLabel` is Dart's `webTransportIdentLabel`
+  (`switchboard-ident`), and TS `webTransportTlsExporterLabel` is Dart's
+  `webTransportExporterLabel` (`EXPORTER-WebTransport`).
+* Reference behaviour worth knowing, pinned by the scenarios: an
+  application status (256 and above) in a mux CLOSE or GOAWAY is refused
+  before sending (`ArgumentError`, `RangeError` in TS); a cancel is
+  answered `ABORT CANCELLED "cancelled by requester"`; over QUIC a bearer
+  credential goes only to an authenticated end, so a bearer IDENT to a
+  listener with a self-signed certificate fails with UNAUTHENTICATED; a
+  connection closed over QUIC reads as GOING_AWAY at the far side
+  (CONNECTION_LOST over streams); instance ids are global across types, so
+  a service registered with a naming service rarely keeps instance 1.

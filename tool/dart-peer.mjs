@@ -13,6 +13,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 //   node tool/dart-peer.mjs locate [--json]
 //   node tool/dart-peer.mjs status
 //   node tool/dart-peer.mjs fetch
+//   node tool/dart-peer.mjs driver [--download-sdk] [-- <dart test arguments>]
 //
 // `build` finds a Dart SDK (PATH, then SWITCHBOARD_DART_SDK or DART_SDK, then
 // one this tool downloaded; `--download-sdk` downloads Dart 3.13.5 into the
@@ -27,7 +28,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 //
 // `locate` prints the executable when it is built and current (exit 1 with
 // the reason otherwise). `status` prints what `build` would use. `fetch`
-// clones the pinned commits into test/interop/dart_peer/.deps/.
+// clones the pinned commits into test/interop/dart_peer/.deps/. `driver`
+// runs the Dart driver's tests (test/interop/dart_driver, `dart test`),
+// Dart-written scenarios against the TS peer, with the same SDK and
+// checkouts.
 //
 // SWITCHBOARD_DART_PEER names a prebuilt executable and short-circuits all of
 // this. The test suite imports ensurePeer() from its global setup.
@@ -59,6 +63,8 @@ export const peerDir = join(repoRoot, 'test', 'interop', 'dart_peer');
 const buildDir = join(peerDir, 'build', 'peer');
 const stampPath = join(buildDir, 'stamp.json');
 const overridesPath = join(peerDir, 'pubspec_overrides.yaml');
+/** The Dart driver package. */
+export const driverDir = join(repoRoot, 'test', 'interop', 'dart_driver');
 const overridesMarker = '# Written by tool/dart-peer.mjs';
 const depsDir = join(peerDir, '.deps');
 const isWindows = process.platform === 'win32';
@@ -261,7 +267,8 @@ export function resolveDeps() {
     paths[/** @type {RepoName} */ (name)] = path;
   }
   const resolved = /** @type {Record<RepoName, string>} */ (paths);
-  writeOverrides(overrides ? resolved : undefined);
+  writeOverrides(overrides ? resolved : undefined, overridesPath);
+  writeOverrides(overrides ? resolved : undefined, join(driverDir, 'pubspec_overrides.yaml'));
   return {
     repos: {
       switchboard: checkout(resolved.switchboard),
@@ -271,12 +278,19 @@ export function resolveDeps() {
   };
 }
 
-/** @param {Record<RepoName, string> | undefined} paths */
-function writeOverrides(paths) {
-  const existing = existsSync(overridesPath) ? readFileSync(overridesPath, 'utf8') : undefined;
+/**
+ * Writes (or removes) the overrides file [file] pointing at [paths].
+ * @param {Record<RepoName, string> | undefined} paths
+ * @param {string} file
+ */
+function writeOverrides(paths, file) {
+  if (!existsSync(dirname(file))) {
+    return;
+  }
+  const existing = existsSync(file) ? readFileSync(file, 'utf8') : undefined;
   if (paths === undefined) {
     if (existing?.startsWith(overridesMarker)) {
-      rmSync(overridesPath);
+      rmSync(file);
     }
     return;
   }
@@ -290,7 +304,7 @@ function writeOverrides(paths) {
   }
   const text = `${lines.join('\n')}\n`;
   if (text !== existing) {
-    writeFileSync(overridesPath, text);
+    writeFileSync(file, text);
   }
 }
 
@@ -476,12 +490,47 @@ function fetchPins() {
   }
 }
 
+/**
+ * Runs the Dart driver's tests with [testArgs]: `dart pub get` and
+ * `dart test` in test/interop/dart_driver. Returns the exit code.
+ * @param {string[]} testArgs
+ * @param {boolean} download
+ * @returns {number}
+ */
+function runDriver(testArgs, download) {
+  const deps = resolveDeps();
+  if ('reason' in deps) {
+    console.error(`dart-peer: ${deps.reason}`);
+    return 1;
+  }
+  const sdk = findDart({ download, log: (line) => console.error(line) });
+  if ('reason' in sdk) {
+    console.error(`dart-peer: ${sdk.reason}`);
+    return 1;
+  }
+  for (const args of [
+    ['pub', 'get'],
+    ['test', ...testArgs],
+  ]) {
+    const r = spawnSync(sdk.dart, args, { cwd: driverDir, stdio: 'inherit', shell: isWindows });
+    if (r.error !== undefined || r.status !== 0) {
+      console.error(`dart-peer: \`dart ${args.join(' ')}\` failed in ${driverDir}`);
+      return r.status ?? 1;
+    }
+  }
+  return 0;
+}
+
 function main() {
   const [command = 'build', ...rest] = process.argv.slice(2);
-  const flags = new Set(rest);
+  const dashes = rest.indexOf('--');
+  const flags = new Set(dashes < 0 ? rest : rest.slice(0, dashes));
   if (command === 'fetch') {
     fetchPins();
     return 0;
+  }
+  if (command === 'driver') {
+    return runDriver(dashes < 0 ? [] : rest.slice(dashes + 1), flags.has('--download-sdk'));
   }
   if (command === 'status') {
     const sdk = findDart();
@@ -502,7 +551,7 @@ function main() {
     return 0;
   }
   if (command !== 'build' && command !== 'locate') {
-    console.error(`usage: node tool/dart-peer.mjs build|locate|status|fetch`);
+    console.error(`usage: node tool/dart-peer.mjs build|locate|status|fetch|driver`);
     return 64;
   }
   const result = ensurePeer({

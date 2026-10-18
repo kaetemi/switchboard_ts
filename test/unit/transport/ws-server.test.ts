@@ -20,6 +20,7 @@ import { FrameMuxConnection } from '../../../src/core/mux/frame-mux-connection.t
 import { ProtocolError, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { connectWebSocket } from '../../../src/core/transport/websocket-transport.ts';
 import { connectWsWebSocket } from '../../../src/node/transport/ws-client.ts';
+import { maxMessageFragments } from '../../../src/node/transport/ws-server.ts';
 import {
   clientFrame,
   clientHeader,
@@ -307,18 +308,76 @@ describe('limits and protocol errors', () => {
     expect(closeCodeOf(await client.next())).toBe(1009);
   });
 
-  // Not ported: "a message in many small fragments costs about its size"
-  // checks Dart's own message buffers (messageBuffersForTesting); `ws`
-  // assembles fragments itself.
-  test.todo(
-    'a message in many small fragments costs about its size: Dart buffer internals, ws assembles messages itself',
-  );
+  // Dart's "a message in many small fragments costs about its size", in
+  // part: the deliveries are checked, the cost is not. Dart counts its own
+  // message buffers (`messageBuffersForTesting`), which hold the fragments
+  // together in 64 KiB pieces; `ws` assembles a message itself, keeping a
+  // view of the socket's chunk per fragment until the last one (at most
+  // `maxMessageFragments` of them), and shows nothing to count.
+  test('a message in many small fragments is delivered whole', async () => {
+    const h = await Harness.start({ maxFrameSize: 1024 * 1024 });
+    const [client, server] = await h.pair();
+    const received = eager(server);
+    // 3000 fragments of 1 to 600 bytes, 900 kB in all.
+    const parts: Uint8Array[] = [];
+    for (let i = 0; i < 3000; i++) {
+      const fragment = pattern(((i * 97) % 600) + 1, i);
+      parts.push(fragment);
+      client.send(clientFrame(i === 0 ? opBinary : opContinuation, fragment, { fin: false }));
+    }
+    // The pong comes once the server has read every fragment before it.
+    client.send(clientFrame(opPing, [1]));
+    expect((await client.frames.next()).opcode).toBe(opPong);
+    client.send(clientFrame(opContinuation, [7]));
+    parts.push(new Uint8Array([7]));
+    expect(sameBytes(await received.next(), Buffer.concat(parts))).toBe(true);
+    // Small fragments then a large one.
+    const large = pattern(300000, 9);
+    client.send(clientFrame(opBinary, [1], { fin: false }));
+    client.send(clientFrame(opContinuation, [2], { fin: false }));
+    client.send(clientFrame(opContinuation, large));
+    expect(sameBytes(await received.next(), new Uint8Array([1, 2, ...large]))).toBe(true);
+    // A message in one frame.
+    client.send(clientFrame(opBinary, pattern(3, 5)));
+    expect(await received.next()).toEqual(pattern(3, 5));
+  });
 
-  // Not ported: "a message in more fragments than the cap" needs Dart's
-  // maxMessageFragments (4096); `ws` has no cap on the fragment count, only
-  // on the message size, which it checks before buffering each fragment.
-  test.todo(
-    'a message in more fragments than the cap: ws has no fragment count cap (maxPayload bounds the size)',
+  // Dart's "a message in more fragments than the cap: 1009 and
+  // FRAME_TOO_LARGE". The cap is `ws`'s `maxFragments` (from `ws` 8.21),
+  // which closes with 1008 where Dart closes with 1009, and counts a
+  // fragment once its payload is read where Dart counts it on its header
+  // (the same for the one-byte and empty fragments here). Dart also checks
+  // that a message at the cap is held in one buffer, which `ws` does not
+  // show. Bun's stand-in for `ws` has no fragment cap.
+  test.skipIf(isBun)(
+    'a message in more fragments than the cap: 1008 and FRAME_TOO_LARGE',
+    async () => {
+      const cap = maxMessageFragments;
+      const h = await Harness.start({ maxFrameSize: 1024 * 1024 });
+      const [client, server] = await h.pair();
+      const received = eager(server);
+      const fragments = (count: number, fin: boolean): Uint8Array =>
+        Buffer.concat(
+          Array.from({ length: count }, (_, i) =>
+            clientFrame(i === 0 ? opBinary : opContinuation, [i & 0xff], {
+              fin: fin && i === count - 1,
+            }),
+          ),
+        );
+      // Exactly at the cap, twice: counted per message.
+      for (let round = 0; round < 2; round++) {
+        client.send(fragments(cap - 1, false));
+        client.send(clientFrame(opPing, [round]));
+        expect((await client.frames.next()).opcode).toBe(opPong);
+        client.send(clientFrame(opContinuation, [(cap - 1) & 0xff]));
+        expect(await received.next()).toEqual(Uint8Array.from({ length: cap }, (_, i) => i & 0xff));
+      }
+      // One more, even empty: refused.
+      client.send(fragments(cap, false));
+      client.send(clientFrame(opContinuation, []));
+      expect(tooLarge(await rejection(received.next()))).toBe(true);
+      expect(closeCodeOf(await client.next())).toBe(1008);
+    },
   );
 
   test.skipIf(isBun)('a fragment is refused on its header, before its payload', async () => {

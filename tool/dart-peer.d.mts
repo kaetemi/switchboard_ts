@@ -17,6 +17,9 @@ export declare const repoRoot: string;
 /** The Dart peer package. */
 export declare const peerDir: string;
 
+/** The Dart driver package. */
+export declare const driverDir: string;
+
 /** The Dart repositories the peer depends on, by package name. */
 export declare const repositories: {
   readonly switchboard: {

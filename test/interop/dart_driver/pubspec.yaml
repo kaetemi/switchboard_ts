@@ -1,0 +1,28 @@
+# Polyverse Switchboard
+# Microservice Network Architecture
+# Copyright (C) 2018-2026  Jan BOON (Kaetemi)
+#
+# The Dart driver of the interop tests (test/interop/README.md, "Dart
+# driver"): Dart-written scenarios with the Dart Switchboard in process,
+# against the TS peer it spawns (node test/interop/ts_peer/main.ts). The
+# path dependencies are the Dart peer and the sibling checkouts it uses;
+# tool/dart-peer.mjs writes a pubspec_overrides.yaml when they live
+# elsewhere. Run with `node tool/dart-peer.mjs driver`.
+name: switchboard_dart_driver
+description: Dart-written interop scenarios against the TS Switchboard peer.
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+
+dependencies:
+  crypto: ^3.0.7
+  switchboard:
+    path: ../../../../switchboard
+  switchboard_dart_peer:
+    path: ../dart_peer
+  switchboard_quic:
+    path: ../../../../switchboard_quic
+
+dev_dependencies:
+  test: ^1.25.0

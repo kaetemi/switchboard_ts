@@ -61,7 +61,8 @@ order:
 The test support is in `test/support/naming/`:
 
 * `fake-talk.ts`: an in-memory Talk pair built to the landed Talk contract
-* `test-clock.ts`: `TestClock`, a fake_async port (`await clock.elapse(ms)`)
+* time: `ManualClock` with `await clock.elapseAsync(ms)`, the fake_async
+  port (the thread's own `TestClock` was folded into it in the third round)
 * `harness.ts`, `sharding-harness.ts`: ports of the Dart harnesses
 * `fake-identity.ts`: fake credentials, issuer, verifier and naming
   connection
@@ -78,7 +79,7 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
 6. **The node-side identity tests** of `naming_identity_test.dart` that need real nodes are in `naming-identity-nodes.test.ts` (brokered connections, dial-back GOAWAY, the `broker` preconditions) and `test/unit/switchboard/mesh.test.ts`; each place left in `naming-identity.test.ts` says where.
 7. **Vector coverage:** the naming, sharding and slot-key vectors name their ids through `test/support/vectors.ts`; `SWITCHBOARD_VECTORS_STRICT=1` passes.
 
-**Left:** interop with the Dart naming service in both directions (the acceptance criterion) comes with the TS peer and the naming and sharding scenarios on `claude/ts-peer`; `TestClock` (`test/support/naming/test-clock.ts`) could merge into `ManualClock.elapseAsync`.
+**Left:** interop with the Dart naming service in both directions (the acceptance criterion) comes with the TS peer and the naming and sharding scenarios on `claude/ts-peer`. (`TestClock` is merged into `ManualClock.elapseAsync` since the third round.)
 
 ## Known gaps and deviations from Dart
 
@@ -97,8 +98,8 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
   `defaultMuxOptions.initialWindow` (64 KiB), as in Dart.
 * Error types: `ArgumentError` becomes `RangeError` or `TypeError`, and
   `StateError` becomes `Error`. Decode errors are `ProtocolError`.
-* `TestClock` overlaps with the node thread's `SteppingClock`; both could
-  merge into `ManualClock.elapseAsync` (Talk's `FakeClock` already did).
+* `TestClock` and the node thread's `SteppingClock` are merged into
+  `ManualClock.elapseAsync` (third round), as Talk's `FakeClock` was.
 * Dart SDK finding: `Uri.parse` throws `RangeError` for some IPv6 literals,
   so the Dart record decoder can let a non-protocol exception escape. It was
   reported in PR #3 only, since the Dart repositories are read-only.
