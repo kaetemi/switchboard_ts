@@ -108,7 +108,8 @@ flips it to `test`. No source was changed. `npm run check`: 3007 passed, 7 expec
   `ASSIGN`/`DRAIN`, dropped links and naming service restarts with a hold and a settle window, over
   three real `NamingClient`s in virtual time) always quiesced consistent: the owner's served epoch
   equals the table, no stale server, no lock left, no timer after close. Not committed (probe only).
-- Every timer in the layer is on the injected clock and cleared on close (read and probed: a hanging
-  slot handler, connectTo, resolve, gate grace/drain/idle, service backoffs/settle/resume/LOCATE).
+- Every timer in the layer is on the injected clock and cleared on close (read for connectTo,
+  resolve, the gate's grace, drain and idle timers, the service's backoffs, settle, resume and LOCATE
+  waits; probed for a slot handler that never answers when the client closes; the fuzz too).
 - Outside the layer: `sleep()` in `src/core/util/deferred.ts:50`, exported from the core barrel,
   uses the global `setTimeout`, not a `Clock`; nothing in `src/` calls it.
