@@ -264,6 +264,15 @@ export class Handles<Kinds extends Record<string, object>> {
     return entry.object as Kinds[P];
   }
 
+  /** Forgets [object]'s handle. */
+  remove(object: object): void {
+    const handle = this.#names.get(object);
+    if (handle !== undefined) {
+      this.#names.delete(object);
+      this.#objects.delete(handle);
+    }
+  }
+
   /** Every registered object with its prefix, newest first. */
   get all(): { prefix: keyof Kinds & string; object: object }[] {
     return [...this.#objects.values()].reverse();

@@ -482,6 +482,7 @@ export class NamingCommands {
         return adoptTalk(channel);
       }
       case 'naming.close':
+        ctx.handles.remove(n);
         await n.close();
         return null;
       default:

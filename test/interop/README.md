@@ -144,7 +144,7 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 | `naming.slotChannel` | `naming`, `type`, `slot`, `payload` | `{slotChannel}`: `openChannelToSlot` of the client's node; its subframes and end are `channel.data` and `channel.closed` under that handle, across a `MOVED` retry |
 | `naming.slotTalk` | `naming`, `type`, `slot`, `payload` | `{talk, slotChannel}`: a Talk channel over `openChannelToSlot`, as `naming.channel` reports one |
 | `naming.channel` | `naming`, `address` (`type`, `instance`, `shard`, `payload`) | `{talk, channel, connection}`: a Talk channel opened through the resolver, as `talk.open` reports it |
-| `naming.close` | `naming` | `null` |
+| `naming.close` | `naming` | `null`; the handle is gone from then on |
 | `slot.send` | `slotChannel`, `hex` | `null`: one subframe |
 | `slot.close` | `slotChannel`, `code`, `reason` or `statusHex` | `null` |
 | `slot.state` | `slotChannel` | `{retried}`: whether a `MOVED` was retried |
