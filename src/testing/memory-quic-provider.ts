@@ -679,7 +679,8 @@ export class MemoryQuicDirection {
       return Promise.reject(new Error('the direction has ended'));
     }
     const done = new Deferred<void>();
-    this.#writes.push({ data: bytes.slice(), done });
+    // A copy, as the contract has it (a Buffer's own `slice` is a view).
+    this.#writes.push({ data: Uint8Array.prototype.slice.call(bytes), done });
     this.pump();
     return done.promise;
   }

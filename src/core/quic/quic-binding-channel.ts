@@ -280,7 +280,12 @@ export class QuicBindingChannel implements MuxChannel {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => this.send(chunk),
+      write: (chunk) => {
+        if (!(chunk instanceof Uint8Array)) {
+          throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
+        }
+        return this.send(chunk);
+      },
       close: () => this.close(),
       abort: (reason: unknown) => this.close(abortStatus(reason)),
     });
@@ -420,6 +425,9 @@ export class QuicBindingChannel implements MuxChannel {
   }
 
   send(subframe: Uint8Array): Promise<void> {
+    if (!(subframe instanceof Uint8Array)) {
+      throw new TypeError(`channel ${this.id} takes Uint8Array subframes`);
+    }
     if (!this.canSend) {
       throw this.#cannotSend();
     }
@@ -683,7 +691,11 @@ export class QuicBindingChannel implements MuxChannel {
     this.#watch(this.#readLoop());
     if (this.#stopSent) {
       // Closed with a failure before the stream existed.
-      stream.stop(quicErrorCode(this.#endStatus));
+      try {
+        stream.stop(quicErrorCode(this.#endStatus));
+      } catch (error) {
+        this.#host.log('warn', `${this}: the provider failed to stop the stream`, error);
+      }
     }
     this.#pump();
     this.#wakeWritable();
@@ -897,7 +909,11 @@ export class QuicBindingChannel implements MuxChannel {
     this.#closeQueued = true;
     this.#pendingClose = undefined;
     this.#dropOut();
-    this.#stream?.reset(code);
+    try {
+      this.#stream?.reset(code);
+    } catch (error) {
+      this.#host.log('warn', `${this}: the provider failed to reset the stream`, error);
+    }
     if (this.#ended) {
       this.#clearConfirmTimer();
     }
@@ -914,7 +930,11 @@ export class QuicBindingChannel implements MuxChannel {
       return;
     }
     this.#stopSent = true;
-    this.#stream?.stop(code);
+    try {
+      this.#stream?.stop(code);
+    } catch (error) {
+      this.#host.log('warn', `${this}: the provider failed to stop the stream`, error);
+    }
   }
 
   /**

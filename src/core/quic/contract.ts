@@ -244,4 +244,4 @@ export const switchboardAlpn = 'switchboard';
 export const rawQuicExporterLabel = 'EXPORTER-Channel-Binding';
 
 /** The application label of the exporter over WebTransport. */
-export const webTransportExporterLabel = 'switchboard-ident';
+export const webTransportIdentLabel = 'switchboard-ident';

@@ -1677,9 +1677,10 @@ class Stream implements QuicStream {
     const w = new Write(bytes, false);
     this.#writes.push(w);
     this.#pump();
-    // What the stack did not take yet is copied: the caller may reuse its buffer at once.
+    // What the stack did not take yet is copied: the caller may reuse its buffer at once. A
+    // Buffer's own `slice` is a view, hence the Uint8Array one.
     if (!w.done.isSettled) {
-      w.bytes = w.bytes.slice(w.offset);
+      w.bytes = Uint8Array.prototype.slice.call(w.bytes, w.offset);
       w.offset = 0;
     }
     return w.done.promise;

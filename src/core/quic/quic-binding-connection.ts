@@ -29,7 +29,14 @@ import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.t
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import type { LogLevel } from '../util/logger.ts';
-import { attempt, delay, isSessionEnd, quicLoggerName, withTimeout } from './binding-util.ts';
+import {
+  attempt,
+  checkQuicBindingOptions,
+  delay,
+  isSessionEnd,
+  quicLoggerName,
+  withTimeout,
+} from './binding-util.ts';
 import {
   QuicError,
   type QuicReceiveStream,
@@ -40,7 +47,7 @@ import {
   QuicStreamStopped,
   rawQuicExporterLabel,
   switchboardAlpn,
-  webTransportExporterLabel,
+  webTransportIdentLabel,
 } from './contract.ts';
 import { quicExporterLength } from './exporter.ts';
 import { QuicHello, quicHelloType } from './hello.ts';
@@ -65,7 +72,6 @@ import {
   quicDefaultRecordLimit,
   quicErrorCode,
   quicMaxChannelId,
-  quicMaxRecordLength,
   quicRecordCommandName,
   quicRecordHeaderSize,
   statusOfQuicErrorCode,
@@ -284,23 +290,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   ): Promise<QuicBindingConnection> {
     const options = muxOptions(init.options);
     const quicOptions = quicBindingOptions(init.quicOptions);
-    const limit = quicOptions.recordLimit;
-    if (!Number.isInteger(limit) || limit < quicDefaultRecordLimit || limit > quicMaxRecordLength) {
-      throw new RangeError(
-        `quicOptions.recordLimit must be ${quicDefaultRecordLimit} to ${quicMaxRecordLength}, not ${limit}`,
-      );
-    }
-    if (
-      !(quicOptions.maxPendingStreams >= 1) ||
-      !(quicOptions.controlOutputMark >= 1) ||
-      !(quicOptions.writeBatchBytes >= 1) ||
-      !(quicOptions.maxHeldControlMessages >= 1) ||
-      !(options.initialWindow >= 1) ||
-      options.initialWindow > 0xffffffff ||
-      !(options.bulkChunkSize >= 1)
-    ) {
-      throw new RangeError('binding limits and windows must be positive');
-    }
+    checkQuicBindingOptions(options, quicOptions);
     return QuicBindingConnection.#start(
       session,
       options,
@@ -328,7 +318,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       const exporting = Promise.race([
         attempt(() =>
           session.exportKeyingMaterial(
-            isWebTransport ? webTransportExporterLabel : rawQuicExporterLabel,
+            isWebTransport ? webTransportIdentLabel : rawQuicExporterLabel,
             new Uint8Array(0),
             quicExporterLength,
           ),
@@ -1337,6 +1327,9 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    * before (`openAfter`).
    */
   #openLocal(openPayload: Uint8Array, continuation: boolean): QuicChannelEntry {
+    if (!(openPayload instanceof Uint8Array)) {
+      throw new TypeError('an OPEN payload is a Uint8Array');
+    }
     if (this.#closing || (this.#goAwaySent && !continuation)) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closing');
     }
@@ -1354,7 +1347,8 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       );
     }
     const id = this.#allocateId();
-    const entry = this.#makeChannel(id, true, openPayload.slice());
+    // A copy: a Buffer's own `slice` is a view, and the OPEN record is written later.
+    const entry = this.#makeChannel(id, true, Uint8Array.prototype.slice.call(openPayload));
     this.#channels.set(id, entry);
     return entry;
   }
@@ -1427,7 +1421,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       );
     }
     const pending: PendingPing = {
-      payload: message.payload.slice(),
+      payload: Uint8Array.prototype.slice.call(message.payload),
       done,
       start: this.options.clock.now(),
       cleanup: undefined,
@@ -1829,7 +1823,10 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
         throw new TypeError('not the holder key the credential names');
       }
     }
-    const intent = options.intent === undefined ? new Uint8Array(0) : options.intent.slice();
+    const intent =
+      options.intent === undefined
+        ? new Uint8Array(0)
+        : Uint8Array.prototype.slice.call(options.intent);
     const receiver = options.receiver;
     const receiverBytes = receiver === undefined ? new Uint8Array(0) : utf8Encode(receiver);
     const credentialBytes = credential.encode();

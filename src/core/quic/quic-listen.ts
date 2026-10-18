@@ -9,7 +9,7 @@ import { muxOptions } from '../mux/contract.ts';
 import { StatusCode } from '../status.ts';
 import { AsyncQueue } from '../util/async-queue.ts';
 import type { LogLevel } from '../util/logger.ts';
-import { quicLoggerName } from './binding-util.ts';
+import { checkQuicBindingOptions, quicLoggerName } from './binding-util.ts';
 import type { QuicListener, QuicSession } from './contract.ts';
 import { QuicBindingConnection } from './quic-binding-connection.ts';
 import { QuicIdentityRules } from './quic-identity-rules.ts';
@@ -78,7 +78,13 @@ export class QuicBindingListener implements AsyncDisposable {
   #cancelled = false;
   #closing: Promise<void> | undefined;
 
-  /** Use {@link listenQuic}. */
+  /**
+   * Use {@link listenQuic}.
+   *
+   * @throws {RangeError} for options the binding refuses (as
+   * {@link QuicBindingConnection.start} does), before [listener] is used; it
+   * is left open.
+   */
   constructor(listener: QuicListener, init: QuicListenOptions = {}) {
     this.listener = listener;
     this.isWebTransport = listener.endpoint.toLowerCase().startsWith('https:');
@@ -87,6 +93,7 @@ export class QuicBindingListener implements AsyncDisposable {
       ...init.quicOptions,
       identity: init.identityRules ?? QuicIdentityRules.listener,
     });
+    checkQuicBindingOptions(this.options, this.quicOptions);
     this.localIdentity = init.localIdentity;
     this.#queue.onCancel = () => {
       this.#cancelled = true;
@@ -223,6 +230,9 @@ export class QuicBindingListener implements AsyncDisposable {
 /**
  * Accepts the sessions of [listener], a provider's listener, as connections
  * of the binding; see {@link QuicBindingListener}.
+ *
+ * @throws {RangeError} for options the binding refuses, before [listener]
+ * is used; it is left open.
  */
 export function listenQuic(
   listener: QuicListener,

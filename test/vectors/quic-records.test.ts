@@ -37,7 +37,7 @@ import {
   webTransportCodeFromHttp3,
   webTransportCodeToHttp3,
   webTransportExporterContext,
-  webTransportTlsExporterLabel,
+  webTransportExporterLabel,
   writeQuicRecordHeader,
 } from '../../src/core/quic/index.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
@@ -528,7 +528,7 @@ describe('exporter', () => {
         'quic-binding/test-vectors/exporter/webtransport-tls-exporter-label-exporter-webtransport-21-bytes',
       ),
     );
-    expect(hex(new TextEncoder().encode(webTransportTlsExporterLabel))).toBe(vector);
+    expect(hex(new TextEncoder().encode(webTransportExporterLabel))).toBe(vector);
   });
 
   test('quic-binding/test-vectors/exporter/webtransport-tls-exporter-context-session-id-0-27-bytes', () => {

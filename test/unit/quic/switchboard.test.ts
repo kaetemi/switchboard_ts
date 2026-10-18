@@ -928,6 +928,17 @@ describe('review cases', () => {
     expect(server.listeningEndpoints).not.toContain('quic://listener:4433');
   });
 
+  test('a listener refuses binding options out of range before its endpoint is declared', async () => {
+    const server = node();
+    const network = new MemoryQuicNetwork();
+    const provider = network.listen('quic://listener:4433');
+    onCleanup(() => provider.close());
+    await expect(
+      QuicSwitchboardListener.start(server, provider, { quicOptions: { recordLimit: 100 } }),
+    ).rejects.toBeInstanceOf(RangeError);
+    expect(server.listeningEndpoints).not.toContain('quic://listener:4433');
+  });
+
   test('a ReconnectingClient reopens its persistent channel over a new QUIC session after a loss', async () => {
     const server = node();
     server.registerService(echo, echoService);

@@ -26,7 +26,7 @@ import {
   type QuicListener,
   type QuicServerConfig,
   switchboardAlpn,
-  webTransportExporterLabel,
+  webTransportIdentLabel,
 } from '../../src/core/quic/contract.ts';
 import type { QuicBindingConnection } from '../../src/core/quic/quic-binding-connection.ts';
 import { connectQuic, type QuicConnectOptions } from '../../src/core/quic/quic-dial.ts';
@@ -519,7 +519,7 @@ describe.skipIf(!availability.available)(
         );
         await until(() => initiated.peerIdentity !== undefined);
         const exported = await initiated.session.exportKeyingMaterial(
-          webTransportExporterLabel,
+          webTransportIdentLabel,
           new Uint8Array(0),
           32,
         );
