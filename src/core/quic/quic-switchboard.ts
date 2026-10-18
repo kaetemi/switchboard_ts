@@ -253,7 +253,7 @@ export interface QuicSwitchboardListenerOptions {
  * lists it and knows it as its own.
  *
  * ```ts
- * const { certificateDer, privateKeyDer } = await selfSignedCertificate('node-1');
+ * const { certificateDer, privateKeyDer } = selfSignedCertificate('node-1');
  * const listener = await QuicSwitchboardListener.start(
  *   node,
  *   await nativeQuic().listen('0.0.0.0', 4433, {
