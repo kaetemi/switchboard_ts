@@ -47,6 +47,7 @@ import {
   type MemoryTransportOptions,
   memoryTransportPair,
 } from '../../../src/core/transport/memory-transport.ts';
+import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { SteppingClock, settle } from '../../support/node/stepping-clock.ts';
 
@@ -87,7 +88,7 @@ function connect(
   transport: FrameTransport,
   isInitiator: boolean,
   options: TestMuxOptions,
-  clock: SteppingClock,
+  clock: Clock,
 ): FrameMuxConnection {
   const init: FrameMuxConnectionOptions = { clock, ...options, isInitiator };
   return new FrameMuxConnection(transport, init);
@@ -97,8 +98,12 @@ function connect(
 export interface PairOptions {
   readonly initiator?: TestMuxOptions;
   readonly acceptor?: TestMuxOptions;
-  /** Shared by both connections and the memory pair; a new one by default. */
-  readonly clock?: SteppingClock;
+  /**
+   * Shared by both connections and the memory pair; a new
+   * {@link SteppingClock} by default. The identity tests pass the system
+   * clock: Dart's run on real time, with real timeouts.
+   */
+  readonly clock?: Clock;
   /** For the memory pair (its `clock` is the pair's). */
   readonly transport?: MemoryTransportOptions;
 }
@@ -220,7 +225,8 @@ export class RawPeer {
 export interface RawPairOptions {
   readonly muxIsInitiator?: boolean;
   readonly options?: TestMuxOptions;
-  readonly clock?: SteppingClock;
+  /** As {@link PairOptions.clock}. */
+  readonly clock?: Clock;
   readonly transport?: MemoryTransportOptions;
 }
 

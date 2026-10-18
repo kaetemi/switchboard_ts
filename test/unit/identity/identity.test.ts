@@ -21,15 +21,17 @@ import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-fra
 import { MuxIdent } from '../../../src/core/mux/mux-protocol.ts';
 import { Name } from '../../../src/core/name.ts';
 import { type Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { systemClock } from '../../../src/core/util/clock.ts';
 import {
-  control,
+  muxPair as harnessMuxPair,
+  rawPair as harnessRawPair,
   isControl,
-  muxPair,
+  type PairOptions,
   quiet,
+  type RawPairOptions,
   type RawPeer,
   rawOptions,
-  rawPair,
-} from '../../support/identity/mux-harness.ts';
+} from '../mux/support.ts';
 
 const meshKey = Uint8Array.from({ length: 32 }, (_, i) => i);
 const otherKey = Uint8Array.from({ length: 32 }, (_, i) => 100 + i);
@@ -37,6 +39,18 @@ const authoritySeed = Uint8Array.from({ length: 32 }, (_, i) => 7 * i);
 const empty = new Uint8Array(0);
 const minute = 60_000;
 const hour = 60 * minute;
+
+// The mux harness's pairs, on real time: Dart's identity tests run on the
+// real clock (credential checks are WebCrypto work, and the identity
+// timeouts are real ones), where the harness defaults to a stepping clock.
+const muxPair = (options: PairOptions = {}) => harnessMuxPair({ clock: systemClock, ...options });
+const rawPair = (options: RawPairOptions = {}) =>
+  harnessRawPair({ clock: systemClock, ...options });
+
+/** The frame of a control message of [type] carrying [payload], in hex. */
+function control(type: MuxControlType, payload: Uint8Array): string {
+  return hexString(new MuxControlMessage(type, payload).toFrame().encode());
+}
 
 let hmacIssuer: CredentialIssuer;
 let edIssuer: CredentialIssuer;
@@ -760,7 +774,7 @@ describe('connection identity', () => {
     const [a, raw] = rawPair();
     const identifying = expectStatus(a.identify(await bearer()), StatusCode.connectionLost);
     await raw.nextControl(MuxControlType.nonce);
-    await raw.closeOutput();
+    await raw.close();
     await identifying;
     await expectStatus(a.identify(await bearer()), StatusCode.failedPrecondition);
   });
