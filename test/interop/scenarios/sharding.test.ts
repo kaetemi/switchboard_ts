@@ -20,18 +20,20 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // its own.
 
 import { expect, test } from 'vitest';
-import { hexString } from '../../../src/core/bytes.ts';
+import { concatBytes, hexString } from '../../../src/core/bytes.ts';
 import { MovedStatus } from '../../../src/core/naming/naming-protocol.ts';
 import { StatusCode } from '../../../src/core/status.ts';
+import { wikiBytes } from '../../support/vectors.ts';
 import { type CellPeers, describeCells } from '../matrix.ts';
+import { le, name8, utf8 } from '../probe/raw.ts';
 import type { ChannelIncomingEvent, MessageInfo, PeerEvent } from '../protocol.ts';
-import { hex, text } from './support.ts';
+import { hex, nextSubframe } from './support.ts';
 
 /** The types slot-routed channels are opened to; the server's `raw` service takes all their instances. */
 const routed = ['rt-own', 'rt-free', 'rt-lazy', 'rt-mv', 'rt-ask', 'rt-tbl', 'rt-none', 'rt-once'];
 const routedToo = ['rt-reloc', 'rt-sent', 'rt-recv'];
 
-/** The Talk test's type: `raw` at instance 901, `echo` at 902. */
+/** The Talk test's type: `raw` at instances 901 and 902. */
 const talkType = 'rt-talk';
 
 /** How long the naming service waits for an instance's answer: what a refused LOCATE takes. */
@@ -195,7 +197,7 @@ describeCells(
           anyInstance: true,
         })),
         { type: talkType, behaviour: 'raw', instance: 901 },
-        { type: talkType, behaviour: 'echo', instance: 902 },
+        { type: talkType, behaviour: 'raw', instance: 902 },
       ],
     },
   },
@@ -674,26 +676,29 @@ describeCells(
         'naming.slotTalk',
         { naming: r, type: talkType, slot: 1 },
       );
-      // 901 is the raw service: it rejects, and 902 (echo) takes the retry.
+      // 901 rejects, and 902 takes the retry with the same open payload.
       const first = await incoming(peers, talkType);
       expect(first).toMatchObject({ instance: 901, shard: 1 });
       await peers.server.rpc('channel.close', {
         channel: first.channel,
         statusHex: moved(902, epoch + 1).hex,
       });
-      // The retry applies until the first request: wait for it.
-      let retried = false;
-      for (let i = 0; i < 500 && !retried; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-        ({ retried } = await c.rpc<{ retried: boolean }>('slot.state', { slotChannel: sc }));
-      }
-      expect(retried).toBe(true);
-      const reply = await c.rpc<MessageInfo>('talk.request', {
-        talk,
-        procedure: 'UPPER',
-        text: 'moved',
+      // The slot channel is marked retried before it opens the replacement.
+      const second = await incoming(peers, talkType, 2);
+      expect(second).toMatchObject({ instance: 902, shard: 1, payload: first.payload });
+      expect(await c.rpc('slot.state', { slotChannel: sc })).toEqual({ retried: true });
+      // The first request goes there, and its answer comes back from there.
+      const reply = c.rpc<MessageInfo>('talk.request', { talk, procedure: 'UPPER', text: 'moved' });
+      expect(await nextSubframe(peers, second.channel, 0)).toBe(
+        hexString(concatBytes([0x03], name8('UPPER'), le(1, 3), utf8('moved'))),
+      );
+      await peers.server.rpc('channel.send', {
+        channel: second.channel,
+        hex: hexString(
+          wikiBytes('test-vectors/talk-messages/final-response-to-1-no-procedure-payload-ff'),
+        ),
       });
-      expect(text(reply.payload)).toBe('MOVED');
+      expect(await reply).toEqual({ procedure: '', bulk: false, payload: 'FF' });
     });
   },
 );
