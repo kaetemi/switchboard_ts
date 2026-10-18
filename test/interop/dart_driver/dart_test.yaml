@@ -1,0 +1,3 @@
+# The test files run one at a time: each starts TS peer processes and
+# native QUIC sessions, and some of the scenarios use short real timeouts.
+concurrency: 1
