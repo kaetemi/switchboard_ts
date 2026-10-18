@@ -18,6 +18,7 @@ import type {
   HolderKey,
   PeerIdentity,
 } from '../identity/contract.ts';
+import { CredentialVerifier as WallTimeVerifier } from '../identity/credential-verifier.ts';
 import {
   type MuxChannel,
   type MuxConnection,
@@ -118,7 +119,11 @@ export interface SwitchboardOptions {
   resolver?: Resolver | undefined;
   /** The application payload of every channel the node opens without one; empty by default. Never used implicitly with {@link credentialFor}. */
   defaultPayload?: PayloadLike;
-  /** The mux options of every connection, accepted or initiated. */
+  /**
+   * The mux options of every connection, accepted or initiated. Without a
+   * `wallTime`, a {@link verifier} that is a `CredentialVerifier` gives its
+   * own, so that credential expiry is read on one wall clock.
+   */
   muxOptions?: Partial<MuxOptions> | undefined;
   /** The Talk defaults of `openTalk`, `openTalkAt` and `IncomingChannel.talk`. */
   talkOptions?: Partial<TalkOptions> | undefined;
@@ -518,11 +523,15 @@ export class Switchboard implements AsyncDisposable {
     const given = options.muxOptions ?? {};
     this.clock = options.clock ?? given.clock ?? systemClock;
     this.logger = options.logger ?? given.logger ?? noopLogger;
+    const verifier = options.verifier ?? given.identityVerifier;
+    const wallTime =
+      given.wallTime ?? (verifier instanceof WallTimeVerifier ? verifier.wallTime : undefined);
     this.muxOptions = muxOptions({
       ...given,
       clock: given.clock ?? this.clock,
       logger: given.logger ?? this.logger,
       ...(options.verifier === undefined ? {} : { identityVerifier: options.verifier }),
+      ...(wallTime === undefined ? {} : { wallTime }),
     });
     this.talkOptions = talkOptions(options.talkOptions);
     this.resolver = options.resolver;
@@ -658,6 +667,9 @@ export class Switchboard implements AsyncDisposable {
    * a connection the node initiated, what {@link expectedIdentityFor} gives
    * for its endpoint, else nobody.
    *
+   * [options.signal] abandons the wait: the call rejects with its reason
+   * (sending nothing when it has aborted already).
+   *
    * Rejects like `MuxConnection.identify`, and with INTERNAL when
    * {@link expectedIdentityFor} throws (no IDENT is sent).
    *
@@ -665,11 +677,19 @@ export class Switchboard implements AsyncDisposable {
    */
   identifyOn(
     connection: MuxConnection,
-    options: { intent?: Uint8Array | undefined; receiver?: string | undefined } = {},
+    options: {
+      intent?: Uint8Array | undefined;
+      receiver?: string | undefined;
+      signal?: AbortSignal | undefined;
+    } = {},
   ): Promise<void> {
     const credential = this.#credential;
     if (credential === undefined) {
       throw new Error('the node has no credential');
+    }
+    const signal = options.signal;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason);
     }
     const dialled = this.#dialled.get(connection);
     let named: string | undefined;
@@ -684,17 +704,21 @@ export class Switchboard implements AsyncDisposable {
       return Promise.reject(e);
     }
     const intent = options.intent;
-    return connection
-      .identify(credential, {
-        holderKey: this.holderKey,
-        intent,
-        receiver: named,
-        timeout: this.identityTimeout,
-      })
-      .then(() => {
-        this.#identified.set(connection, { intent, receiver: named });
-        return this.#presentCurrent(connection, credential);
-      });
+    return abortable(
+      connection
+        .identify(credential, {
+          holderKey: this.holderKey,
+          intent,
+          receiver: named,
+          timeout: this.identityTimeout,
+          signal,
+        })
+        .then(() => {
+          this.#identified.set(connection, { intent, receiver: named });
+          return this.#presentCurrent(connection, credential);
+        }),
+      signal,
+    );
   }
 
   // Listening ---------------------------------------------------------------
@@ -774,12 +798,9 @@ export class Switchboard implements AsyncDisposable {
           ? parsed.host
           : undefined
         : canonicalHost(options.address);
+    // Listed before the wait for the hosts, as Dart does, so that a close()
+    // starting meanwhile forgets it with the rest.
     const hosts = new Set([parsed.host]);
-    if (bound !== undefined) {
-      for (const host of await this.hostsOf(bound)) {
-        hosts.add(host);
-      }
-    }
     this.#endpoints.push(endpoint);
     this.#own.push({
       uri: endpoint,
@@ -789,6 +810,11 @@ export class Switchboard implements AsyncDisposable {
       viaBinding: true,
     });
     this.log('info', `listening on ${endpoint} (a binding's listener)`);
+    if (bound !== undefined) {
+      for (const host of await this.hostsOf(bound)) {
+        hosts.add(host);
+      }
+    }
   }
 
   /**
@@ -1029,9 +1055,11 @@ export class Switchboard implements AsyncDisposable {
    * listener's endpoint with {@link addListeningEndpoint}. Hand it over as
    * soon as it is established: the node reads `incoming` itself.
    *
-   * @throws {TypeError} if this node owns [connection] already. Rejects
-   * with FAILED_PRECONDITION once {@link close} has started; the connection
-   * is then adopted all the same and sent GOAWAY at once.
+   * @throws {TypeError} if this node owns [connection] already, and a
+   * plain `Error` if something else reads its `incoming` (the bindings
+   * refuse a second consumer); neither adopts it. Rejects with
+   * FAILED_PRECONDITION once {@link close} has started; the connection is
+   * then adopted all the same and sent GOAWAY at once.
    */
   async adopt(
     connection: MuxConnection,
@@ -1071,10 +1099,13 @@ export class Switchboard implements AsyncDisposable {
     if (this.#adopted.has(connection)) {
       throw new TypeError('the connection is adopted by this node already');
     }
+    // Taken before anything changes, as Dart listens first: the bindings
+    // throw a plain Error when `incoming` has a consumer already.
+    const incoming = this.#closing ? undefined : connection.incoming[Symbol.asyncIterator]();
     this.#adopted.add(connection);
     installBulkRouting(connection);
-    if (!this.#closing) {
-      void this.#dispatchAll(connection);
+    if (incoming !== undefined) {
+      void this.#dispatchAll(connection, incoming);
     }
     connection.localIdentity = this.#credential?.identity;
     if (remote !== undefined) {
@@ -1105,9 +1136,12 @@ export class Switchboard implements AsyncDisposable {
     return connection;
   }
 
-  async #dispatchAll(connection: MuxConnection): Promise<void> {
+  async #dispatchAll(
+    connection: MuxConnection,
+    incoming: AsyncIterator<MuxChannel>,
+  ): Promise<void> {
     try {
-      for await (const channel of connection.incoming) {
+      for await (const channel of { [Symbol.asyncIterator]: () => incoming }) {
         this.#dispatch(connection, channel);
       }
     } catch (e) {
@@ -1600,7 +1634,7 @@ export class Switchboard implements AsyncDisposable {
    * connection.
    */
   #connectLocal(own: OwnListener): FrameTransport {
-    const [local, accepted] = this.#runtime.transportPair();
+    const [local, accepted] = this.#runtime.transportPair(this.clock);
     this.adoptTransport(accepted, { isInitiator: false, remote: localRemote, policy: own.policy });
     return local;
   }
@@ -1624,7 +1658,7 @@ export class Switchboard implements AsyncDisposable {
     // Every frame goes through the event queue, as from a socket: a request
     // loop between nodes of the process would otherwise never let a timer
     // run.
-    const [local, remote] = this.#runtime.transportPair();
+    const [local, remote] = this.#runtime.transportPair(this.clock);
     const first = this.#memoryIds[0];
     acceptor(remote, first === undefined ? 'memory peer' : `${memoryScheme}://${first}`);
     return local;
@@ -2413,6 +2447,8 @@ export class Switchboard implements AsyncDisposable {
               : record;
           return new Route(selected, connection);
         } catch (e) {
+          // An abort ends the open with its reason, whatever that is.
+          checkAborted(options.signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }
@@ -2432,6 +2468,7 @@ export class Switchboard implements AsyncDisposable {
             );
             return new Route(record, via.connection, config.type);
           } catch (e) {
+            checkAborted(options.signal);
             if (this.#closing || !(e instanceof SwitchboardError)) {
               throw e;
             }
@@ -2451,6 +2488,7 @@ export class Switchboard implements AsyncDisposable {
           );
           return new Route(record, connection);
         } catch (e) {
+          checkAborted(options.signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }
@@ -2479,15 +2517,19 @@ export class Switchboard implements AsyncDisposable {
    * Rejects with `SwitchboardError`: FAILED_PRECONDITION without a
    * {@link relay}, without a resolver to find the relays in, or after
    * {@link close}; NOT_FOUND when no relay is known; and like
-   * `Resolver.resolve`.
+   * `Resolver.resolve`. Rejects with the reason of [options.signal] once it
+   * aborts.
    */
-  async resolveRelays(options: { resolver?: Resolver | undefined } = {}): Promise<ServiceRecord[]> {
+  async resolveRelays(
+    options: { resolver?: Resolver | undefined; signal?: AbortSignal | undefined } = {},
+  ): Promise<ServiceRecord[]> {
     this.checkOpen();
+    checkAborted(options.signal);
     const config = this.relay;
     if (config === undefined) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'no relay configured');
     }
-    return this.#relayCandidates(config, options.resolver ?? this.resolver, undefined);
+    return this.#relayCandidates(config, options.resolver ?? this.resolver, options.signal);
   }
 
   async #relayCandidates(
@@ -2539,6 +2581,7 @@ export class Switchboard implements AsyncDisposable {
         try {
           return { record, connection: await this.connect(endpoint, { record, signal }) };
         } catch (e) {
+          checkAborted(signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }

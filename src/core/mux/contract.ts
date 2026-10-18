@@ -64,6 +64,13 @@ export interface MuxOptions {
   readonly awaitPeerLimits: boolean;
   /** Time and timers; default the system clock. Tests inject a manual clock. */
   readonly clock: Clock;
+  /**
+   * Wall time in milliseconds since the epoch, which credential expiry is
+   * read on: `peerIdentity`, and when given the verification of an IDENT
+   * (its `now`, so its `verifiedAt` too); default `Date.now`, an IDENT then
+   * checked at the identity verifier's own wall time.
+   */
+  readonly wallTime?: (() => number) | undefined;
   /** Diagnostics; default discards. */
   readonly logger: Logger;
 }

@@ -103,3 +103,17 @@ Information for the lead and the other threads, not instructions.
   `openTalkToSlot`. The flaky authorize-timeout case runs the proxy on a
   manual clock.
 
+
+## Review of the node layer: unverified suspicions
+
+The review (`docs/notes/review-node.md`) left three suspicions untested,
+kept here for a later look: `PeerCore.readopt` reports
+`online`/`offline` synchronously and then calls `update`, so a listener
+that closes the set on that event would get `updated` after `removed`
+(contrived); a `Logger` that throws inside the node's catch paths
+(`#dispatchAll`, `#holdForIdentity`, the proxy's `forward`) would turn a
+`void` promise into an unhandled rejection, where `MeshNode` guards its
+logger; and the Node entry's `close()` closes the QUIC listeners while
+the core's GOAWAY waits run, which interop suggests is harmless (it
+reads GOING_AWAY over QUIC, so the shim seems to keep accepted
+sessions), unchecked.

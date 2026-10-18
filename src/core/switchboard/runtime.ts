@@ -8,6 +8,7 @@ import type { MuxConnection, MuxOptions } from '../mux/contract.ts';
 import { StatusCode, SwitchboardError } from '../status.ts';
 import type { FrameTransport } from '../transport/contract.ts';
 import type { MemoryAcceptor } from '../transport/memory-endpoints.ts';
+import type { Clock } from '../util/clock.ts';
 
 /**
  * What a node needs from the platform it runs on. The core node
@@ -72,8 +73,11 @@ export type TransportDialer = (
 export interface SwitchboardRuntime {
   /** The frame mux. */
   readonly mux: MuxFactory;
-  /** An in-process transport pair whose frames go through the event queue, as from a socket. */
-  readonly transportPair: () => readonly [FrameTransport, FrameTransport];
+  /**
+   * An in-process transport pair whose frames go through the event queue,
+   * as from a socket, delivered on [clock]'s timers (the node's clock).
+   */
+  readonly transportPair: (clock: Clock) => readonly [FrameTransport, FrameTransport];
   /** The in-process listeners. */
   readonly memoryEndpoints: MemoryEndpointRegistry;
   /** Transport dialers by lower-case scheme (`ws`, `wss`, `tcp`). */

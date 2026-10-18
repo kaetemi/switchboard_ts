@@ -158,7 +158,13 @@ export class ClientState {
 
 /** The events of a {@link ReconnectingClient}. */
 export type ClientEvents = {
-  /** Every change of `state`. */
+  /**
+   * Every change of `state`, emitted synchronously inside the transition
+   * (Dart's `states` is an asynchronous stream; {@link ReconnectingClient.states}
+   * is the asynchronous view here). When it reports `connected`, `connection`
+   * and `connected` already hold the new connection, so a listener may stop
+   * the client or force a reconnect.
+   */
   state: ClientState;
 };
 
@@ -866,8 +872,11 @@ export class ReconnectingClient implements AsyncDisposable {
     void connection.done.then((status) => this.#onConnectionDone(connection, status));
     void connection.peerGoAwayStatus.then((status) => this.#onPeerGoAway(connection, status));
     this.#log('info', 'connected');
-    this.#setState(ClientPhase.connected, this.#state.lastStatus, { attempt });
+    // Before the synchronous `state` event: a listener that stops the client
+    // or forces a reconnect then replaces the settled promise (`#halt`,
+    // `#leave`) instead of leaving it to be resolved with a left connection.
     this.#connected.resolve(connection);
+    this.#setState(ClientPhase.connected, this.#state.lastStatus, { attempt });
     // Callbacks may stop or close the client: check before each step.
     for (const p of [...this.#persistent]) {
       if (this.#usableConnection !== connection) {

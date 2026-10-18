@@ -503,7 +503,9 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
 
   get peerIdentity(): PeerIdentity | undefined {
     const identity = this.#peerIdentity;
-    return identity === undefined || identity.isExpired() ? undefined : identity;
+    return identity === undefined || identity.isExpired(this.options.wallTime?.())
+      ? undefined
+      : identity;
   }
 
   get peerIdentified(): Promise<PeerIdentity> {
@@ -2078,6 +2080,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
           senderNonce,
           receiverNonce,
           localIdentity: this.localIdentity,
+          now: this.options.wallTime?.(),
           requireNamedIdent:
             this.options.requireNamedIdent ||
             (this.isInitiator && this.quicOptions.identity.awaitPeerIdentity),

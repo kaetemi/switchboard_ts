@@ -331,7 +331,7 @@ Ports `identity/*.dart`. The contract has the shapes every layer programs agains
 - `CredentialVerifier({ hmacKeys, ed25519Keys, cacheSize, wallTime, logger })`: `addHmacKey`, `addEd25519Key`, `await addIssuer(issuer)`, `removeKey(keyId)` (rotation: keep the old and the new key until the old credentials expired), `await verify(bytes, { now })` (rejects `UNAUTHENTICATED` 'invalid credential' whatever the cause, which goes to the logger at `debug`), `cached(bytes, { now })` (synchronous), an LRU cache by credential bytes that shares concurrent checks.
 - The IDENT proof over `SWBIDENT` ‖ nonces ‖ intent ‖ receiver, and its exporter-bound `SWBIDTLS` variant (`MuxIdent.proofMessage`, `verifyIdent` with wall time in ms), `createPeerIdentity`, `secureRandomBytes`.
 
-On a connection: `await connection.identify(credential, { holderKey, receiver, intent })` (a holder key given with a bearer credential is ignored, as in Dart; a holder-key credential without its key, or with another key, is refused before anything is sent); the receiving side verifies with `identityVerifier` in its mux options, and `requireNamedIdent` refuses an IDENT that names no receiver. All signing and verification is `async` over `crypto.subtle`; Ed25519 private keys import as PKCS#8. Times are wall time in milliseconds since the epoch (the injected `Clock` is monotonic).
+On a connection: `await connection.identify(credential, { holderKey, receiver, intent })` (a holder key given with a bearer credential is ignored, as in Dart; a holder-key credential without its key, or with another key, is refused before anything is sent); the receiving side verifies with `identityVerifier` in its mux options, and `requireNamedIdent` refuses an IDENT that names no receiver. All signing and verification is `async` over `crypto.subtle`; Ed25519 private keys import as PKCS#8. Times are wall time in milliseconds since the epoch (the injected `Clock` is monotonic); a connection reads credential expiry (`peerIdentity`, and the IDENT's verification) on `MuxOptions.wallTime` (default `Date.now`), which a `Switchboard` takes from its `CredentialVerifier` when its mux options give none, and `MeshNode` from the node, so that one wall clock serves them all, as Dart's `package:clock` does.
 
 ### 6.5 Talk: `talk/contract.ts`
 
@@ -382,8 +382,8 @@ class Switchboard {
   connect(endpoint: string, options?: { policy?, record?, signal? }): Promise<MuxConnection>;   // pooled
   dial(endpoint, options?: { policy?, intent?, receiver?, record?, signal? }): Promise<MuxConnection>;   // not pooled
   broker(address, options?: { resolver?, signal? }): Promise<MuxConnection>; readonly canBroker: boolean;
-  resolveRelays(options?): Promise<ServiceRecord[]>;
-  identifyOn(connection, options?: { intent?, receiver? }): Promise<void>; updateCredential(credential): Promise<void>;
+  resolveRelays(options?: { resolver?, signal? }): Promise<ServiceRecord[]>;
+  identifyOn(connection, options?: { intent?, receiver?, signal? }): Promise<void>; updateCredential(credential): Promise<void>;
   listenMemory(options?: { policy?, name? }): Promise<string>;
   accept(transport, options?: { policy?, remote? }): Promise<MuxConnection>; adopt(connection, options?): Promise<MuxConnection>;
   addListeningEndpoint(endpoint, options?): Promise<void>; removeListeningEndpoint(endpoint): boolean;
@@ -508,6 +508,7 @@ Behavioural differences a Dart user would notice; the wire is unchanged.
 14. Talk, as `docs/handoff-notes/talk.md` details: `serve(handler)` is the guarded listener (a handler that throws or rejects answers its request ABORT INTERNAL and marks it cancelled); a throw in a `for await` body does not answer the request it was given (it waits for the responder timeout, as with Dart's `await for`); `messages` and a stream's items are iterated once; `forwardMessage` takes over a message's frame credit only when called synchronously inside a `serve` handler (a message taken by `for await` had its credit returned before the loop body ran); `onExtend` gets one `{ deadline?, renew? }` object; bulk receive allows for Talk reading behind the mux (bulk admission counts the frames on their way to Talk); over unordered connections (QUIC) Talk reports the frames it holds consumed ahead of their delivery while bulk channels wait for their references, up to one window, and counts the frames it may still read on before refusing a bulk channel (section 13, item 6). Dart's receiver refuses such a burst past 16.
 15. Errors: Dart's `ArgumentError` is `RangeError` or `TypeError`, its `StateError` a plain `Error`; FRAME_TOO_LARGE is a `SwitchboardError`, only PROTOCOL_ERROR a `ProtocolError`.
 16. `PeerSet` events fire synchronously (Dart's broadcast is asynchronous), with guards against re-entrancy; a signal passed to a pooled `connect` abandons only that caller's wait, and a late connection of an abandoned `dial` is sent GOAWAY.
+17. `ReconnectingClient`'s `on('state')` fires synchronously inside each transition (Dart's `states` is an asynchronous broadcast stream; `states` is the asynchronous view here); when it reports `connected`, `connection` and `connected` already hold the new connection, so a listener that stops the client or forces a reconnect gets `connected` replaced, never resolved with the connection it left.
 
 Not a deviation, but easy to misread: `identify` ignores a holder key given with a bearer credential, in the frame mux and the QUIC binding alike, as Dart does.
 
