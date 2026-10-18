@@ -469,6 +469,27 @@ describe.skipIf(!availability.available)(
           expect((await within(connection.done)).code).toBe(StatusCode.goingAway);
         });
 
+        // TS behaviour beyond Dart (design section 12, item 17): the PING
+        // barrier. With no channel open nothing else holds the close back,
+        // and an application close discards what is in flight.
+        test('GOAWAY with no channel open, from the dialler: the listener reads it before the session ends', async () => {
+          const server = await listen(mode, { echo: false });
+          const connection = await dial(server);
+          await until(() => server.accepted.length === 1);
+          const accepted = server.accepted[0] as QuicBindingConnection;
+          // A GOAWAY known only from the session's close resolves
+          // peerGoAwayStatus after the session's end.
+          const order: string[] = [];
+          void accepted.peerGoAwayStatus.then(() => order.push('GOAWAY'));
+          void accepted.session.done.then(() => order.push('end'));
+          const upgrade = Status.of(StatusCode.unavailable, 'upgrade');
+          await within(connection.goAway(upgrade));
+          expect((await within(accepted.peerGoAwayStatus)).equals(upgrade)).toBe(true);
+          await within(accepted.session.done);
+          expect(order).toEqual(['GOAWAY', 'end']);
+          expect((await within(accepted.done)).code).toBe(StatusCode.goingAway);
+        });
+
         test('the idle timeout ends the channels with CONNECTION_LOST', async () => {
           const idle = 800;
           const server = await listen(mode, { idle, keepAlive: 0, echo: false });
