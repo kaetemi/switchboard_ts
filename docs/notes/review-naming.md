@@ -6,6 +6,10 @@ Independent review of `src/core/naming/**` and the slot-routed half of the node 
 Each finding has an expected-fail case (`test.fails`) under `test/unit/naming/review-*.test.ts`; a fix
 flips it to `test`. No source was changed. `npm run check`: 3007 passed, 7 expected fail.
 
+Status: the seven findings are fixed on `claude/review-naming`, one commit each, and their cases
+are plain tests now, with more beside them; the unverified suspicions are listed in
+`docs/notes/naming.md` and stay open.
+
 ## Findings, most severe first
 
 1. **`SlotChannel.writable` drops writes after the end instead of rejecting** (data loss).

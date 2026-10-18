@@ -106,6 +106,22 @@ Information for the lead and the other threads, not instructions.
 - `MovedStatus.parse` never throws (missing or short fields mean unknown
   owner), as in Dart.
 
+## Review follow-ups not taken (docs/notes/review-naming.md)
+
+The review's unverified suspicions stay open, unreproduced: the
+split-brain window when the naming channel is lost after a `DRAIN`
+succeeded and the new owner was assigned (the old owner resumes the slot
+locally until its re-claim is refused after the reconnect; Dart has it
+too, so it is a design question for the wiki, not a port defect); the
+allocator's `weight * assigned - load * total`, which passes 2^53 only
+once the summed capacities pass about 2^37 at 65 536 slots; `SlotGate`
+not validating `forwardGrace` and `drainTimeout` (NaN never fires a
+`ManualClock` timer); `NamingService.table`, `slotTables` and
+`SlotTable.entries` handing out the live maps typed `ReadonlyMap`, where
+Dart wraps them; and a malformed `PHASE` item ending `migrate`'s
+iteration (and cancelling the `MIGRATE`) where Dart adds an error and
+goes on.
+
 ## Questions for the lead
 
 - Review the `SlotResolver` contract commit (above) with the next PR.
