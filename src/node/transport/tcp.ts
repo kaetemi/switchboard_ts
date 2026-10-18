@@ -66,13 +66,59 @@ export function uriHost(host: string): string {
 }
 
 /**
+ * What a socket holds that the operating system has not taken:
+ * `writableLength` while the socket is open. A destroyed socket drops
+ * that buffer, but `writableLength` keeps counting it until the handle
+ * has closed, some turns of the event loop later. So the backlog notes
+ * what the socket held when it was destroyed: from then on nothing is
+ * buffered, and those bytes stay counted as not taken.
+ */
+class SocketBacklog {
+  readonly #socket: Socket;
+  #dropped: number | undefined;
+
+  constructor(socket: Socket) {
+    this.#socket = socket;
+    // A socket the connection's failure destroys reports the error a turn
+    // later, before its handle closes: what it held is still counted then.
+    socket.prependListener('error', () => this.#note());
+  }
+
+  /** Bytes the socket buffers for the network: 0 once it is destroyed. */
+  get buffered(): number {
+    this.#note();
+    return this.#dropped === undefined ? this.#socket.writableLength : 0;
+  }
+
+  /** Bytes handed to the socket that the network did not take: buffered, or dropped. */
+  get unsent(): number {
+    this.#note();
+    return this.#dropped ?? this.#socket.writableLength;
+  }
+
+  /** Destroys the socket, noting what it held first. */
+  destroy(): void {
+    if (this.#dropped === undefined) {
+      this.#dropped = this.#socket.writableLength;
+    }
+    this.#socket.destroy();
+  }
+
+  #note(): void {
+    if (this.#dropped === undefined && this.#socket.destroyed) {
+      this.#dropped = this.#socket.writableLength;
+    }
+  }
+}
+
+/**
  * The receiving half of [socket], pull-based: `socket.read()` takes what
  * the socket buffered, so the socket stops reading from the network
  * while nobody reads (Node's own back-pressure). Cancelling destroys the
  * socket: the stream transport cancels its input only once the output is
  * finished, or when it tears the connection down.
  */
-function socketInput(socket: Socket): ByteInput {
+function socketInput(socket: Socket, backlog: SocketBacklog): ByteInput {
   let failure: { readonly error: unknown } | undefined;
   let ended = false;
   let cancelled = false;
@@ -121,7 +167,7 @@ function socketInput(socket: Socket): ByteInput {
       }
       cancelled = true;
       wake();
-      socket.destroy();
+      backlog.destroy();
     },
   };
 }
@@ -132,7 +178,7 @@ function socketInput(socket: Socket): ByteInput {
  * waits, counted, in the stream transport. Closing ends the socket (a FIN
  * after what was written) and resolves once that is done.
  */
-function socketOutput(socket: Socket): ByteOutput {
+function socketOutput(socket: Socket, backlog: SocketBacklog): ByteOutput {
   let failed = false;
   let finished = false;
   let failure: ((error: unknown) => void) | undefined;
@@ -218,7 +264,7 @@ function socketOutput(socket: Socket): ByteOutput {
       });
     },
     abort() {
-      socket.destroy();
+      backlog.destroy();
     },
     onFailure(callback) {
       failure = callback;
@@ -234,26 +280,36 @@ function socketOutput(socket: Socket): ByteOutput {
 export class TcpTransport extends StreamTransport {
   /** The socket. */
   readonly socket: Socket;
+  readonly #backlog: SocketBacklog;
 
   /** Prefer {@link tcpTransport}, which also sets `TCP_NODELAY`. */
   constructor(socket: Socket, options: TcpTransportOptions = {}) {
-    super(socketInput(socket), socketOutput(socket), {
+    const backlog = new SocketBacklog(socket);
+    super(socketInput(socket, backlog), socketOutput(socket, backlog), {
       ...options,
       remote: options.remote ?? socketRemote(socket),
       linger: true,
-      abort: () => socket.destroy(),
+      abort: () => backlog.destroy(),
     });
     this.socket = socket;
+    this.#backlog = backlog;
   }
 
-  /** Bytes written that the network has not taken yet: the transport's queue and the socket's buffer. */
+  /**
+   * Bytes written that the network has not taken yet: the transport's
+   * queue and the socket's buffer. 0 from the moment the transport aborts
+   * (or the socket is destroyed), which drops both.
+   */
   override get bufferedOutputBytes(): number {
-    return super.bufferedOutputBytes + this.socket.writableLength;
+    return super.bufferedOutputBytes + this.#backlog.buffered;
   }
 
-  /** Total bytes the operating system has taken, preamble and length prefixes included. */
+  /**
+   * Total bytes the operating system has taken, preamble and length
+   * prefixes included. What a destroyed socket dropped is never counted.
+   */
   override get acceptedOutputBytes(): number {
-    return Math.max(0, super.acceptedOutputBytes - this.socket.writableLength);
+    return Math.max(0, super.acceptedOutputBytes - this.#backlog.unsent);
   }
 
   override toString(): string {

@@ -553,8 +553,7 @@ describe('output backpressure over TCP', () => {
     await mux.close();
     expect(Date.now() - closing).toBeLessThan(5000);
     expect(transport.socket.destroyed).toBe(true);
-    // The socket lets go of what it buffered as its destroy completes.
-    await settle();
+    // The destroyed socket's buffer is dropped: nothing counts as buffered.
     expect(transport.bufferedOutputBytes).toBe(0);
     // The client learns of it once it reads.
     client.resume();
