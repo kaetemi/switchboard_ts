@@ -107,7 +107,10 @@ export interface WebSocketTransportOptions {
   readonly closeCodeFor?: (error: unknown) => number;
   /** The peer, for logs and `FrameTransport.remote`. */
   readonly remote?: string;
-  /** Source of the close timer. Default {@link systemClock}. */
+  /**
+   * Source of the close timer and, over the Node entry's `ws` adapter, of
+   * the poll of `bufferedAmount`. Default {@link systemClock}.
+   */
   readonly clock?: Clock;
   /** Receives the transport's diagnostics, as `Switchboard.Transport`. */
   readonly logger?: Logger;

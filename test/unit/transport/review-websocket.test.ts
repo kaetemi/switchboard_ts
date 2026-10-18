@@ -23,9 +23,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // time whatever `clock` the transport was given. Design section 5: every
 // timer comes from the `Clock` in the options.
 //
-// A test still marked `test.fails` fails against the current sources; once
-// its defect is fixed it passes, `test.fails` reports that, and the
-// `.fails` goes.
+// The adapter now takes the clock (`WsConnectionOptions.clock`), and
+// `acceptWebSocket`, `listenWebSocket` and `connectWsWebSocket` pass the one
+// of their options.
 
 import { EventEmitter } from 'node:events';
 import { describe, expect, test, vi } from 'vitest';
@@ -181,15 +181,12 @@ class ScriptedWs extends EventEmitter {
 }
 
 describe('review: output readiness over ws and the injected clock', () => {
-  test.fails('the wait for bufferedAmount to drop runs on the transport clock', async () => {
+  test('the wait for bufferedAmount to drop runs on the transport clock', async () => {
     const clock = new ManualClock();
     const ws = new ScriptedWs();
     // The clock goes to the adapter too, as acceptWebSocket and
-    // connectWsWebSocket could pass the one of their options; today the
-    // adapter takes none and ignores it.
-    const transport = new WebSocketTransport(wsConnection(ws as never, { clock } as never), {
-      clock,
-    });
+    // connectWsWebSocket pass the one of their options.
+    const transport = new WebSocketTransport(wsConnection(ws as never, { clock }), { clock });
     ws.bufferedAmount = 200_000;
     expect(transport.isOutputReady).toBe(false);
     // The global timers are stopped: only the clock's time passes.
