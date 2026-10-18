@@ -1121,17 +1121,18 @@ for (const server of servers) {
             });
 
             // The binding page ("GOAWAY and connection close"): a side
-            // writes a PING right behind its GOAWAY and closes only once its
-            // PONG arrived (the peer read the GOAWAY), the peer's own close
-            // arrived, or the close confirmation timeout passed: an
-            // application close discards what is in flight, and with no
-            // channel open nothing else holds the close back. The TS peer
-            // does so (design section 12, item 17); the Dart peer at its
+            // writes a PING right after its GOAWAY and closes only once its
+            // PONG arrived (the peer read the GOAWAY), the connection ended
+            // (the peer's own close), or the close confirmation timeout
+            // passed: an application close discards what is in flight, and
+            // with no channel open nothing else holds the close back. The TS
+            // peer does so (design section 13, item 8); the Dart peer at its
             // pinned commit closes at once and loses the GOAWAY about every
-            // other time, until the Dart branch with the fix lands.
+            // other time. Its fix (switchboard_quic f8babf6, on a branch)
+            // runs here once it is merged and the interop pin moves.
             const goAwayLost =
               server === 'dart'
-                ? ' (skipped: Dart deviation until the Dart fix lands: the session closes before its GOAWAY record is read, which loses it)'
+                ? ' (skipped: the pinned Dart closes before its GOAWAY record is read, which loses it; until the Dart fix, switchboard_quic f8babf6, is merged and the pin moves)'
                 : '';
             test.skipIf(server === 'dart')(
               `with no channel open, the client's GOAWAY and the PING behind it arrive before its close, which follows the PONG${goAwayLost}`,

@@ -105,7 +105,8 @@ export async function nextSubframe(peers: CellPeers, far: string, seen: number):
  * application error code" when it reads the reset first, over WebTransport:
  * rare, since the side ending the session holds the resets back until its
  * close is acknowledged, but seen Dart to Dart too. That reading is
- * accepted from a Dart reader until the Dart fix lands.
+ * accepted from a Dart reader until the Dart fix (switchboard_quic
+ * f8babf6, on a branch) is merged and the interop pin moves.
  */
 export function expectEndedWith(
   event: PeerEvent,
