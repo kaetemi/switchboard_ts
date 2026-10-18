@@ -27,19 +27,21 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 //    every bulk channel that ended has reached its end and the
 //    reassemblies of those have finished (`#drainBulk`, at most
 //    `bulkIdleTimeout`), so both are delivered.
-// 3. Over unordered channels, a bulk channel the mux routes between the
+// 3. Over unordered channels, a bulk channel the mux routed between the
 //    parent's end and `#linger` registering the lingering target (Talk's
-//    reader lags the mux, then awaits `raw.done`) finds no open parent and
-//    no lingering target: it is held as a channel whose parent has not
+//    reader lags the mux, then awaits `raw.done`) found no open parent and
+//    no lingering target: it was held as a channel whose parent has not
 //    arrived (`PendingParents`), never handed to Talk, and refused after
-//    `heldBulkTimeout`; the message waiting for it is dropped when
-//    `bulkOpenTimeout` ends the linger. Dart awaits `done` before
-//    `_linger` too.
+//    `heldBulkTimeout`; the message waiting for it was dropped when
+//    `bulkOpenTimeout` ended the linger. Dart awaits `done` before
+//    `_linger` too. Now a graceful end of the parent keeps its target
+//    until Talk lingers or declines (`releaseBulkTarget`), holding what is
+//    routed for it meanwhile, and the lingering target takes what was held.
 //
 // A peer that sends the parent's CLOSE right behind its bulk channels is
 // allowed ("a peer need only have sent them", dart-design.md); a Talk
 // sender waits for their confirmation first, a raw peer or a relay need
-// not. The test of item 3 is `test.fails` while the defect is there.
+// not.
 
 import { expect, test } from 'vitest';
 import { MuxFrame } from '../../../src/core/mux/mux-frame.ts';
@@ -141,7 +143,7 @@ test('a reassembled payload sent whole before the parent closed is delivered (un
   expectBytes((await messages.next()).payload, payload);
 });
 
-test.fails('a bulk channel routed just after its parent ended, before Talk lingers, is still handed to the message waiting for it (unordered channels)', async () => {
+test('a bulk channel routed just after its parent ended, before Talk lingers, is still handed to the message waiting for it (unordered channels)', async () => {
   const clock = new ManualClock();
   const [client, server] = memoryMuxPair({ ordered: false, mux: { clock } });
   installBulkRouting(client);

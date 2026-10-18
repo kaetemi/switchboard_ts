@@ -35,6 +35,7 @@ import {
   lingerBulkTarget,
   markBulkChannel,
   registerBulkTarget,
+  releaseBulkTarget,
   routeBulk,
 } from './talk-bulk-routes.ts';
 import { type Awaited, BulkIn, BulkOut, BulkPayload, Lane } from './talk-bulk-transfer.ts';
@@ -808,6 +809,11 @@ export class TalkChannel implements TalkChannelContract {
       ),
       { keepOutgoingBulk: status.isOk },
     );
+    const mux = this.#mux;
+    if (mux !== undefined) {
+      // Closed here: nothing is kept for the bulk channels that come after.
+      releaseBulkTarget(mux, this.#bulkTarget);
+    }
     if (status.isOk && this._bulkOuts.size > 0) {
       await this.#awaitBulkOuts();
     }
@@ -2652,17 +2658,25 @@ export class TalkChannel implements TalkChannelContract {
       }
     }
     const mux = this.#mux;
-    if (mux === undefined || this.#bulkSettled) {
+    if (mux === undefined) {
+      return;
+    }
+    if (this.#bulkSettled) {
+      // What was routed for it since the end is not wanted.
+      releaseBulkTarget(mux, this.#bulkTarget);
       return;
     }
     const settled = new Deferred<void>();
+    // Lingering before the target takes what was routed for this channel
+    // since it ended ({@link lingerBulkTarget}).
+    this._lingering = settled;
+    this._lingerProgress = this._clock.now();
     if (!lingerBulkTarget(mux, this.#bulkTarget, settled.promise)) {
+      this._lingering = undefined;
       this._log('debug', 'too many channels waiting for bulk payloads; not waiting');
       settled.resolve();
       return;
     }
-    this._lingering = settled;
-    this._lingerProgress = this._clock.now();
     let limit = this.options.bulkIdleTimeout;
     if (limit <= 0) {
       limit = 30_000;

@@ -65,6 +65,8 @@ interface Route {
   readonly parent: MuxChannel;
   target: BulkTarget | undefined;
   held: HeldBulk[];
+  /** The target will not linger ({@link releaseBulkTarget}): a graceful end of the parent keeps nothing for it. */
+  released: boolean;
 }
 
 const routes = new WeakMap<MuxConnection, Map<number, Route>>();
@@ -138,9 +140,13 @@ export function followBulkTarget(from: MuxChannel, to: MuxChannel): void {
  * false), a bulk channel the peer opened before its graceful close may
  * arrive after it, and is admitted if a message referencing it arrived
  * before the close (wiki page "Polyverse Switchboard QUIC and WebTransport
- * Binding", section "Bulk payloads"). At most {@link maxHeldBulk} parents
- * of a connection linger at once. False, and nothing is kept, beyond that,
- * on an ordered connection, and for a parent lingering already.
+ * Binding", section "Bulk payloads"). It takes at once those routed for
+ * [parent] since it ended, while its owner had not decided yet (held for
+ * it, or as for a parent that has not arrived). At most
+ * {@link maxHeldBulk} parents of a connection linger at once. False, and
+ * nothing is kept, beyond that, on an ordered connection, and for a parent
+ * lingering already; then those held for it are refused, as
+ * {@link releaseBulkTarget} refuses them.
  *
  * @internal
  */
@@ -153,20 +159,47 @@ export function lingerBulkTarget(
   if (connection.hasOrderedChannels) {
     return false;
   }
-  let ended = endedParents.get(connection);
-  if (ended === undefined) {
-    ended = new EndedParents(connection);
-    endedParents.set(connection, ended);
+  const ended = endedParentsOf(connection);
+  if (!ended.add(parent.id, target, until)) {
+    ended.release(parent.id);
+    return false;
   }
-  const added = ended.add(parent.id, target, until);
-  if (added) {
-    // A binding connection keeps draining while the parent waits.
-    const retain = (connection as { retainForDrain?: unknown }).retainForDrain;
-    if (typeof retain === 'function') {
-      (retain as (id: number, until: Promise<void>) => void).call(connection, parent.id, until);
-    }
+  // A binding connection keeps draining while the parent waits.
+  const retain = (connection as { retainForDrain?: unknown }).retainForDrain;
+  if (typeof retain === 'function') {
+    (retain as (id: number, until: Promise<void>) => void).call(connection, parent.id, until);
   }
-  return added;
+  // What arrived between the parent's end and now.
+  const clock = connection.options.clock;
+  for (const entry of ended.decide(parent.id)) {
+    clock.clearTimeout(entry.timer);
+    target(entry.bulk, entry.number);
+  }
+  pendingParents.get(connection)?.dispatch(parent);
+  return true;
+}
+
+/**
+ * [target], which took the bulk channels the peer opened for [parent],
+ * will not take any after [parent] ends: on a connection whose channels
+ * are not ordered, a graceful end of the parent keeps the target until
+ * its owner lingers ({@link lingerBulkTarget}) or calls this, holding
+ * what is routed for the parent meanwhile; this refuses what was held
+ * (FAILED_PRECONDITION), or, before the end, keeps nothing at the end.
+ * Does nothing on an ordered connection.
+ *
+ * @internal
+ */
+export function releaseBulkTarget(parent: MuxChannel, target: BulkTarget): void {
+  const connection = parent.connection;
+  if (connection.hasOrderedChannels) {
+    return;
+  }
+  const route = routes.get(connection)?.get(parent.id);
+  if (route !== undefined && route.parent === parent && route.target === target) {
+    route.released = true;
+  }
+  endedParents.get(connection)?.release(parent.id);
 }
 
 /**
@@ -179,9 +212,12 @@ export function lingerBulkTarget(
  *
  * On a connection whose channels are not ordered, a bulk channel can
  * arrive before its parent or after it ended: one naming a parent that
- * lingers goes to its target; one naming an id of the peer's parity that
- * is not open is held until the parent arrives, at most
- * {@link heldBulkTimeout}, in a backlog of {@link maxHeldBulk} per
+ * lingers goes to its target; one naming a parent that ended gracefully
+ * while a target took its bulk channels, whose owner has not decided yet
+ * whether to linger, is held for it, at most {@link heldBulkTimeout} and
+ * {@link maxHeldBulk} per parent (then as below); one naming an id of the
+ * peer's parity that is not open is held until the parent arrives, at
+ * most {@link heldBulkTimeout}, in a backlog of {@link maxHeldBulk} per
  * connection (beyond it RESOURCE_EXHAUSTED, after it FAILED_PRECONDITION);
  * one naming an id of this side's parity that is not open is refused at
  * once.
@@ -198,6 +234,9 @@ export function routeBulkChannel(bulk: MuxChannel, open: TalkBulkOpen): void {
     const lingering = ended?.targetOf(open.parentId);
     if (lingering !== undefined) {
       lingering(bulk, open.number);
+      return;
+    }
+    if (ended?.hold(open.parentId, bulk, open.number) === true) {
       return;
     }
     if (parent === undefined && ended?.failed(open.parentId) === true) {
@@ -349,6 +388,9 @@ function continuesOpenChannel(connection: MuxConnection, openPayload: Uint8Array
   if (parent !== undefined && parent.state !== 'closed') {
     return true;
   }
+  if (endedParents.get(connection)?.isDeciding(parentId) === true) {
+    return true;
+  }
   const retained = (connection as { retainedForDrain?: unknown }).retainedForDrain;
   return (
     typeof retained === 'function' &&
@@ -376,20 +418,21 @@ function routeOf(parent: MuxChannel): Route {
   if (existing !== undefined && existing.parent === parent) {
     return existing;
   }
-  const route: Route = { parent, target: undefined, held: [] };
+  const route: Route = { parent, target: undefined, held: [], released: false };
   byId.set(parent.id, route);
   const map = byId;
   void parent.done.then((status) => {
     if (map.get(parent.id) === route) {
       map.delete(parent.id);
     }
-    if (!status.isOk && !connection.hasOrderedChannels) {
-      let ended = endedParents.get(connection);
-      if (ended === undefined) {
-        ended = new EndedParents(connection);
-        endedParents.set(connection, ended);
+    if (!connection.hasOrderedChannels) {
+      if (!status.isOk) {
+        endedParentsOf(connection).fail(parent.id);
+      } else if (route.target !== undefined && !route.released) {
+        // Its bulk channels may still come; its target's owner sees the
+        // end later (a reader behind the mux) and decides then.
+        endedParentsOf(connection).end(parent.id);
       }
-      ended.fail(parent.id);
     }
     const held = route.held;
     route.held = [];
@@ -446,28 +489,127 @@ class PendingParents {
   }
 }
 
+function endedParentsOf(connection: MuxConnection): EndedParents {
+  let ended = endedParents.get(connection);
+  if (ended === undefined) {
+    ended = new EndedParents(connection);
+    endedParents.set(connection, ended);
+  }
+  return ended;
+}
+
 /**
  * What a connection whose channels are not ordered remembers of the
  * parents that ended: the targets of those that still wait for bulk
  * channels ({@link lingerBulkTarget}), at most {@link maxHeldBulk}, each
- * until its target is done waiting; and the ids of the last
- * {@link maxHeldBulk} that ended with a failure status, whose late bulk
- * channels are closed CANCELLED (ids are not reused on such a
- * connection). Older ones are forgotten, their late bulk channels taken
- * for ones whose parent has not arrived.
+ * until its target is done waiting; those that ended gracefully while a
+ * target took their bulk channels, until its owner lingers or declines
+ * ({@link releaseBulkTarget}), with the bulk channels held for them
+ * meanwhile, at most {@link maxHeldBulk} parents (the oldest goes, its
+ * bulk channels refused); and the ids of the last {@link maxHeldBulk}
+ * that ended with a failure status, whose late bulk channels are closed
+ * CANCELLED (ids are not reused on such a connection). Older ones are
+ * forgotten, their late bulk channels taken for ones whose parent has not
+ * arrived.
  */
 class EndedParents {
+  readonly #connection: MuxConnection;
   readonly #targets = new Map<number, BulkTarget>();
   // Insertion ordered: the oldest goes first.
+  readonly #deciding = new Map<number, HeldBulk[]>();
   readonly #failed = new Set<number>();
   #ended = false;
 
   constructor(connection: MuxConnection) {
+    this.#connection = connection;
     void connection.done.then(() => {
       this.#ended = true;
       this.#targets.clear();
       this.#failed.clear();
+      const clock = connection.options.clock;
+      for (const held of this.#deciding.values()) {
+        for (const entry of held) {
+          clock.clearTimeout(entry.timer);
+        }
+      }
+      this.#deciding.clear();
     });
+  }
+
+  /** [parentId] ended gracefully with a target: what names it is held until its owner decides. */
+  end(parentId: number): void {
+    if (this.#ended || this.#deciding.has(parentId) || this.#targets.has(parentId)) {
+      return;
+    }
+    if (this.#deciding.size >= maxHeldBulk) {
+      const oldest = this.#deciding.keys().next();
+      if (oldest.done !== true) {
+        this.release(oldest.value);
+      }
+    }
+    this.#deciding.set(parentId, []);
+  }
+
+  isDeciding(parentId: number): boolean {
+    return this.#deciding.has(parentId);
+  }
+
+  /** Holds [bulk] for [parentId], whose owner has not decided yet; false when it is not such a parent. */
+  hold(parentId: number, bulk: MuxChannel, number: number): boolean {
+    const held = this.#deciding.get(parentId);
+    if (held === undefined) {
+      return false;
+    }
+    if (held.length >= maxHeldBulk) {
+      refuse(
+        bulk,
+        Status.of(StatusCode.resourceExhausted, 'too many bulk channels before their messages'),
+      );
+      return true;
+    }
+    const entry: HeldBulk = {
+      bulk,
+      number,
+      timer: this.#connection.options.clock.setTimeout(() => {
+        const index = held.indexOf(entry);
+        if (index >= 0) {
+          held.splice(index, 1);
+          refuse(
+            bulk,
+            Status.of(
+              StatusCode.failedPrecondition,
+              'the parent channel took no bulk payloads in time',
+            ),
+          );
+        }
+      }, heldBulkTimeout),
+    };
+    held.push(entry);
+    return true;
+  }
+
+  /** The owner of [parentId] lingers: what was held for it, which it takes now. */
+  decide(parentId: number): HeldBulk[] {
+    const held = this.#deciding.get(parentId) ?? [];
+    this.#deciding.delete(parentId);
+    return held;
+  }
+
+  /** The owner of [parentId] does not linger: what was held for it is refused. */
+  release(parentId: number): void {
+    const held = this.#deciding.get(parentId);
+    if (held === undefined) {
+      return;
+    }
+    this.#deciding.delete(parentId);
+    const clock = this.#connection.options.clock;
+    for (const entry of held) {
+      clock.clearTimeout(entry.timer);
+      refuse(
+        entry.bulk,
+        Status.of(StatusCode.failedPrecondition, 'no open parent channel for the bulk channel'),
+      );
+    }
   }
 
   targetOf(parentId: number): BulkTarget | undefined {
