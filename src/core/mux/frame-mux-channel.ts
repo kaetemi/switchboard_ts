@@ -1064,6 +1064,13 @@ export class FrameMuxChannel implements MuxChannel {
    * or the peer did not confirm within `MuxOptions.closeConfirmTimeout`;
    * at once if the channel is closed already. Never rejects.
    *
+   * On a channel that has ended already (the peer's CLOSE arrived, or the
+   * connection ended) and whose {@link readable} nothing reads, it drops
+   * the subframes not delivered, as cancelling the readable does, so that
+   * they no longer count toward the connection's `bufferedBytes` and its
+   * receive high-water mark. A channel closed while still open keeps
+   * delivering what arrives until its end.
+   *
    * @throws {RangeError} for an application status code (256 and above).
    */
   close(status: Status = Status.ok): Promise<void> {
@@ -1085,6 +1092,11 @@ export class FrameMuxChannel implements MuxChannel {
       }
       // Nothing more is sent: what waits for room fails.
       this.#wakeWritable();
+    } else if (this.#state === 'closed' && !(this.#readable?.locked ?? false)) {
+      // The channel has ended and nothing reads it: closing it says
+      // nothing will. What it buffered is dropped, as a cancelled
+      // readable's is, and no longer holds the connection's receive pause.
+      this.#discard();
     }
     return this.#done.promise.then(() => {});
   }
