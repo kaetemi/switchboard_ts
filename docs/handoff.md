@@ -65,7 +65,7 @@ _To be filled in by the lead once the `claude/ts-peer` branch is merged: which c
 
 The design's section 11 is the list; the ones a session meets first:
 
-- **Package** `@kaetemi/switchboard`; prebuilt addons `@kaetemi/switchboard-quic-<target>` as optional dependencies (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64).
+- **Package** `@kaetemi/switchboard`; prebuilt addons `@kaetemi/switchboard-quic-<target>` as optional dependencies of the published package (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64), added by `tool/prebuilt-deps.mjs --apply` in the release workflow's pack step and not listed in the repository's `package.json` until they are published (npm 11 refuses `npm ci` with a lock file that cannot resolve them; this broke every CI job but Node 22 and Bun on 2026-10-14).
 - **QUIC provision:** an N-API addon over a vendored copy of `switchboard_quic/native/sbq` with one change (`"rlib"` in the crate types), byte-identical otherwise and separable; the pin outside the copy (`native/sbq-vendor.commit`); a shared shim repository is the intended later direction. No upstream change.
 - **Browsers:** `webTransport(init?)` returns the provider (a `QuicConnector`); `webTransportConnector(url, init)` returns a `ReconnectingClient`'s connector.
 - **Placement:** `MeshNode` and `PeerSet` in `core/switchboard/`; `SlotGate`, `SlotLifecycle` and `SlotGates` in `core/naming/slot-gate.ts`; `isSlotResolver` in `core/switchboard/resolver.ts`; `StaticResolver` is a `SlotResolver`.
@@ -88,7 +88,7 @@ The design's section 11 is the list; the ones a session meets first:
 ## 7. What remains
 
 - **Interop:** the TS peer and its cells (in flight on `claude/ts-peer`, section 4).
-- **Packaging and publishing:** musl Linux prebuilds (the loader looks for `-linux-<arch>-musl`); the first publish (the user's call; `release.yml` publishes only when asked, and the lock file needs regenerating after the first publish so that `npm ci` resolves the optional dependencies); only Linux x64 is built in CI.
+- **Packaging and publishing:** musl Linux prebuilds (the loader looks for `-linux-<arch>-musl`); the first publish (the user's call; `release.yml` publishes only when asked; after it, the optional dependencies can move into the repository's `package.json` with `node tool/prebuilt-deps.mjs --apply` and a regenerated lock file); only Linux x64 is built in CI.
 - **The GitHub wiki push:** the wiki repository could not be written from this environment; `docs/wiki/` is ready to push as it is.
 - **Deno in CI:** checked by hand on Deno 2.9 (TCP, WebSocket and native QUIC round trips with the built package); add a job once the suite is known to pass there.
 - **Browsers:** Firefox's exporter path (Firefox 155+ has `exportKeyingMaterial`) is untested; the `protocols` negotiation needs Chromium 143+, which needs a Playwright newer than 1.56.1.
