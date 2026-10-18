@@ -632,13 +632,12 @@ for (const server of servers) {
                   const code = closeCode(records[0] as ReceivedRecord) ?? StatusCode.ok;
                   await confirmClose(ch, code);
                   // A failure close MAY come with STOP_SENDING, with its own
-                  // status (both implementations send it); an OK close whose
-                  // incoming data is still delivered does not.
-                  expect(
-                    code === StatusCode.ok
-                      ? [{ kind: 'acked' }]
-                      : [{ kind: 'stop', code }, { kind: 'acked' }],
-                  ).toContainEqual(await ch.stopped());
+                  // status, and both implementations send it, before the CLOSE
+                  // record; an OK close whose incoming data is still delivered
+                  // does not.
+                  expect(await ch.stopped()).toEqual(
+                    code === StatusCode.ok ? { kind: 'acked' } : { kind: 'stop', code },
+                  );
                   await closing;
                   expect(
                     await peerOf().events.waitFor({ event: 'channel.closed', channel }),
@@ -719,8 +718,10 @@ for (const server of servers) {
                   kind: 'stop',
                   code: StatusCode.deadlineExceeded,
                 });
+                // The window holds part of the one 5000-byte record: no whole
+                // record arrives, and the CLOSE behind it never does.
                 const { records, end } = await ch.drain();
-                expect(records.every((r) => r.command === 'data')).toBe(true);
+                expect(records).toEqual([]);
                 expect(end).toEqual({ kind: 'reset', code: StatusCode.deadlineExceeded });
                 await Promise.all([sending, closing]);
                 expect(
