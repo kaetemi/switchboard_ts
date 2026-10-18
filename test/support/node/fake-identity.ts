@@ -10,7 +10,7 @@ import {
   type PeerIdentity,
   type Right,
 } from '../../../src/core/identity/contract.ts';
-import type { Credential } from '../../../src/core/identity/credential.ts';
+import { Credential } from '../../../src/core/identity/credential.ts';
 import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
 import {
   CredentialVerifier,
@@ -100,6 +100,17 @@ export function issueCredential(init: TestCredentialInit): Promise<Credential> {
     issuedAt,
     lifetime,
   });
+}
+
+/**
+ * [credential] with the last byte of its signature flipped, as Dart's
+ * `identity_node_test.dart` forges one: a credential of the right
+ * authority, holder and scopes whose IDENT nobody can verify.
+ */
+export function forged(credential: CredentialContract): Credential {
+  const bytes = credential.encode();
+  bytes[bytes.length - 1] = (bytes[bytes.length - 1] as number) ^ 0x01;
+  return Credential.decode(bytes);
 }
 
 /**

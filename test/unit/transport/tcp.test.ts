@@ -336,6 +336,32 @@ describe('the socket accounting', () => {
     client.abort();
   });
 
+  test('an abort drops the socket buffer at once; what it dropped never counts as accepted', async () => {
+    const raw = await rawServer();
+    const client = await connectTcp('127.0.0.1', raw.port, { outputHighWaterMark: 0 });
+    const socket = await raw.next();
+    socket.pause();
+    const writer = client.writable.getWriter();
+    writer.closed.catch(() => {});
+    const frame = bytesOf(256 * 1024);
+    for (let i = 0; i < 64; i++) writer.write(frame).catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The socket holds some of it, and the transport the rest.
+    expect(client.socket.writableLength).toBeGreaterThan(0);
+    expect(client.bufferedOutputBytes).toBeGreaterThan(client.socket.writableLength);
+    const accepted = client.acceptedOutputBytes;
+    const closed = new Promise((resolve) => client.socket.once('close', resolve));
+    client.abort();
+    // Node lets go of the socket's buffer only once its handle has closed,
+    // turns later; the transport reports it gone from the abort on.
+    expect(client.socket.writableLength).toBeGreaterThan(0);
+    expect(client.bufferedOutputBytes).toBe(0);
+    expect(client.acceptedOutputBytes).toBe(accepted);
+    await closed;
+    expect(client.bufferedOutputBytes).toBe(0);
+    expect(client.acceptedOutputBytes).toBe(accepted);
+  });
+
   test('a peer that does not read throttles the input past the high-water mark', async () => {
     const raw = await rawServer();
     const client = await connectTcp('127.0.0.1', raw.port, { outputHighWaterMark: 64 * 1024 });

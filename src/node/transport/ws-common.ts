@@ -55,17 +55,21 @@ export async function requireWs(what: string): Promise<WsModule> {
   return ws;
 }
 
-/** The `ws` error codes of messages over `maxPayload`. */
+/**
+ * The `ws` error codes of messages over a limit: `maxPayload`, and
+ * `maxFragments` or `maxBufferedChunks` (one code for both, from `ws` 8.21).
+ */
 const tooLargeCodes: ReadonlySet<string> = new Set([
   'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
   'WS_ERR_UNSUPPORTED_DATA_PAYLOAD_LENGTH',
+  'WS_ERR_TOO_MANY_BUFFERED_PARTS',
 ]);
 
 /**
- * The error a `ws` error means for the transport: a message over the limit
- * is `FRAME_TOO_LARGE`, a WebSocket protocol violation (bad frame, close
- * code or UTF-8) a `ProtocolError`; anything else (a socket error) as it
- * is.
+ * The error a `ws` error means for the transport: a message over a limit
+ * (its size, or the count of its fragments) is `FRAME_TOO_LARGE`, a
+ * WebSocket protocol violation (bad frame, close code or UTF-8) a
+ * `ProtocolError`; anything else (a socket error) as it is.
  */
 export function wsFailure(error: unknown): unknown {
   const code = (error as { readonly code?: unknown } | undefined)?.code;

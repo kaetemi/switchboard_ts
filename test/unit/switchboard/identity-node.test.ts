@@ -29,6 +29,7 @@ import { memoryTransportPair } from '../../../src/core/transport/memory-transpor
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
 import {
+  forged,
   hmacAuthority,
   issueCredential,
   rogue,
@@ -380,7 +381,7 @@ describe('over mem', () => {
 
   test('a forged IDENT gets GOAWAY UNAUTHENTICATED', async () => {
     const { uri } = await server();
-    const a = node({ credential: await unknownCredential(), holderKey: npcKey });
+    const a = node({ credential: forged(await npcCredential()), holderKey: npcKey });
     const dialled = collect(a);
     await rejectsWith(a.connect(uri), StatusCode.unauthenticated);
     const connection = dialled[0] as MuxConnection;

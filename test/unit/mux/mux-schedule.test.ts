@@ -21,6 +21,7 @@ import {
 } from '../../../src/core/mux/mux-frame.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { StreamTransport } from '../../../src/core/transport/stream-transport.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   AnsweringTransport,
   ByteDrain,
@@ -48,7 +49,6 @@ import {
   RawPeer,
   rawOptions,
   rawPair,
-  SteppingClock,
   Subframes,
   settle,
   settleRaw,
@@ -76,7 +76,7 @@ function commands(gate: GatedTransport): [MuxCommand, number][] {
 
 describe('output scheduler', () => {
   test('CREDIT cannot replace credit reserved by unwritten DATA', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [local, remote] = memoryPair(clock);
     const gate = new GatedTransport(local);
     const a = new FrameMuxConnection(gate, { ...rawOptions, clock, isInitiator: true });
@@ -436,7 +436,7 @@ describe('bulk channels', () => {
     // The initiator writes through a stream transport whose output takes a
     // chunk every 2 ms: the scheduler holds what the transport has not
     // taken.
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const aToB = new ByteFeed();
     const bToA = new ByteFeed();
     const a = new FrameMuxConnection(
@@ -471,7 +471,7 @@ describe('bulk channels', () => {
     expect(a.heldOutputBytes).toBeGreaterThan(total - 4 * 65536);
     const waits: number[] = [];
     for (let i = 0; i < 5; i++) {
-      await clock.elapse(5);
+      await clock.elapseAsync(5);
       const before = bulkBytes;
       await normal.send(new Uint8Array(10));
       await elapseUntil(clock, normalAtB.next());
@@ -484,7 +484,7 @@ describe('bulk channels', () => {
       expect(wait).toBeLessThanOrEqual(2 * 65536);
     }
     while (bulkBytes < total) {
-      await clock.elapse(5);
+      await clock.elapseAsync(5);
     }
     await normalAtB.cancel();
     await atB.cancel();
@@ -496,7 +496,7 @@ describe('bulk channels', () => {
 
 describe('openAfter', () => {
   test('a synchronous peer may refuse a child during its OPEN write', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const transport = new AnsweringTransport((bytes) => {
       const frame = MuxFrame.decode(bytes);
       return frame.command === MuxCommand.open && frame.payload.length > 0
@@ -520,7 +520,7 @@ describe('openAfter', () => {
   function syncPeer(
     reply: (frame: MuxFrame) => readonly MuxFrame[],
   ): [FrameMuxConnection, GatedTransport] {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const transport = new AnsweringTransport((bytes) =>
       reply(MuxFrame.decode(bytes)).map((frame) => frame.encode()),
     );
@@ -767,7 +767,7 @@ describe('openAfter', () => {
       await raw.next();
       await raw.next();
       // Longer than the confirmation timeout: the child is not abandoned.
-      await clockOf(mux).elapse(80);
+      await clockOf(mux).elapseAsync(80);
       expect(child.state).toBe('halfClosedLocal');
       expect(mux.unconfirmedCloseCount).toBe(0);
       raw.send('22 02 00');

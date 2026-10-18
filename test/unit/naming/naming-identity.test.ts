@@ -71,6 +71,7 @@ import {
 } from '../../../src/core/status.ts';
 import type { TalkChannel, TalkOptions } from '../../../src/core/talk/contract.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   decodeFakeCredential,
   FakeIssuer,
@@ -88,7 +89,6 @@ import {
   until,
   within,
 } from '../../support/naming/harness.ts';
-import { TestClock } from '../../support/naming/test-clock.ts';
 
 /** The Talk options of every node of the Dart test. */
 const talk: Partial<TalkOptions> = { requestTimeout: 2000, replyTimeout: 1000 };
@@ -249,7 +249,7 @@ interface MeshOptions {
   readonly brokerTimeout?: number;
   readonly assignmentHold?: number;
   readonly close?: boolean;
-  readonly clock?: TestClock;
+  readonly clock?: ManualClock;
 }
 
 /** A naming service the nodes connect to. */
@@ -457,8 +457,8 @@ const idle: SlotHandler = {
 const epoch = 1_800_000_000_000;
 
 /** A test clock that is also the wall clock until the end of the test. */
-function fakeTime(): TestClock {
-  const clock = new TestClock(epoch);
+function fakeTime(): ManualClock {
+  const clock = new ManualClock(epoch);
   wall = () => clock.now();
   return clock;
 }
@@ -945,23 +945,23 @@ describe('a replacement credential', () => {
     void register(workerType).then((code) => {
       allowed = code;
     });
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(mesh.service.table.size).toBe(0);
     expect(held).toBeUndefined();
     void issue('worker-a1', [scopeOf(Right.register, workerType)]).then((credential) =>
       worker.updateCredential(credential),
     );
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     // At once, not when the hold ends.
     expect(held).toBe(StatusCode.permissionDenied);
     expect(allowed).toBe(StatusCode.unknown);
     expect(mesh.service.table.size).toBe(0);
-    await clock.elapse(minute);
+    await clock.elapseAsync(minute);
     expect(allowed).toBeUndefined();
     expect(single(mesh.service.table.values()).address.type.equals(workerType)).toBe(true);
     void worker.close();
     void mesh.close();
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     expect(clock.pendingCount).toBe(0);
   });
 });
@@ -985,9 +985,9 @@ describe('expiry and RENEW', () => {
     void channel.done.then((status) => {
       closed = status;
     });
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(mesh.service.channelCount).toBe(1);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(closed?.name).toBe('unauthenticated');
     expect(mesh.service.channelCount).toBe(0);
     checked.resolve();
@@ -995,7 +995,7 @@ describe('expiry and RENEW', () => {
     expect(mesh.service.channelCount).toBe(0);
     void worker.close();
     void mesh.close();
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     expect(clock.pendingCount).toBe(0);
   });
 
@@ -1015,16 +1015,16 @@ describe('expiry and RENEW', () => {
       closed = status;
     });
     void channel.request('REGISTER', registerPayload(workerType)).catch(() => {});
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(mesh.service.table.size).toBe(1);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(closed?.name).toBe('unauthenticated');
     expect(worker.goAways.map((s) => s.name)).toEqual(['unauthenticated']);
     expect(mesh.service.table.size).toBe(0);
     expect(changes).toEqual([true, false]);
     void worker.close();
     void mesh.close();
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     expect(clock.pendingCount).toBe(0);
   });
 
@@ -1041,14 +1041,14 @@ describe('expiry and RENEW', () => {
       await channel.request('REGISTER', registerPayload(workerType));
       await worker.updateCredential(await issue('worker-a1', workerScopes, { lifetime: hour }));
     })().catch(() => {});
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(mesh.service.table.size).toBe(1);
-    await clock.elapse(hour);
+    await clock.elapseAsync(hour);
     expect(closed?.name).toBe('unauthenticated');
     expect(mesh.service.table.size).toBe(0);
     void worker.close();
     void mesh.close();
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     expect(clock.pendingCount).toBe(0);
   });
 
@@ -1067,15 +1067,15 @@ describe('expiry and RENEW', () => {
       ended = status;
     });
     void channel.request('REGISTER', registerPayload(workerType)).catch(() => {});
-    await clock.elapse(second);
+    await clock.elapseAsync(second);
     expect(mesh.service.table.size).toBe(1);
-    await clock.elapse(2 * minute);
+    await clock.elapseAsync(2 * minute);
     expect(ended?.name).toBe('unauthenticated');
     expect(connection.goAways[0]?.name).toBe('unauthenticated');
     expect(mesh.service.table.size).toBe(0);
     void client.close();
     void mesh.close();
-    await clock.elapse(30 * second);
+    await clock.elapseAsync(30 * second);
     expect(clock.pendingCount).toBe(0);
   });
 
@@ -1099,19 +1099,19 @@ describe('expiry and RENEW', () => {
         await connection.identify(await issue('worker-a1', workerScopes, { lifetime: minute }));
         identified = true;
       })().catch(() => {});
-      await clock.elapse(second);
+      await clock.elapseAsync(second);
       expect(identified).toBe(true);
       expect(mesh.service.table.size).toBe(1);
       // No further request: expiry must follow the new IDENT even when the
       // session was anonymous, or had a later deadline.
-      await clock.elapse(minute);
+      await clock.elapseAsync(minute);
       expect(mesh.service.table.size).toBe(0);
       expect(ended?.name).toBe('unauthenticated');
       expect(connection.goAways[0]?.name).toBe('unauthenticated');
       void channel.close();
       void client.close();
       void mesh.close();
-      await clock.elapse(30 * second);
+      await clock.elapseAsync(30 * second);
       expect(clock.pendingCount).toBe(0);
     });
   }
@@ -1180,7 +1180,7 @@ describe('expiry and RENEW', () => {
         lapsed = status;
       });
       void lapsing.request('WATCH', empty).catch(() => {});
-      await clock.elapse(50 * minute);
+      await clock.elapseAsync(50 * minute);
       let renewed: Credential | undefined;
       renewing
         .request('RENEW', empty, { name: Procedures.renew })
@@ -1188,14 +1188,14 @@ describe('expiry and RENEW', () => {
           renewed = decodeFakeCredential(answer.payload);
         })
         .catch(() => {});
-      await clock.elapse(second);
+      await clock.elapseAsync(second);
       expect(renewed?.identity).toBe('consumer-2');
       expect(renewed?.isBearer).toBe(true);
       expect(renewed?.scopes).toEqual(bearer.scopes);
       expect(must(renewed).expiresAt).toBeGreaterThan(bearer.expiresAt);
       // Past the first expiry: the channel that renewed goes on, the other
       // is closed; the connection carries on.
-      await clock.elapse(11 * minute);
+      await clock.elapseAsync(11 * minute);
       expect(lapsed?.name).toBe('unauthenticated');
       let watched: StatusCode | undefined = StatusCode.unknown;
       renewing
@@ -1206,13 +1206,13 @@ describe('expiry and RENEW', () => {
         .catch((e: unknown) => {
           watched = (e as SwitchboardError).code as StatusCode;
         });
-      await clock.elapse(second);
+      await clock.elapseAsync(second);
       expect(watched).toBeUndefined();
       expect(renewing.isOpen).toBe(true);
       void renewing.close();
       void client.close();
       void mesh.close();
-      await clock.elapse(30 * second);
+      await clock.elapseAsync(30 * second);
       expect(clock.pendingCount).toBe(0);
     },
   );

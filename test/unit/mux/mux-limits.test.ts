@@ -32,6 +32,7 @@ import { ProtocolError, Status, StatusCode } from '../../../src/core/status.ts';
 import { StreamFraming } from '../../../src/core/transport/stream-framing.ts';
 import { StreamTransport } from '../../../src/core/transport/stream-transport.ts';
 import { listenTcp } from '../../../src/node/transport/tcp.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   ByteDrain,
   ByteFeed,
@@ -50,7 +51,6 @@ import {
   quiet,
   rawOptions,
   rawPair,
-  SteppingClock,
   Subscription,
   settle,
   settleRaw,
@@ -391,8 +391,8 @@ describe('receive buffers', () => {
     /** A mux over a stream transport the test feeds, and the channel its first frames open. */
     async function start(
       options: Partial<FrameMuxConnection['options']>,
-    ): Promise<[FrameMuxConnection, ByteFeed, MuxChannel, SteppingClock]> {
-      const clock = new SteppingClock();
+    ): Promise<[FrameMuxConnection, ByteFeed, MuxChannel, ManualClock]> {
+      const clock = new ManualClock();
       const toMux = new ByteFeed();
       const mux = new FrameMuxConnection(new StreamTransport(toMux, new ByteDrain(), { clock }), {
         ...options,
@@ -452,7 +452,7 @@ describe('receive buffers', () => {
       expect(mux.isReceivePaused).toBe(true);
       // The byte peer never answers PING: without the pause rule the
       // connection would be gone after 40 ms.
-      await clock.elapse(150);
+      await clock.elapseAsync(150);
       expect(mux.isOpen).toBe(true);
       await sub.cancel();
       await elapseUntil(clock, mux.close());
@@ -553,8 +553,7 @@ describe('output backpressure over TCP', () => {
     await mux.close();
     expect(Date.now() - closing).toBeLessThan(5000);
     expect(transport.socket.destroyed).toBe(true);
-    // The socket lets go of what it buffered as its destroy completes.
-    await settle();
+    // The destroyed socket's buffer is dropped: nothing counts as buffered.
     expect(transport.bufferedOutputBytes).toBe(0);
     // The client learns of it once it reads.
     client.resume();
@@ -563,7 +562,7 @@ describe('output backpressure over TCP', () => {
 });
 
 test('keep-alive counts a throttled peer that reads as alive', async () => {
-  const clock = new SteppingClock();
+  const clock = new ManualClock();
   const toMux = new ByteFeed();
   const output = new ByteDrain({ slow: true });
   const transport = new StreamTransport(toMux, output, { outputHighWaterMark: 4096, clock });
@@ -585,7 +584,7 @@ test('keep-alive counts a throttled peer that reads as alive', async () => {
   // interval and timeout together, the connection stays.
   for (let i = 0; i < 15; i++) {
     output.take();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
   }
   expect(transport.isInputThrottled).toBe(true);
   expect(mux.isOpen).toBe(true);
@@ -598,7 +597,7 @@ test('keep-alive counts a throttled peer that reads as alive', async () => {
 });
 
 test('keep-alive counts a peer that reads output the scheduler holds as alive', async () => {
-  const clock = new SteppingClock();
+  const clock = new ManualClock();
   const toMux = new ByteFeed();
   const output = new ByteDrain({ slow: true });
   const transport = new StreamTransport(toMux, output, { clock });
@@ -622,7 +621,7 @@ test('keep-alive counts a peer that reads output the scheduler holds as alive', 
   // interval and timeout together, the connection stays.
   for (let i = 0; i < 15; i++) {
     output.take();
-    await clock.elapse(10);
+    await clock.elapseAsync(10);
   }
   expect(mux.heldOutputBytes).toBeGreaterThan(0);
   expect(mux.isOpen).toBe(true);
@@ -913,7 +912,7 @@ describe('close confirmation timeout', () => {
     const [mux, raw] = rawPair({ options: { ...options, closeConfirmTimeout: 0 } });
     const channel = mux.open(empty);
     const closed = channel.close();
-    await clockOf(mux).elapse(100);
+    await clockOf(mux).elapseAsync(100);
     expect(channel.state).toBe('halfClosedLocal');
     await mux.close();
     await closed;

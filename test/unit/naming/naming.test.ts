@@ -35,6 +35,7 @@ import {
   talkOptions,
 } from '../../../src/core/talk/contract.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   bytes,
@@ -66,7 +67,6 @@ import {
   Watcher,
   within,
 } from '../../support/naming/harness.ts';
-import { TestClock } from '../../support/naming/test-clock.ts';
 
 describe('NamingService', () => {
   let h: Harness;
@@ -658,7 +658,7 @@ describe('NamingService', () => {
 
 describe('idle subscriptions', () => {
   test('an idle subscription costs no traffic and lives on', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     // Default options everywhere.
     const ns = new NamingService({ clock });
     const [server, peer] = talkPair({ a: { clock }, b: { clock } });
@@ -673,14 +673,14 @@ describe('idle subscriptions', () => {
       item: false,
     });
     const frames = server.sent;
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     // The reply to an empty snapshot, and nothing else: no EXTEND.
     expect(frames).toHaveLength(1);
     const reply = messageFrame(frames[0]);
     expect(reply.item).toBe(false);
     expect(reply.responseId).toBe(1);
     expect(reply.payload).toHaveLength(0);
-    await clock.elapse(5 * 60_000);
+    await clock.elapseAsync(5 * 60_000);
     expect(frames).toHaveLength(1);
     expect(ns.watchCount).toBe(1);
     // Still live: a change arrives as a one-way message.
@@ -697,7 +697,7 @@ describe('idle subscriptions', () => {
   });
 
   test('outlives every request and reply timeout', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const [a] = h.link();
     const lines: string[] = [];
@@ -714,14 +714,14 @@ describe('idle subscriptions', () => {
     );
     // 10 times the watcher's request timeout, 15 times the service's reply
     // timeout.
-    await clock.elapse(clientRequestTimeout * 10);
+    await clock.elapseAsync(clientRequestTimeout * 10);
     expect(lines).toEqual(['WATCHED']);
     expect(h.service.watchCount).toBe(1);
     const [b] = h.link();
     void register(b, 'npc');
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(lines).toEqual(['WATCHED', 'UP npc/1']);
-    await clock.elapse(clientRequestTimeout * 10);
+    await clock.elapseAsync(clientRequestTimeout * 10);
     expect(h.service.watchCount).toBe(1);
     expect(a.isOpen).toBe(true);
     void h.close();
@@ -734,7 +734,7 @@ describe('assignment hold', () => {
   const hold = 2000;
 
   test('holds REGISTER for any id, not for a given id', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ assignmentHold: hold, clock });
     expect(h.service.isHoldingAssignments).toBe(true);
     const [a] = h.link();
@@ -761,16 +761,16 @@ describe('assignment hold', () => {
         invalid = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(given).toBe(1);
     expectStatus(invalid, StatusCode.invalidArgument);
     expect(any).toBeUndefined();
     // Kept alive well past the request and reply timeouts.
-    await clock.elapse(hold - ms50);
+    await clock.elapseAsync(hold - ms50);
     expect(any).toBeUndefined();
     expect(error).toBeUndefined();
     expect(h.service.isHoldingAssignments).toBe(true);
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(h.service.isHoldingAssignments).toBe(false);
     expect(any).toBe(2);
     // Over: assigned at once.
@@ -778,7 +778,7 @@ describe('assignment hold', () => {
     void register(b, 'npc').then((id) => {
       later = id;
     });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(later).toBe(3);
     void h.close();
     await pump();
@@ -786,9 +786,9 @@ describe('assignment hold', () => {
   });
 
   test('a held REGISTER gets one EXTEND, declaring the time left in the hold', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ assignmentHold: hold, clock });
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     const [a] = h.link();
     const declared: [number | undefined, number | undefined][] = [];
     let id: number | undefined;
@@ -799,15 +799,15 @@ describe('assignment hold', () => {
       .response.then((m) => {
         id = RegisterResponse.decode(m.payload).instance;
       });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // 1.5 s were left at receipt; the wire carries the service node's
     // buffer on top.
     expect(declared).toEqual([[1500 + talkOptions(serverOptions).extendBuffer, undefined]]);
     // Well past the request and reply timeouts: nothing more is sent.
-    await clock.elapse(1480);
+    await clock.elapseAsync(1480);
     expect(id).toBeUndefined();
     expect(declared).toHaveLength(1);
-    await clock.elapse(ms10 * 2);
+    await clock.elapseAsync(ms10 * 2);
     expect(id).toBe(1);
     expect(declared).toHaveLength(1);
     void h.close();
@@ -816,14 +816,14 @@ describe('assignment hold', () => {
   });
 
   test('a service surviving a restart keeps its id', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     let h = new Harness({ clock });
     const connector = new Connector(h);
     const survivor = new NamingClient(connector.call, { reconnectDelay: 300, clock });
     const assigned: number[] = [];
     void survivor.start();
     void survivor.register(Name.of('npc'), [uriA], { onAssigned: (id) => assigned.push(id) });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(assigned).toEqual([1]);
 
     // The naming service restarts; a newcomer connects before the
@@ -838,14 +838,14 @@ describe('assignment hold', () => {
     void newcomer.register(Name.of('api'), [uriB]).then((id) => {
       fresh = id;
     });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // The newcomer is synced, its registration held.
     expect(newcomer.isSynced).toBe(true);
     expect(fresh).toBeUndefined();
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     expect(survivor.isSynced).toBe(true);
     expect(addresses(h.service.table)).toEqual(['npc/1']);
-    await clock.elapse(hold);
+    await clock.elapseAsync(hold);
     expect(fresh).toBe(2);
     expect(assigned).toEqual([1]);
     expect(addresses(h.service.table)).toEqual(['npc/1', 'api/2']);
@@ -858,7 +858,7 @@ describe('assignment hold', () => {
   });
 
   test('dropped and closed: held requests go, no timers stay', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ assignmentHold: hold, clock });
     const [a] = h.link();
     const [b] = h.link();
@@ -876,9 +876,9 @@ describe('assignment hold', () => {
         bError = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void a.close();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expectStatus(aError, StatusCode.cancelled);
     void h.service.close();
     await pump();
@@ -890,7 +890,7 @@ describe('assignment hold', () => {
   });
 
   test('a held REGISTER the requester cancels is never registered', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ assignmentHold: hold, clock });
     const [a, server] = h.link();
     let error: unknown;
@@ -900,7 +900,7 @@ describe('assignment hold', () => {
         error = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // A stream request is the way to cancel a request explicitly.
     const stream = a.streamRequest('REGISTER', new RegisterRequest(Name.of('api')).encode());
     let streamError: unknown;
@@ -910,12 +910,12 @@ describe('assignment hold', () => {
         streamError = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     stream.cancel();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expectStatus(streamError, StatusCode.cancelled);
     expect(server.incomingRequestCount).toBe(1);
-    await clock.elapse(hold);
+    await clock.elapseAsync(hold);
     expect(error).toBeUndefined();
     expect(addresses(h.service.table)).toEqual(['npc/1']);
     expect(server.incomingRequestCount).toBe(0);
@@ -1739,20 +1739,20 @@ describe('NamingClient', () => {
   });
 
   test('close leaves no timers, connected or reconnecting', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const connector = new Connector(h);
     const client = new NamingClient(connector.call, { reconnectDelay, clock });
     void client.start();
     void client.register(Name.of('npc'), [uriA]);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(client.isSynced).toBe(true);
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     expect(client.isSynced).toBe(true);
     // Lose the service and close during the reconnect delay.
     connector.down = true;
     void last(connector.servers).close();
-    await clock.elapse(reconnectDelay * 3);
+    await clock.elapseAsync(reconnectDelay * 3);
     expect(client.isConnected).toBe(false);
     void client.close();
     await pump();
@@ -1761,7 +1761,7 @@ describe('NamingClient', () => {
     // Connected.
     const second = new NamingClient(new Connector(h).call, { reconnectDelay, clock });
     void second.start();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(second.isSynced).toBe(true);
     expect(h.service.watchCount).toBe(1);
     void second.close();

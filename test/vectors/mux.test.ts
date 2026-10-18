@@ -15,14 +15,9 @@ import {
   MuxLimits,
 } from '../../src/core/mux/mux-frame.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
+import { ManualClock } from '../../src/testing/manual-clock.ts';
 import { type WikiVector, wikiBytes, wikiVector, wikiVectors } from '../support/vectors.ts';
-import {
-  FrameReader,
-  Incoming,
-  memoryPair,
-  SteppingClock,
-  Subframes,
-} from '../unit/mux/support.ts';
+import { FrameReader, Incoming, memoryPair, Subframes } from '../unit/mux/support.ts';
 
 const empty = new Uint8Array(0);
 
@@ -373,7 +368,7 @@ describe('mux negative vectors, connection', () => {
 
   /** A frame mux over one end of a memory pair, and a reader and a writer of the other end. */
   function connection(): [FrameMuxConnection, FrameReader, (hex: string) => void] {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [local, remote] = memoryPair(clock);
     const mux = new FrameMuxConnection(local, { ...options, clock, isInitiator: true });
     const writer = remote.writable.getWriter();
