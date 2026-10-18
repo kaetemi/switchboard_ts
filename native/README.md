@@ -52,12 +52,15 @@ without the addon. Bun loads it the same way; Deno needs
 
 ## Supported targets
 
-The prebuilt targets follow `switchboard_quic`'s release workflow:
+The prebuilt targets are those of `switchboard_quic`'s release workflow, and musl Linux (Alpine)
+for x64 and arm64, which `switchboard_quic` does not build:
 
 | Platform            | Rust target                  | Package                                       |
 | ------------------- | ---------------------------- | --------------------------------------------- |
 | Linux x64 (glibc)   | `x86_64-unknown-linux-gnu`   | `@kaetemi/switchboard-quic-linux-x64-gnu`   |
 | Linux arm64 (glibc) | `aarch64-unknown-linux-gnu`  | `@kaetemi/switchboard-quic-linux-arm64-gnu` |
+| Linux x64 (musl)    | `x86_64-unknown-linux-musl`  | `@kaetemi/switchboard-quic-linux-x64-musl`  |
+| Linux arm64 (musl)  | `aarch64-unknown-linux-musl` | `@kaetemi/switchboard-quic-linux-arm64-musl` |
 | macOS arm64         | `aarch64-apple-darwin`       | `@kaetemi/switchboard-quic-darwin-arm64`    |
 | macOS x64           | `x86_64-apple-darwin`        | `@kaetemi/switchboard-quic-darwin-x64`      |
 | Windows x64         | `x86_64-pc-windows-msvc`     | `@kaetemi/switchboard-quic-win32-x64-msvc`  |
@@ -69,8 +72,18 @@ no Visual C++ redistributable:
 CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="-C target-feature=+crt-static" npm run build:native
 ```
 
-On musl Linux the loader looks for `-linux-<arch>-musl`, for which nothing is prebuilt; build it
-locally. Only Linux x64 is built and tested in CI (the `native` job).
+On musl Linux the loader looks for `-linux-<arch>-musl` (it tells musl from glibc by `ldd`, else
+by the process report). Rust's musl targets link the C runtime statically by default, which leaves
+no `cdylib`; the addon is built with the C runtime linked dynamically, so that it uses the musl of
+the Node process that loads it. On Alpine (`apk add build-base`, Rust from rustup):
+
+```sh
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static" \
+  node native/build.mjs --target x86_64-unknown-linux-musl
+```
+
+Only Linux x64 with glibc is built and tested on every push (the `native` job of CI); the release
+workflow builds and tests all seven.
 
 ## The per-platform packages
 
@@ -78,8 +91,9 @@ locally. Only Linux x64 is built and tested in CI (the `native` job).
 per row of the table above, the directory named as the loader names the package
 (`linux-x64-gnu`, `darwin-arm64`, `win32-x64-msvc`, ...). Each holds one file, `sbq-node.node`
 (its `main`, which the loader `require`s by the package name), and declares `os`, `cpu` and, on
-Linux, `libc: ["glibc"]`, so that npm installs only the one for the platform. Their version is the
-package's. The published package lists all five as `optionalDependencies` pinned to it, added to
+Linux, `libc` (`["glibc"]` or `["musl"]`), so that npm installs only the one for the platform. Their
+version is the package's. The published package lists all seven as `optionalDependencies` pinned to
+it, added to
 `package.json` by `node tool/prebuilt-deps.mjs --apply` in the release workflow's pack step; the
 repository's `package.json` does not list them, because `npm ci` cannot resolve packages that are
 not on the registry and npm 11 refuses a lock file that lacks them. `test/unit/quic/packages.test.ts`
@@ -109,16 +123,23 @@ or commit, with `publish` off by default:
    native/npm/<target>/sbq-node.node`, then the native provider's loopback tests against that
    file (`SWITCHBOARD_QUIC_ADDON`, `SWITCHBOARD_NATIVE=required`), and the library's glibc floor
    or macOS minimum printed;
-3. **pack**: the five addons into their packages (with `LICENSE`) and the package itself
+3. **build-musl**, the two musl targets on the runners of their architecture, inside a
+   `node:24-alpine` container (`docker run`: the runner cannot run JavaScript actions inside an
+   Alpine container on arm64), with Alpine's gcc and Rust 1.99.0 from rustup, `-crt-static`: the
+   same build and loopback tests, the libraries the addon needs and the musl version printed, and
+   then a check that the loader finds the addon by its package name
+   (`@kaetemi/switchboard-quic-linux-<arch>-musl`) as an installed package;
+4. **pack**: the seven addons into their packages (with `LICENSE`) and the package itself
    (`npm run build`), as tarballs kept as an artifact of the run;
-4. **publish**, only with `publish` set: `npm publish --provenance --access public` of the five
+5. **publish**, only with `publish` set: `npm publish --provenance --access public` of the seven
    tarballs, then of the package, under the `dist-tag` input (`next` by default), from the `npm`
    environment with its `NPM_TOKEN` secret (or npm's trusted publishing, which needs no token).
 
-A Linux addon needs a glibc at least as new as the newest `GLIBC_` symbol version it references,
-which the build step prints: 2.34 for a Linux x64 addon built against glibc 2.39 (Ubuntu
-24.04). Publishing is the
-maintainer's decision: nothing publishes without `publish` set by hand.
+A glibc Linux addon needs a glibc at least as new as the newest `GLIBC_` symbol version it
+references, which the build step prints: 2.34 for a Linux x64 addon built against glibc 2.39
+(Ubuntu 24.04). A musl addon needs `libc.musl-<arch>.so.1` and `libgcc_s.so.1`, which Node on
+Alpine needs too. Publishing is the maintainer's decision: nothing publishes without `publish` set
+by hand.
 
 ## How `sbq` is reused
 

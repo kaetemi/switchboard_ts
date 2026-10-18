@@ -4,9 +4,10 @@
 #
 # A release of @kaetemi/switchboard and its prebuilt QUIC addons, by hand
 # only (workflow_dispatch; never on a push): the N-API addon built with cargo
-# for the five targets of native/README.md, each on a runner of its platform
-# as switchboard_quic's release workflow builds its shim, and tested there
-# against the loopback; the five per-platform packages
+# for the seven targets of native/README.md, each on a runner of its platform
+# (the five of switchboard_quic's release workflow, as it builds its shim,
+# and the two musl Linux targets in an Alpine container), and tested there
+# against the loopback; the seven per-platform packages
 # (@kaetemi/switchboard-quic-<target>, native/npm/<target>/) and the package
 # itself packed as tarballs; and, only when the `publish` input is set,
 # published with `npm publish --provenance`. Publishing is the maintainer's
@@ -156,8 +157,81 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The musl Linux targets, which switchboard_quic does not build: in an
+  # Alpine container (node:24-alpine, with Alpine's gcc and musl) on a runner
+  # of the architecture, started with docker run because the runner cannot
+  # run JavaScript actions inside an Alpine container on arm64. Rust 1.99.0
+  # from rustup, as for the other targets. Rust's musl targets link the C
+  # runtime statically by default, which leaves no cdylib, so the addon is
+  # built with -crt-static and links the musl of the process that loads it,
+  # as Node itself does on Alpine. Tested there with exactly this file, as
+  # the others are, and then found by the loader under its package name
+  # (-linux-<arch>-musl), as an installed package is.
+  build-musl:
+    needs: check
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: linux-x64-musl, triple: x86_64-unknown-linux-musl, runner: ubuntu-latest }
+          - { target: linux-arm64-musl, triple: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.check.outputs.commit }}
+          persist-credentials: false
+
+      - name: Build, describe and test the addon in Alpine
+        env:
+          TARGET: ${{ matrix.target }}
+          TRIPLE: ${{ matrix.triple }}
+        run: |
+          docker run --rm -i -v "$GITHUB_WORKSPACE:/work" -w /work -e TARGET -e TRIPLE \
+            node:24-alpine sh -eu <<'EOF'
+          apk add --no-cache build-base curl file
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain 1.99.0
+          . "$HOME/.cargo/env"
+          node --version
+          rustc --version
+          npm ci
+          addon="native/npm/$TARGET/sbq-node.node"
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=-crt-static"
+          node native/build.mjs --target "$TRIPLE" --out "$addon"
+          ls -l "$addon"
+          file "$addon"
+          readelf -d "$addon" | grep NEEDED
+          echo "musl $(/lib/ld-musl-*.so.1 2>&1 | sed -n 's/^Version //p')"
+          # The provider end to end over the loopback, with exactly this file.
+          SWITCHBOARD_QUIC_ADDON="$PWD/$addon" SWITCHBOARD_NATIVE=required \
+            npx vitest run --project integration test/integration/quic-native.test.ts test/integration/quic-binding-native.test.ts
+          # The loader picks the package for this platform by its name.
+          npm run build
+          package="node_modules/@kaetemi/switchboard-quic-$TARGET"
+          mkdir -p "$package"
+          cp "native/npm/$TARGET/package.json" "$addon" "$package/"
+          node --input-type=module -e "
+            import { nativeQuicAvailability } from './dist/node/index.js';
+            const found = nativeQuicAvailability();
+            console.log(found);
+            if (!found.available || found.path !== '@kaetemi/switchboard-quic-$TARGET') process.exit(1);
+          "
+          rm -r "$package" dist
+          EOF
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.target }}
+          path: native/npm/${{ matrix.target }}/sbq-node.node
+          if-no-files-found: error
+          retention-days: 7
+
   pack:
-    needs: [check, build]
+    needs: [check, build, build-musl]
     name: Pack
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -179,13 +253,13 @@ jobs:
           pattern: addon-*
           path: addons
 
-      - name: Pack the five packages and the package
+      - name: Pack the seven packages and the package
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
-          targets=(linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64 win32-x64-msvc)
-          # Exactly the five addons: no platform missing, nothing stale.
-          [ "$(find addons -type f | wc -l)" -eq 5 ] || { echo "expected 5 addons" >&2; exit 1; }
+          targets=(linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-arm64 darwin-x64 win32-x64-msvc)
+          # Exactly the seven addons: no platform missing, nothing stale.
+          [ "$(find addons -type f | wc -l)" -eq 7 ] || { echo "expected 7 addons" >&2; exit 1; }
           mkdir -p dist-packages
           for target in "${targets[@]}"; do
             dir="native/npm/$target"
@@ -195,7 +269,7 @@ jobs:
             (cd "$dir" && npm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages")
           done
           npm run build
-          # The packed package pulls the addon for its platform: the five
+          # The packed package pulls the addon for its platform: the seven
           # packages as optionalDependencies, which the repository's
           # package.json does not list (npm ci cannot resolve them before
           # they are published).
@@ -234,7 +308,7 @@ jobs:
           name: packages
           path: dist-packages
 
-      - name: Publish the five packages, then the package
+      - name: Publish the seven packages, then the package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.check.outputs.version }}
@@ -242,7 +316,7 @@ jobs:
         run: |
           cd dist-packages
           sha256sum -c SHA256SUMS
-          for target in linux-x64-gnu linux-arm64-gnu darwin-arm64 darwin-x64 win32-x64-msvc; do
+          for target in linux-x64-gnu linux-arm64-gnu linux-x64-musl linux-arm64-musl darwin-arm64 darwin-x64 win32-x64-msvc; do
             npm publish "kaetemi-switchboard-quic-$target-$VERSION.tgz" --provenance --access public --tag "$DIST_TAG"
           done
           # Last, so that its optionalDependencies resolve when it appears.
