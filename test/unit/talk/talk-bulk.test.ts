@@ -507,10 +507,10 @@ test("a request cancelled while it waits for the peer's LIMITS does not start it
 
 describe('idle timeout', () => {
   /**
-   * A Talk channel and its far end over a memory mux pair, on manual time, the
+   * A Talk channel and its far end over a memory mux pair, on virtual time, the
    * bulk channels of both sides routed; then a function closing both.
    */
-  async function fakeTalk(
+  async function routedTalkPair(
     clock: ManualClock,
     init: { near?: Partial<TalkOptions>; far?: Partial<TalkOptions> } = {},
   ): Promise<[TalkChannel, TalkChannel, () => Promise<void>]> {
@@ -538,7 +538,7 @@ describe('idle timeout', () => {
 
   test('a request whose bulk payload stalls is answered DEADLINE_EXCEEDED once no byte came for the timeout', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, { near: { bulkChunkSize: 500 } });
+    const [talk, server, close] = await routedTalkPair(clock, { near: { bulkChunkSize: 500 } });
     const delivered: TalkMessage[] = [];
     serve(server, (m) => delivered.push(m));
     const source = new SourceController();
@@ -562,7 +562,7 @@ describe('idle timeout', () => {
 
   test('a final response whose payload stalls fails its request', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock);
+    const [talk, server, close] = await routedTalkPair(clock);
     const source = new SourceController();
     const sent: Promise<void>[] = [];
     serve(server, (m) => {
@@ -587,7 +587,7 @@ describe('idle timeout', () => {
   test('an item whose payload stalls ends its stream', async () => {
     const clock = new ManualClock();
     // The responder's own timeout would end the request first.
-    const [talk, server, close] = await fakeTalk(clock, { far: { replyTimeout: 0 } });
+    const [talk, server, close] = await routedTalkPair(clock, { far: { replyTimeout: 0 } });
     const source = new SourceController();
     serve(server, (m) => {
       m.replyItem(empty, { bulk: source.stream }).catch(noop);
@@ -610,7 +610,7 @@ describe('idle timeout', () => {
 
   test('a plain message whose payload stalls is dropped', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock);
+    const [talk, server, close] = await routedTalkPair(clock);
     const seen = new Collector(talk.messages);
     const source = new SourceController();
     void server.send('NOTE', empty, { bulk: source.stream });
@@ -626,7 +626,7 @@ describe('idle timeout', () => {
 
   test('a streamed payload the application reads errors', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, { near: { streamBulk: () => true } });
+    const [talk, server, close] = await routedTalkPair(clock, { near: { streamBulk: () => true } });
     const readers: Collector<Uint8Array>[] = [];
     serve(talk, (m) => {
       readers.push(new Collector(m.bulk));
@@ -647,7 +647,7 @@ describe('idle timeout', () => {
 
   test('a payload waiting for its reader here does not time out', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, { near: { streamBulk: () => true } });
+    const [talk, server, close] = await routedTalkPair(clock, { near: { streamBulk: () => true } });
     const readers: Collector<Uint8Array>[] = [];
     serve(talk, (m) => {
       // Not pulled while paused: the reader does not take the payload.
@@ -672,7 +672,7 @@ describe('idle timeout', () => {
 
   test('a payload waiting for the reassembly budget does not time out; once admitted, the timeout counts from then', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, {
+    const [talk, server, close] = await routedTalkPair(clock, {
       near: { reassemblyBudget: 1000 },
       far: { bulkThreshold: 100 },
     });
@@ -701,8 +701,8 @@ describe('idle timeout', () => {
   test('a forwarded payload waiting for a paused reader is neither cut nor timed out', async () => {
     const clock = new ManualClock();
     const piping: Partial<TalkOptions> = { streamBulk: () => true };
-    const [client, front, closeFront] = await fakeTalk(clock, { near: piping, far: piping });
-    const [back, backend, closeBack] = await fakeTalk(clock, { near: piping });
+    const [client, front, closeFront] = await routedTalkPair(clock, { near: piping, far: piping });
+    const [back, backend, closeBack] = await routedTalkPair(clock, { near: piping });
     serve(front, (m) => {
       forwardMessage(m, back).catch(noop);
     });
@@ -731,7 +731,9 @@ describe('idle timeout', () => {
 
   test('an unclaimed bulk channel goes idle too', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, { near: { bulkOpenTimeout: 60_000 } });
+    const [talk, server, close] = await routedTalkPair(clock, {
+      near: { bulkOpenTimeout: 60_000 },
+    });
     const seen = new Collector(talk.messages);
     const raw = rawOf(server);
     const bulk = raw.openAfter(new TalkBulkOpen(raw.id, 1).encode());
@@ -760,7 +762,7 @@ describe('idle timeout', () => {
 
   test('Duration.zero sets no idle timeout', async () => {
     const clock = new ManualClock();
-    const [talk, server, close] = await fakeTalk(clock, {
+    const [talk, server, close] = await routedTalkPair(clock, {
       near: { bulkChunkSize: 500 },
       far: { bulkIdleTimeout: 0 },
     });

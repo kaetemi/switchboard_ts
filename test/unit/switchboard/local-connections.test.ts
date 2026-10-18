@@ -39,7 +39,11 @@ import {
   tagOf,
   until,
 } from '../../support/node/harness.ts';
-import { hmacAuthority, issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
+import {
+  hmacAuthority,
+  issueCredential,
+  TestVerifier,
+} from '../../support/node/seeded-identity.ts';
 
 const other = Name.of('other');
 const back = Name.of('back');

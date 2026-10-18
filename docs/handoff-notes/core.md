@@ -39,7 +39,7 @@ All merged into `main` (the integration branch since the first hand-off) from to
 - `TcpTransport.bufferedOutputBytes` is 0 from the abort on (a destroyed socket's `writableLength` lingers until its handle closes), and `acceptedOutputBytes` no longer counts the dropped bytes once it does.
 - The memory pair errors the other side's writable when its readable ends (CONNECTION_LOST, or the FRAME_TOO_LARGE that closed the pair on its behalf), so its `closed` settles; later writes reject, as with the stream transport.
 - The WebSocket server passes Dart's fragment cap (`maxMessageFragments`, 4096) to `ws`'s `maxFragments` (`ws` 8.21 or later) and reads its error as FRAME_TOO_LARGE; `ws` closes with 1008 where Dart closes with 1009. Both `ws` fragment todos are ported, "costs about its size" for its deliveries only.
-- One mux harness (`test/unit/mux/support.ts`; the identity copy is gone), no `SteppingClock` or `TestClock` (`ManualClock.elapseAsync` everywhere), and the unit "forged IDENT" case flips a byte of a valid credential (`forged()` in `test/support/node/test-authority.ts`).
+- One mux harness (`test/unit/mux/support.ts`; the identity copy is gone), no `SteppingClock` or `TestClock` (`ManualClock.elapseAsync` everywhere), and the unit "forged IDENT" case flips a byte of a valid credential (`forged()` in `test/support/node/seeded-identity.ts`).
 
 **Left in this area:** nothing from the hand-off's list. For the lead: the `ws` peer range is `^8.18.0`, where an older `ws` has no fragment cap; `^8.21.0` would make it certain.
 

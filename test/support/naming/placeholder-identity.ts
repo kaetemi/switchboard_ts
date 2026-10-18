@@ -8,7 +8,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // tests. The credentials are real (`Credential`, the core's codec and
 // `Scope`s, so `Credential.decode` reads what the naming service answers),
 // but signed with a placeholder and verified by membership: a
-// `RegistryVerifier` accepts exactly the credentials a `RegistryIssuer` issued,
+// `MembershipVerifier` accepts exactly the credentials a `PlaceholderIssuer` issued,
 // by their bytes, unless expired. Real signatures cannot be used here: the
 // Dart test runs on fake_async with Dart's own Ed25519, while WebCrypto
 // signs and verifies on a thread pool, whose answers arrive after an
@@ -39,9 +39,9 @@ import type {
 } from '../../../src/core/naming/naming-service.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { peerIdentityOf } from '../node/test-authority.ts';
+import { peerIdentityOf } from '../node/seeded-identity.ts';
 
-/** Every credential a {@link RegistryIssuer} issued, by its encoding. */
+/** Every credential a {@link PlaceholderIssuer} issued, by its encoding. */
 const registry = new Map<string, Credential>();
 
 /** A scope granting [right] over the types matching [pattern] (`Scope.of`). */
@@ -58,9 +58,9 @@ export function decodeCredential(bytes: Uint8Array): Credential {
   return Credential.decode(bytes);
 }
 
-/** What {@link RegistryIssuer} takes. */
-export interface RegistryIssuerOptions {
-  /** The issuer's key id; default `registry`. */
+/** What {@link PlaceholderIssuer} takes. */
+export interface PlaceholderIssuerOptions {
+  /** The issuer's key id; default `placeholder`. */
   readonly keyId?: string;
   /** Issues bearer credentials only, as an HMAC issuer does; default false. */
   readonly bearerOnly?: boolean;
@@ -73,17 +73,17 @@ export interface RegistryIssuerOptions {
  * the wall time in whole seconds, expiring `lifetime` (ms, whole seconds
  * counted) later, or never for a null lifetime; Ed25519, or HMAC-SHA256 for
  * a bearer-only issuer), with a signature of zeros that only a
- * {@link RegistryVerifier} accepts.
+ * {@link MembershipVerifier} accepts.
  */
-export class RegistryIssuer implements NamingCredentialIssuer {
+export class PlaceholderIssuer implements NamingCredentialIssuer {
   readonly keyId: Name;
   readonly bearerOnly: boolean;
   readonly now: () => number;
   /** Number of credentials issued. */
   issued = 0;
 
-  constructor(options: RegistryIssuerOptions = {}) {
-    this.keyId = Name.of(options.keyId ?? 'registry');
+  constructor(options: PlaceholderIssuerOptions = {}) {
+    this.keyId = Name.of(options.keyId ?? 'placeholder');
     this.bearerOnly = options.bearerOnly ?? false;
     this.now = options.now ?? Date.now;
   }
@@ -123,11 +123,11 @@ export class RegistryIssuer implements NamingCredentialIssuer {
 }
 
 /**
- * Verifies the credentials of the {@link RegistryIssuer}s (`CredentialVerifier`):
+ * Verifies the credentials of the {@link PlaceholderIssuer}s (`CredentialVerifier`):
  * accepts exactly those, by their bytes, not expired at `options.now`, or at
  * its own wall time.
  */
-export class RegistryVerifier implements CredentialVerifier {
+export class MembershipVerifier implements CredentialVerifier {
   readonly now: () => number;
   /** Number of verifications asked for. */
   calls = 0;
@@ -152,7 +152,7 @@ export class RegistryVerifier implements CredentialVerifier {
  * valid `IDENT` of the peer, {@link goAway} records the GOAWAY this side
  * sends, which the peer reads as its `peerGoAwayStatus`.
  */
-export class ManualNamingConnection implements NamingConnection {
+export class RecordingNamingConnection implements NamingConnection {
   readonly now: () => number;
   /** Every GOAWAY sent on this connection, in order. */
   readonly goAways: Status[] = [];

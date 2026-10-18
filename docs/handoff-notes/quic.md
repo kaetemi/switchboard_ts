@@ -9,7 +9,7 @@ and 6.10. The Dart reference is `kaetemi/switchboard_quic` (read-only).
 ## Merged
 
 * **#2**: the record codecs (`records.ts`, `record-reader.ts`), HELLO, the exporter helpers, and
-  the fake provider (`src/testing/fake-quic-provider.ts`), with the record vectors.
+  the fake provider (`src/testing/memory-quic-provider.ts`), with the record vectors.
 * **#8**: the binding and the native provider.
   * `QuicBindingConnection` and `QuicBindingChannel` extend the core's `BindingConnection` and
     reuse its control codecs and `verifyIdent`.
@@ -96,7 +96,7 @@ Test parity, by Dart file:
   entry's `listenQuic` and `listenWebTransport` fill it in (and the WebTransport protocol).
 * The test identity: `test/unit/quic/identity-fixtures.ts` has real credentials of an Ed25519
   test authority and an HMAC issuer, real verifiers and `Ed25519HolderKey`s, as
-  `binding_test.dart` has them; the node-level tests use `test/support/node/test-authority.ts`,
+  `binding_test.dart` has them; the node-level tests use `test/support/node/seeded-identity.ts`,
   which is real credentials too.
 
 ## The native addon and the vendored shim

@@ -19,7 +19,7 @@ import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.t
 import type { FrameTransport } from '../../../src/core/transport/contract.ts';
 import { AsyncQueue } from '../../../src/core/util/async-queue.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { peerIdentityOf } from './test-authority.ts';
+import { peerIdentityOf } from './seeded-identity.ts';
 
 /**
  * A toy implementation of the connection contract (`mux/contract.ts`) over

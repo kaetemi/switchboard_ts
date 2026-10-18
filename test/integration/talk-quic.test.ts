@@ -4,7 +4,7 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Talk over the QUIC binding: QuicBindingConnections over the fake QUIC
+// Talk over the QUIC binding: QuicBindingConnections over the in-memory QUIC
 // provider (test/unit/quic/harness.ts), where every channel is a stream
 // of its own and streams are delivered independently, each in order, with
 // a delay per stream. What differs from the frame mux, whose channels are
@@ -40,7 +40,10 @@ import { installBulkRouting } from '../../src/core/talk/talk-bulk-routes.ts';
 import { TalkAbortError, TalkChannel } from '../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
-import { FakeQuicNetwork, type FakeStreamInfo } from '../../src/testing/fake-quic-provider.ts';
+import {
+  MemoryQuicNetwork,
+  type MemoryQuicStreamInfo,
+} from '../../src/testing/memory-quic-provider.ts';
 import { collect, generated, pattern } from '../support/talk/bulk-peers.ts';
 import { bytes, Collector, expectBytes, rejectsStatus, serve } from '../support/talk/helpers.ts';
 import {
@@ -61,10 +64,10 @@ const empty = new Uint8Array(0);
  * which the session's streams were opened, by either side: 0 is the
  * control stream, 1 the first channel.
  */
-function delayedNetwork(): { network: FakeQuicNetwork; delays: Map<number, number> } {
+function delayedNetwork(): { network: MemoryQuicNetwork; delays: Map<number, number> } {
   const delays = new Map<number, number>();
-  const network = new FakeQuicNetwork({
-    delay: (stream: FakeStreamInfo, fromInitiator: boolean) =>
+  const network = new MemoryQuicNetwork({
+    delay: (stream: MemoryQuicStreamInfo, fromInitiator: boolean) =>
       fromInitiator ? (delays.get(stream.ordinal) ?? 0) : 0,
   });
   return { network, delays };
@@ -87,12 +90,16 @@ interface QuicTalk {
 }
 
 /**
- * Two binding connections over a fake session pair, bulk routing installed
+ * Two binding connections over an in-memory session pair, bulk routing installed
  * on both (as a node does on every connection), and a Talk channel from the
  * initiator with its far end.
  */
 async function quicTalk(
-  init: { network?: FakeQuicNetwork; near?: Partial<TalkOptions>; far?: Partial<TalkOptions> } = {},
+  init: {
+    network?: MemoryQuicNetwork;
+    near?: Partial<TalkOptions>;
+    far?: Partial<TalkOptions>;
+  } = {},
 ): Promise<QuicTalk> {
   const [client, server] = await connectionPair(
     init.network === undefined ? {} : { network: init.network },

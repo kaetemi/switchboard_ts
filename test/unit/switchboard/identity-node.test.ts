@@ -43,7 +43,7 @@ import {
   issueCredential,
   rogue,
   TestVerifier,
-} from '../../support/node/test-authority.ts';
+} from '../../support/node/seeded-identity.ts';
 
 const npc = Name.of('npc');
 const chat = Name.of('chat');

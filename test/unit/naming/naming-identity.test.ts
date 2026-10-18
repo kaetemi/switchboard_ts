@@ -7,14 +7,14 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Port of the Dart `naming_identity_test.dart`: the naming service and
 // identity (wiki page "Polyverse Switchboard Identity and Credentials",
 // stage B): scope enforcement per `_ns` channel (connection identity, or a
-// credential in the open payload), RENEW (on manual time), the end of a
+// credential in the open payload), RENEW (on virtual time), the end of a
 // channel whose credential expires, slot spaces defined again after a
 // restart, and CONNECT brokering.
 //
 // The Dart test runs over mem:// nodes with real credentials. Until the
 // protocol core's identity and the node land, the port serves in-memory
-// Talk channels with manual connections and registry credentials
-// (`test/support/naming/registry-identity.ts`): a node is its credential and its
+// Talk channels with recording connections and placeholder credentials
+// (`test/support/naming/placeholder-identity.ts`): a node is its credential and its
 // connection to each naming service, a valid `IDENT` a new identity on that
 // connection (`updateCredential`, `identify`), and a `MeshNode` its naming
 // client. What only the node does (the `IDENT` exchange itself, brokered
@@ -84,11 +84,11 @@ import {
 } from '../../support/naming/harness.ts';
 import {
   decodeCredential,
-  ManualNamingConnection,
-  RegistryIssuer,
-  RegistryVerifier,
+  MembershipVerifier,
+  PlaceholderIssuer,
+  RecordingNamingConnection,
   scopeOf,
-} from '../../support/naming/registry-identity.ts';
+} from '../../support/naming/placeholder-identity.ts';
 
 /** The Talk options of every node of the Dart test. */
 const talk: Partial<TalkOptions> = { requestTimeout: 2000, replyTimeout: 1000 };
@@ -106,16 +106,16 @@ const holderKey = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
 
 /**
  * The wall clock (`package:clock` in the Dart test): the real time, or a
- * test clock's in the tests on manual time. Read by the issuers, the
+ * test clock's in the tests on virtual time. Read by the issuers, the
  * verifiers, the connections and the naming services.
  */
 let wall: () => number = Date.now;
 const now = (): number => wall();
 
 /** Issues holder-key credentials (the Dart test's Ed25519 authority). */
-const authority = new RegistryIssuer({ keyId: 'auth1', now });
+const authority = new PlaceholderIssuer({ keyId: 'auth1', now });
 /** Issues bearer credentials (the Dart test's HMAC issuer). */
-const hmac = new RegistryIssuer({ keyId: 'mesh1', bearerOnly: true, now });
+const hmac = new PlaceholderIssuer({ keyId: 'mesh1', bearerOnly: true, now });
 
 const workerScopes: Scope[] = [scopeOf(Right.register, 'worker-*')];
 const consumerScopes: Scope[] = [
@@ -141,7 +141,7 @@ function issue(
 }
 
 function verifier(): CredentialVerifier {
-  return new RegistryVerifier({ now });
+  return new MembershipVerifier({ now });
 }
 
 const teardowns: (() => unknown)[] = [];
@@ -185,22 +185,22 @@ function outcomeOf(code: number): Outcome {
 /** A node: its credential, and its connection to each naming service. */
 class Node {
   credential: Credential | undefined;
-  readonly #connections = new Map<Mesh, ManualNamingConnection>();
+  readonly #connections = new Map<Mesh, RecordingNamingConnection>();
   /** The connections this node identified on. */
-  readonly #identified = new Set<ManualNamingConnection>();
+  readonly #identified = new Set<RecordingNamingConnection>();
 
   constructor(credential?: Credential) {
     this.credential = credential;
   }
 
   /** The node's open connection to [mesh], made (and identified, with a credential) if needed. */
-  connect(mesh: Mesh): ManualNamingConnection {
+  connect(mesh: Mesh): RecordingNamingConnection {
     const existing = this.#connections.get(mesh);
     if (existing?.isOpen === true) {
       return existing;
     }
     const credential = this.credential;
-    const connection = new ManualNamingConnection({ credential, now });
+    const connection = new RecordingNamingConnection({ credential, now });
     if (credential !== undefined) {
       this.#identified.add(connection);
     }
@@ -229,7 +229,7 @@ class Node {
   }
 }
 
-/** A node, closed after the test unless [close] is false (for manual time, where the test closes it). */
+/** A node, closed after the test unless [close] is false (for virtual time, where the test closes it). */
 function node(options: { credential?: Credential; close?: boolean } = {}): Node {
   const n = new Node(options.credential);
   if (options.close ?? true) {
@@ -242,7 +242,7 @@ function node(options: { credential?: Credential; close?: boolean } = {}): Node 
 interface MeshOptions {
   readonly requireCredential?: boolean;
   readonly withIssuer?: boolean;
-  /** The issuer of `RENEW` when `withIssuer`; default the registry authority. */
+  /** The issuer of `RENEW` when `withIssuer`; default the placeholder authority. */
   readonly issuer?: NamingCredentialIssuer;
   readonly payloadVerifier?: CredentialVerifier;
   readonly renewable?: (credential: Credential) => boolean;
@@ -256,7 +256,7 @@ interface MeshOptions {
 class Mesh {
   readonly harness: Harness;
   /** The connections of the nodes to this naming service. */
-  readonly connections: ManualNamingConnection[] = [];
+  readonly connections: RecordingNamingConnection[] = [];
   #closed = false;
 
   private constructor(harness: Harness) {
@@ -453,7 +453,7 @@ const idle: SlotHandler = {
   onResume: () => {},
 };
 
-/** A wall time in whole seconds for the tests on manual time. */
+/** A wall time in whole seconds for the tests on virtual time. */
 const epoch = 1_800_000_000_000;
 
 /** A test clock that is also the wall clock until the end of the test. */

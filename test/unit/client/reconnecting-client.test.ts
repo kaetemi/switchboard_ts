@@ -68,7 +68,7 @@ function errorCode(error: unknown): string | undefined {
  * The endpoint side: every transport the connector creates is accepted by
  * a toy mux connection here, unless the endpoint is told to refuse.
  */
-class FakeEndpoint {
+class ScriptedEndpoint {
   readonly clock: ManualClock;
   readonly options: MuxOptions;
   readonly connections: MuxConnection[] = [];
@@ -129,7 +129,7 @@ class FakeEndpoint {
 }
 
 /** Serves the `feed` channels the client opens on [endpoint] with Talk, counting the `SUB` requests. */
-function subscriptionsAt(endpoint: FakeEndpoint): { count: number } {
+function subscriptionsAt(endpoint: ScriptedEndpoint): { count: number } {
   const subscriptions = { count: 0 };
   endpoint.onChannel = (incoming) => {
     if (!incoming.address.type?.equals(Name.of('feed'))) {
@@ -153,7 +153,7 @@ afterEach(async () => {
 });
 
 function clientFor(
-  endpoint: FakeEndpoint,
+  endpoint: ScriptedEndpoint,
   options: ReconnectingClientOptions & { connect?: TransportConnector } = {},
 ): ReconnectingClient {
   const client = new ReconnectingClient(options.connect ?? endpoint.connect, {
@@ -240,7 +240,7 @@ function seeded(seed: number): () => number {
 describe('connecting', () => {
   test('connects and reports its states', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     expect(client.state.phase).toBe(ClientPhase.connecting);
     expect(client.state.attempt).toBe(1);
@@ -305,7 +305,7 @@ describe('connecting', () => {
 
   test('autoStart false waits for start()', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { autoStart: false });
     await clock.elapseAsync(5000);
     expect(endpoint.attempts).toEqual([]);
@@ -342,7 +342,7 @@ describe('connecting', () => {
 
   test('a connection connector: another binding, its signal aborted when given up', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const signals: AbortSignal[] = [];
     const hanging = new Deferred<MuxConnection>();
     let calls = 0;
@@ -383,7 +383,7 @@ describe('connecting', () => {
 describe('backoff', () => {
   test('doubles from the initial delay up to the cap', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint, { maxBackoff: 4000 });
     const states = record(client);
@@ -402,7 +402,7 @@ describe('backoff', () => {
 
   test('jitter stays within its bounds', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint, { maxBackoff: 4000, jitter: 0.2, random: seeded(7) });
     await clock.elapseAsync(120_000);
@@ -424,7 +424,7 @@ describe('backoff', () => {
 
   test('resets after a connection that outlived the cap', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.failures = 3;
     const client = clientFor(endpoint, { maxBackoff: 8000 });
     // Fails at 0, 0.5 and 1.5 s; connects at 3.5 s.
@@ -448,7 +448,7 @@ describe('backoff', () => {
 
   test('a throwing, failing or hanging connector is retried', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const late = new Deferred<FrameTransport>();
     let calls = 0;
     let hangingSignal: AbortSignal | undefined;
@@ -503,7 +503,7 @@ describe('backoff', () => {
 describe('openChannel', () => {
   test('waits for the connection, with defaultPayload attached', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { autoStart: false, defaultPayload: bytes(0xc0, 0xde) });
     const firstOpen = new Outcome(client.openChannel(events));
     const own = new Outcome(client.openChannel(feed.with({ payload: bytes(1) })));
@@ -531,7 +531,7 @@ describe('openChannel', () => {
 
   test('fails with UNAVAILABLE after openTimeout, CANCELLED on close', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint);
     const timed = new Outcome(client.openChannel(events, { openTimeout: 3000 }));
@@ -562,7 +562,7 @@ describe('openChannel', () => {
 
   test('a signal abandons the wait', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { autoStart: false });
     const controller = new AbortController();
     const waiting = new Outcome(client.openChannel(events, { signal: controller.signal }));
@@ -582,7 +582,7 @@ describe('openChannel', () => {
 
   test('a Talk request through openTalk', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.onChannel = (incoming) => {
       void incoming.talk().serve((message) => {
         void message.reply(bytes(...message.payload, 2), { procedure: 'PONG' });
@@ -600,7 +600,7 @@ describe('openChannel', () => {
 
   test("openTalk merges its Talk options over the client's", async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { talkOptions: { requestTimeout: 1234, replyTimeout: 99 } });
     const talk = new Outcome(client.openTalk(events, { talkOptions: { replyTimeout: 55 } }));
     await ManualClock.settle();
@@ -616,7 +616,7 @@ if (overFrameMux()) {
   describe('bulk payloads', () => {
     test('both ways through openTalk', async () => {
       const clock = new ManualClock();
-      const endpoint = new FakeEndpoint(clock);
+      const endpoint = new ScriptedEndpoint(clock);
       endpoint.onChannel = (incoming) => {
         void incoming.talk().serve((message) => {
           void message.reply(Uint8Array.from([...message.payload, ...message.payload]));
@@ -641,7 +641,7 @@ if (overFrameMux()) {
 describe('persistent channels', () => {
   test('re-opened after the endpoint drops the connection', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     const closed: Status[] = [];
@@ -699,7 +699,7 @@ describe('persistent channels', () => {
 
   test('closed by the endpoint: re-opened after the backoff', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { maxBackoff: 4000 });
     const opened: MuxChannel[] = [];
     const closed: Status[] = [];
@@ -750,7 +750,7 @@ describe('persistent channels', () => {
   ]) {
     test(`closed by the endpoint with ${statusCodeName(code)}: stays closed`, async () => {
       const clock = new ManualClock();
-      const endpoint = new FakeEndpoint(clock);
+      const endpoint = new ScriptedEndpoint(clock);
       const client = clientFor(endpoint);
       const opened: MuxChannel[] = [];
       const closed: Status[] = [];
@@ -794,7 +794,7 @@ describe('persistent channels', () => {
 
   test('onOpen exceptions are logged and do not affect others', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const logged: [LogLevel, string, string][] = [];
     const logger: Logger = {
       log: (level, name, message) => logged.push([level, name, message]),
@@ -826,7 +826,7 @@ describe('persistent channels', () => {
 
   test('PersistentTalk re-sends its subscription on every connection', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     let subscriptions = 0;
     endpoint.onChannel = (incoming) => {
       const talk = incoming.talk();
@@ -880,7 +880,7 @@ describe('persistent channels', () => {
 
   test('opened while connected, and on the next connection', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.failures = 1;
     const client = clientFor(endpoint, { defaultPayload: bytes(7) });
     const opened: MuxChannel[] = [];
@@ -909,7 +909,7 @@ describe('persistent channels', () => {
 describe('stop and close', () => {
   test('a connector that closes the client leaves no timeout behind', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     let client: ReconnectingClient | undefined;
     client = clientFor(endpoint, {
       autoStart: false,
@@ -926,7 +926,7 @@ describe('stop and close', () => {
 
   test('stop() sends GOAWAY and stops reconnecting; start() resumes', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     const closed: Status[] = [];
@@ -965,7 +965,7 @@ describe('stop and close', () => {
 
   test('stop() during a connection attempt discards its transport', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const pending = new Deferred<FrameTransport>();
     let signal: AbortSignal | undefined;
     const client = clientFor(endpoint, {
@@ -987,7 +987,7 @@ describe('stop and close', () => {
 
   test('close() waits for the application channels within the grace', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const own = new Outcome(client.openChannel(events));
     await ManualClock.settle();
@@ -1004,7 +1004,7 @@ describe('stop and close', () => {
 
   test('close() while waiting for the next attempt', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint);
     const persistent = client.openPersistent(events, () => {});
@@ -1020,7 +1020,7 @@ describe('stop and close', () => {
 
   test('await using closes the client', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     let kept: ReconnectingClient | undefined;
     {
       await using client = clientFor(endpoint);
@@ -1036,7 +1036,7 @@ describe('stop and close', () => {
 describe('GOAWAY from the endpoint', () => {
   test('persistent channels move to a new connection at once', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const subscriptions = subscriptionsAt(endpoint);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
@@ -1107,7 +1107,7 @@ describe('GOAWAY from the endpoint', () => {
 
   test('on an idle connection: reconnects at once', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     await ManualClock.settle();
     const firstConnection = client.connection as MuxConnection;
@@ -1130,7 +1130,7 @@ describe('GOAWAY from the endpoint', () => {
 
   test('an application channel carries on over the old connection', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const own = new Outcome(client.openChannel(feed));
     await ManualClock.settle();
@@ -1178,7 +1178,7 @@ describe('GOAWAY from the endpoint', () => {
   test('close() bounds an old connection held by the application', async () => {
     // The endpoint would wait long; close() waits the client's grace.
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock, { ...quiet, goAwayGrace: 10 * 60_000 });
+    const endpoint = new ScriptedEndpoint(clock, { ...quiet, goAwayGrace: 10 * 60_000 });
     const client = clientFor(endpoint);
     const own = new Outcome(client.openChannel(feed));
     await ManualClock.settle();
@@ -1195,7 +1195,7 @@ describe('GOAWAY from the endpoint', () => {
   for (const how of ['stop', 'close'] as const) {
     test(`arriving during ${how}(): no reconnect`, async () => {
       const clock = new ManualClock();
-      const endpoint = new FakeEndpoint(clock);
+      const endpoint = new ScriptedEndpoint(clock);
       const client = clientFor(endpoint);
       const closed: Status[] = [];
       client.openPersistent(events, () => {}, { onClosed: (status) => closed.push(status) });
@@ -1233,7 +1233,7 @@ describe('GOAWAY from the endpoint', () => {
 
   test('stop() during the attempt that follows it', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const pending = new Deferred<FrameTransport>();
     let calls = 0;
     const client = clientFor(endpoint, {
@@ -1261,7 +1261,7 @@ describe('GOAWAY from the endpoint', () => {
 
   test('a failed attempt after it backs off as usual', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     client.openPersistent(events, (channel) => opened.push(channel));
@@ -1292,7 +1292,7 @@ describe('GOAWAY from the endpoint', () => {
 
   test('again soon after reconnecting at once: backs off', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { maxBackoff: 8000 });
     await clock.elapseAsync(1000);
     void endpoint.last.goAway();
@@ -1323,7 +1323,7 @@ describe('GOAWAY from the endpoint', () => {
 describe('next attempt', () => {
   test('nextAttemptAt matches the backoff schedule', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint, { maxBackoff: 4000, jitter: 0.2, random: seeded(3) });
     const states = record(client);
@@ -1352,7 +1352,7 @@ describe('next attempt', () => {
 
   test('undefined while connecting, connected or stopped', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     expect(client.state.phase).toBe(ClientPhase.connecting);
     expect(client.nextAttemptAt).toBeUndefined();
@@ -1409,7 +1409,7 @@ describe('next attempt', () => {
 describe('reconnectNow', () => {
   test('during the backoff: attempts at once', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     endpoint.refuseAll = true;
     const client = clientFor(endpoint);
     const states = record(client);
@@ -1464,7 +1464,7 @@ describe('reconnectNow', () => {
 
   test('while connecting or connected: does nothing', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const pending = new Deferred<FrameTransport>();
     let calls = 0;
     const client = clientFor(endpoint, {
@@ -1498,7 +1498,7 @@ describe('reconnectNow', () => {
 
   test('force while connected: moves to a new connection', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const subscriptions = subscriptionsAt(endpoint);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
@@ -1573,7 +1573,7 @@ describe('reconnectNow', () => {
 
   test('force: a failed attempt backs off as usual', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const opened: MuxChannel[] = [];
     client.openPersistent(events, (channel) => opened.push(channel));
@@ -1595,7 +1595,7 @@ describe('reconnectNow', () => {
 
   test('not started, stopped or closed: does nothing', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint, { autoStart: false });
     client.reconnectNow();
     client.reconnectNow({ force: true });
@@ -1636,7 +1636,7 @@ describe('reconnectNow', () => {
 describe('the endpoint', () => {
   test('pushed channels arrive on incoming across reconnects', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const pushed: IncomingChannel[] = [];
     void (async () => {
@@ -1692,7 +1692,7 @@ describe('the endpoint', () => {
 
   test('pushed channels are refused once the consumer stops', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     const pushed: IncomingChannel[] = [];
     const stop = new Deferred<void>();
@@ -1724,7 +1724,7 @@ describe('the endpoint', () => {
 
   test('after close, incoming ends and pushed channels are refused', async () => {
     const clock = new ManualClock();
-    const endpoint = new FakeEndpoint(clock);
+    const endpoint = new ScriptedEndpoint(clock);
     const client = clientFor(endpoint);
     await ManualClock.settle();
     const server = endpoint.last;

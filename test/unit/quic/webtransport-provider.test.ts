@@ -176,7 +176,7 @@ class ServerStream {
 }
 
 /** What an in-memory session has beyond Chromium's. */
-interface ExtraFeatures {
+interface SessionFeatures {
   readonly protocol?: boolean;
   readonly draining?: boolean;
   readonly exporter?: (label: Uint8Array, context?: Uint8Array) => Promise<unknown>;
@@ -201,7 +201,7 @@ class MemoryWebTransport implements WebTransportLike {
   readonly #ready = new Deferred<void>();
   readonly #closed = new Deferred<unknown>();
   readonly #drain = new Deferred<void>();
-  readonly #features: ExtraFeatures;
+  readonly #features: SessionFeatures;
   #pulling: ReadableStreamDefaultController<unknown> | undefined;
   #toClient!: ReadableStreamDefaultController<unknown>;
   #uniToClient!: ReadableStreamDefaultController<unknown>;
@@ -220,7 +220,7 @@ class MemoryWebTransport implements WebTransportLike {
   readonly groups: object[] = [];
   #ended = false;
 
-  constructor(url: string, options: WebTransportInit, features: ExtraFeatures) {
+  constructor(url: string, options: WebTransportInit, features: SessionFeatures) {
     this.url = url;
     this.options = options;
     this.#features = features;
@@ -378,7 +378,7 @@ class MemoryWebTransport implements WebTransportLike {
 }
 
 /** A `WebTransport` constructor of in-memory sessions, recording the sessions it created. */
-function memoryApi(features: ExtraFeatures = {}) {
+function memoryWebTransportApi(features: SessionFeatures = {}) {
   const sessions: MemoryWebTransport[] = [];
   let failNext: Error | undefined;
   class RecordingWebTransport extends MemoryWebTransport {
@@ -488,16 +488,16 @@ async function readAll(stream: QuicStream, max = 65536): Promise<Uint8Array> {
 }
 
 interface Setup {
-  readonly api: ReturnType<typeof memoryApi>;
+  readonly api: ReturnType<typeof memoryWebTransportApi>;
   readonly provider: WebTransportProvider;
   readonly clock: ManualClock | undefined;
 }
 
 function setup(
-  features: ExtraFeatures = {},
+  features: SessionFeatures = {},
   options: Omit<WebTransportProviderOptions, 'WebTransport'> & { manual?: boolean } = {},
 ): Setup {
-  const api = memoryApi(features);
+  const api = memoryWebTransportApi(features);
   const clock = options.manual === true ? new ManualClock() : undefined;
   const provider = webTransport({
     WebTransport: api.WebTransport,
@@ -509,7 +509,7 @@ function setup(
 
 /** An established session over a fresh in-memory API. */
 async function open(
-  features: ExtraFeatures = {},
+  features: SessionFeatures = {},
   options: Parameters<typeof setup>[1] = {},
 ): Promise<Setup & { session: WebTransportSession; transport: MemoryWebTransport }> {
   const s = setup(features, options);
@@ -1197,7 +1197,7 @@ describe('codes and priorities', () => {
   });
 
   test('without a WebTransportError constructor only code 0 goes out, as a reason that is none', async () => {
-    const api = memoryApi();
+    const api = memoryWebTransportApi();
     const provider = webTransport({
       WebTransport: api.WebTransport,
       WebTransportError: undefined,

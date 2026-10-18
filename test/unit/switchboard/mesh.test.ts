@@ -12,7 +12,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // naming thread's `test/unit/naming/naming-identity.test.ts` leaves to the
 // node: MeshNode under a host that requires named IDENTs, a MeshNode
 // registering again under a replacement credential, the renewal of its
-// credential on manual time, and the CONNECT cases that need brokered
+// credential on virtual time, and the CONNECT cases that need brokered
 // connections and PeerSet), ported here with Dart's titles. The first
 // group checks what `mesh.dart` documents of `join`, `publish`,
 // `publishRelay`, `unpublish` and `leave`; the end-to-end meshes are in
@@ -69,7 +69,7 @@ const npc = Name.of('npc');
 const authoritySeed = Uint8Array.from({ length: 32 }, (_, i) => (11 * i) & 0xff);
 const meshKey = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
 
-/** Wall time, read when called: the replaced `Date.now` of the tests on manual time. */
+/** Wall time, read when called: the replaced `Date.now` of the tests on virtual time. */
 const wall = (): number => Date.now();
 
 let authority: CredentialIssuer;

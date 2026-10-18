@@ -41,7 +41,7 @@ const second = 1000;
 const hour = 3600 * second;
 const day = 24 * hour;
 
-/** A Dart `RawPeer`: over a channel that ends with a status, as the Dart fake mux channel does. */
+/** A Dart `RawPeer`: over a channel that ends with a status, as the Dart `StatusClosableChannel` does. */
 function rawPeer(options: ConstructorParameters<typeof RawPeer>[0] = {}): RawPeer {
   return new RawPeer({ ...options, status: true });
 }

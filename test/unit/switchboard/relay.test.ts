@@ -51,8 +51,8 @@ import {
   testMux,
   until,
 } from '../../support/node/harness.ts';
+import { issueCredential, TestVerifier } from '../../support/node/seeded-identity.ts';
 import { type MeshResolver, TableMesh } from '../../support/node/table-mesh.ts';
-import { issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
 
 const limit = 5000;
 
