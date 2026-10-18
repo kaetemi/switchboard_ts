@@ -38,6 +38,7 @@ Scope: `src/core/transport/**`, `src/node/transport/**`, `src/core/mux/**`, the 
 - **Test:** `test/unit/transport/review-websocket.test.ts`: "the peer closing errors the writable", "abort errors the writable".
 - **Fix:** keep the controller and error it with `CONNECTION_LOST` (or the failure) from `#onClose` and `abort()`, unless the writable itself was closed or aborted, as `StreamTransport#onOutputFinished` (`stream-transport.ts:752`) and the memory pair do. A prototype passed `websocket.test.ts` and `ws-server.test.ts`.
 - **Dart:** differs. The sink completes `done` when the WebSocket closes (`web_socket_transport.dart`: `_onDone` → `closeWebSocket` → `_sink.complete()`). Design section 12, item 11 ("A transport's writable errors once its output has ended on its own") is not met here.
+- **Resolved:** `WebSocketTransport` keeps its writable's controller and errors it from `#onClose` and `abort()` (and for a socket closed before the transport took it), with the first failure or `CONNECTION_LOST`, unless the writable itself was closed or aborted. The scripted tests pass, and four over `ws` (the `ws` client and the global WebSocket client when the server closes, the `ws` server when the client closes or vanishes). `ws-server.test.ts`, "a close from the client is echoed", now expects its write after the close to be refused.
 
 ### 5. The `ws` adapter polls `bufferedAmount` on the global `setTimeout`
 - **Severity:** ergonomics; clock misuse.

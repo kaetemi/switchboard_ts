@@ -204,10 +204,13 @@ describe('frames', () => {
     expect(close.opcode).toBe(opClose);
     expect(closeCodeOf(close)).toBe(1000);
     // Nothing is sent after the close frame, and the server closes its side.
-    void server.writable.getWriter().write(new Uint8Array([2]));
+    // Once the WebSocket closed, the writable is errored (design section 12,
+    // item 11): a write is refused.
+    const refused = server.writable.getWriter().write(new Uint8Array([2]));
     await client.closed.promise;
     expect(await client.frames.hasNext()).toBe(false);
     await server.closed;
+    expect(isStatusError(await rejection(refused), StatusCode.connectionLost)).toBe(true);
     expect(server.closeCode).toBe(1000);
     expect(server.closeReason).toBe('bye');
   });
