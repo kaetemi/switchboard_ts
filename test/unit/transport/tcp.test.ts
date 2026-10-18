@@ -26,6 +26,9 @@ import { bytesOf, collect } from './support.ts';
 
 const preambleHex = '53 57 42 44 01 00 00 00';
 
+/** Deno, whose `node:net` lets go of a destroyed socket's buffer at once. */
+const isDeno = typeof (globalThis as { Deno?: unknown }).Deno !== 'undefined';
+
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) {
@@ -352,9 +355,11 @@ describe('the socket accounting', () => {
     const accepted = client.acceptedOutputBytes;
     const closed = new Promise((resolve) => client.socket.once('close', resolve));
     client.abort();
-    // Node lets go of the socket's buffer only once its handle has closed,
-    // turns later; the transport reports it gone from the abort on.
-    expect(client.socket.writableLength).toBeGreaterThan(0);
+    // Node (and Bun) let go of the socket's buffer only once its handle has
+    // closed, turns later, Deno at once; the transport reports it gone from
+    // the abort on either way.
+    if (isDeno) expect(client.socket.writableLength).toBe(0);
+    else expect(client.socket.writableLength).toBeGreaterThan(0);
     expect(client.bufferedOutputBytes).toBe(0);
     expect(client.acceptedOutputBytes).toBe(accepted);
     await closed;

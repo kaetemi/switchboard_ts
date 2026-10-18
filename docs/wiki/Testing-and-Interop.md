@@ -7,7 +7,7 @@
 | `unit` | `src/**/*.test.ts`, `test/unit`, `test/vectors` | codecs against the wiki vectors; ports of the Dart unit tests, one TS file per Dart file, with `ManualClock` | `npm run test:unit` |
 | `integration` | `test/integration` | nodes end to end over memory, TCP, WebSocket and QUIC on the loopback (the fake QUIC provider, and the native one when the addon is built) | `npm run test:integration` |
 | `interop` | `test/interop` | the Dart reference implementation and the TS port as peers of each other, in every pairing | `npm run test:interop` |
-| browser | `test/browser` (its own `vitest.config.ts`) | the WebTransport provider and the QUIC binding in Playwright's headless Chromium against native listeners in the test process | `npm run test:browser` |
+| browser | `test/browser` (its own `vitest.config.ts`) | the WebTransport provider and the QUIC binding in Playwright's headless Chromium and Firefox (projects `chromium` and `firefox`) against native listeners in the test process | `npm run test:browser` |
 
 `npm test` runs `unit` and `integration`; `npm run check` adds lint (Biome) and the typecheck of `src`; `npx tsc -p tsconfig.test.json --noEmit` type-checks the tests too. `unit`, `integration` and `interop` are the projects of the root `vitest.config.ts`; the browser tests are a configuration of their own because they need the native addon for their listeners and a browser. The node, naming and client suites run twice, over their in-memory fixtures and over the real frame mux (the `over-frame-mux/` directories).
 
@@ -15,11 +15,11 @@
 | --- | --- |
 | `SWITCHBOARD_QUIC_ADDON=<file>` | the native addon to load (else `native/sbq-node.node`, else the platform package) |
 | `SWITCHBOARD_NATIVE=required` | a missing addon fails the native QUIC files instead of skipping them (CI) |
-| `SWITCHBOARD_BROWSER=required` | a missing addon, Playwright or Chromium fails the browser tests instead of skipping them (CI); `SWITCHBOARD_BROWSER_LOG=1` prints the page's log |
-| `PLAYWRIGHT_BROWSERS_PATH` | where Playwright's Chromium is (`npx playwright install chromium` puts it in the default place) |
+| `SWITCHBOARD_BROWSER=required` | a missing addon, Playwright or browser fails the browser tests instead of skipping them (CI); `SWITCHBOARD_BROWSER_LOG=1` prints the page's log |
+| `PLAYWRIGHT_BROWSERS_PATH` | where Playwright's browsers are (`npx playwright install chromium firefox` puts them in the default place) |
 | `SWITCHBOARD_VECTORS_STRICT=1` | every wiki vector table must be covered, not only those a test started on |
 
-The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.56.1, whose Chromium is 141).
+The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.64.1: Chromium 156 and Firefox 157); `npm run test:browser -- --project firefox` runs one browser. Where Firefox departs from the drafts, the tests check the departure ([Runtimes and QUIC](Runtimes-and-QUIC)). CI also runs the unit project on Bun and on Deno, and the built package on Deno (`test/runtime/smoke.mjs`).
 
 ## Test vectors
 

@@ -285,7 +285,7 @@ Per BCD 8.1.5:
 | `draining` | no | 155 | 26.4 |
 | `sendOrder`, `createSendGroup` | no | 114 / 155 | 26.4 |
 | `congestionControl` | no | 114 | 26.4 |
-| `getStats` | no | 114 (a stub that throws) | 26.4 |
+| `getStats` | no | 114 (a stub that throws; still so in 157: "not implemented") | 26.4 |
 | `datagrams.createWritable()` / `datagrams.writable` (deprecated) | no / 97 | 155 / 114 | 26.4 / no |
 
 * Safari's support: "Added support for WebTransport. (165721145)" (Safari 26.4 release notes). MDN has marked WebTransport Baseline since March 2026, and it is an Interop 2026 focus area.
@@ -299,10 +299,12 @@ Per BCD 8.1.5:
   * The Dart web provider feature-detects it, so a Firefox page would send `HELLO` with `EXPORTER`, and its `IDENT` proofs would be exporter-bound.
   * Whether Firefox's per-session derivation equals the shim's (section 3.3) is *unverified*. It should be the first browser interop test of Phase 2.
   * If they differ, the proof fails and the connection closes `UNAUTHENTICATED`.
+  * **Answered (2026-10-18, Firefox 157 in CI):** they differ, and the node refuses the `IDENT`. Firefox writes the session ID into the context as a QUIC varint (neqo's `webtransport_export_keying_material`); the draft's struct, and the shim, have `WebTransport Session ID (64)`. Design section 13, item 7 has the options, and `docs/wiki/Runtimes-and-QUIC.md` what else Firefox does differently (the close, WT_DRAIN_SESSION, STOP_SENDING).
 * Wire drafts:
   * The latest is `draft-ietf-webtrans-http3-16` (July 2026).
   * The shim advertises draft-02 and draft-07 signalling (section 3.2).
   * Which dialect Chrome 143+ and Firefox 155 negotiate in practice is *unverified*. The interop matrix covers it.
+  * **Answered (2026-10-18):** Chromium 156 and Firefox 157 both signal draft-02 to the shim (the browser tests log it).
 
 ### 9.4 Deno (2.9.6)
 
@@ -463,7 +465,7 @@ The napi addon also gives:
    * Node 22, 24 and 26.
    * Bun 1.4 and Deno 2.9 for the native provider's contract tests.
    * Playwright **Chrome for Testing 143 or later** for the browser provider: the Chromium 141 installed here lacks `protocols`.
-   * Firefox 155 or later for the exporter path, if Playwright's Firefox build is that recent (*unverified*).
+   * Firefox 155 or later for the exporter path, if Playwright's Firefox build is that recent (*unverified*). Since 2026-10-18 CI runs Playwright 1.64.1: Chromium 156 and Firefox 157.
    * Never assume IPv6 in tests or defaults: bind and dial `127.0.0.1` explicitly.
 5. **Phase 2 seams within the QUIC work.** Each part is its own milestone and draft PR, in this order:
    1. **Binding, pure TS.**
@@ -474,8 +476,8 @@ The napi addon also gives:
    3. **Native addon and native provider.** The crate, the TS provider, the contract tests (a port of `native_provider_test.dart`, each case over raw QUIC and WebTransport), the integration tests (a port of `native_integration_test.dart`), and the QUIC and WebTransport cells of the interop thread's matrix.
    * The node glue (`QuicSwitchboardBinding`, listener adoption, `connectQuicBinding`) follows the core's `Switchboard` port.
 6. **First interop questions for Phase 2:**
-   * Firefox 155's `exportKeyingMaterial` against the shim's per-session derivation;
-   * which WebTransport dialect Chrome 143+ and Firefox 155 negotiate with the shim;
+   * Firefox 155's `exportKeyingMaterial` against the shim's per-session derivation (answered in 9.3: they differ);
+   * which WebTransport dialect Chrome 143+ and Firefox 155 negotiate with the shim (answered in 9.3: draft-02);
    * Safari 26.4 (no CI runner here).
 
 **For Kaetemi, outside the lead's remit:** the `rlib` line in `sbq` (point 2), and whether `switchboard_quic` should publish prebuilt shims. It has no releases yet, so every consumer builds with cargo.

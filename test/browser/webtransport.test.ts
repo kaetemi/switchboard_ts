@@ -1,5 +1,6 @@
 // The web provider and the binding over it in a browser: Playwright's
-// headless Chromium against the native WebTransport listeners of
+// headless Chromium or Firefox (the project's browser, see
+// `vitest.config.ts`) against the native WebTransport listeners of
 // `web-server.ts` (a port of `tool/web_server.dart`) in this process, the
 // page served by Vite from the sources. Ports of `switchboard_quic`'s
 // `test/web_provider_test.dart` (the provider against the contract: the
@@ -14,19 +15,36 @@
 // Switchboard node's listener, with `test/web_harness.dart` as the guide
 // (`page/page.ts`). Each test's body runs in the page (see `harness.ts`).
 //
-// Chromium 141 has none of `protocol`, `draining`, `exportKeyingMaterial`,
-// `getStats`, `createSendGroup` or `sendOrder`, and sends no
-// `WT-Available-Protocols`: where Dart expects what Chrome 149 has, the
-// tests check what the session's capabilities say.
+// Browsers differ in the optional members of the W3C API (`protocol`,
+// `draining`, `exportKeyingMaterial`, `getStats`, `createSendGroup`,
+// `sendOrder`): where Dart expects what Chrome 149 has, the tests check
+// what the session's capabilities say, and the first test logs them. Where a
+// browser's version has a member the tests need to reach a path (the
+// `protocols` negotiation from Chromium 143 and Firefox 155, the exporter
+// from Firefox 155), they also check that the session has it, so that the
+// path is not skipped unnoticed. Where a browser departs from the drafts
+// against the native server (Firefox 157: STOP_SENDING, the close,
+// WT_DRAIN_SESSION and the exporter's context; see `departures`), the tests
+// that touch it check the departure, and fail once the browser no longer
+// departs (the close, a race, is checked whichever way it goes).
 //
-// Without the native addon, Playwright or its Chromium the file skips with
-// the reason; with SWITCHBOARD_BROWSER=required (CI) it fails instead.
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { type BrowserTests, browserAvailability, startBrowserTests } from './harness.ts';
+// Without the native addon, Playwright or the project's browser the file
+// skips with the reason; with SWITCHBOARD_BROWSER=required (CI) it fails
+// instead.
+import { afterAll, afterEach, beforeAll, describe, expect, inject, test } from 'vitest';
+import type { WebTransportCapabilities } from '../../src/web/quic/webtransport-provider.ts';
+import {
+  type BrowserTests,
+  browserAvailability,
+  browserTitles,
+  startBrowserTests,
+} from './harness.ts';
 
 const requiredVariable = 'SWITCHBOARD_BROWSER';
 
-const availability = browserAvailability();
+const browserName = inject('browserName');
+const title = browserTitles[browserName];
+const availability = browserAvailability(browserName);
 if (!availability.available && process.env[requiredVariable] === 'required') {
   throw new Error(`${requiredVariable}=required, but ${availability.reason}`);
 }
@@ -39,13 +57,91 @@ const run: BrowserTests['run'] = (body, arg) => {
   return browser.run(body, arg);
 };
 
+/**
+ * The first version of each browser with a capability the tests need to reach a path: the
+ * `protocols` negotiation (`WT-Available-Protocols`, `wt.protocol`) and `exportKeyingMaterial`.
+ */
+const firstVersionWith: {
+  readonly [name in typeof browserName]: Partial<Record<keyof WebTransportCapabilities, number>>;
+} = {
+  chromium: { protocol: 143 },
+  firefox: { protocol: 155, exportKeyingMaterial: 155 },
+};
+
+/**
+ * Where a browser departs from the drafts against the native server, as CI sees it, with the
+ * cause read in the browser's sources. A test the departure touches checks the departure itself,
+ * so that once the browser stops departing the test fails and the entry goes (with its line in
+ * the browser notes of `docs/wiki/Runtimes-and-QUIC.md`).
+ */
+const departures = {
+  /**
+   * Cancelling a stream's readable sends no STOP_SENDING: the server never sees one, while the
+   * page's own reads end with the code at once. (Firefox: the parent-process path from the
+   * readable's `cancel()` to `SendStopSending` is not wired up.)
+   */
+  noStopSending: 'cancelling a readable sends no STOP_SENDING',
+  /**
+   * The page's close reaches the server only when it outruns the connection's: the browser closes
+   * its dedicated connection as soon as the session has closed (Firefox:
+   * `Http3Session::CloseWebTransportConn`), and the shim ends every session of a connection that
+   * closes as lost at once, so a WT_CLOSE_SESSION that arrives with the connection's close is not
+   * read. The server then sees a lost connection, without the code or the reason (CI saw both
+   * outcomes). The page's own end is the local close either way. Native peers race the same way
+   * when the dialler closes its last session (the WebTransport case of the interop close scenario).
+   */
+  closeRace:
+    "the page's close races the browser's connection close, and may reach the server as a loss",
+  /**
+   * `draining` exists but the server's WT_DRAIN_SESSION does not resolve it: the browser reads only
+   * WT_CLOSE_SESSION on the CONNECT stream and resolves `draining` on an HTTP/3 GOAWAY (Firefox:
+   * neqo's `WebTransportFrame` and `drain_webtransport_sessions`), which the shim does not send.
+   */
+  drainIgnored: "the server's WT_DRAIN_SESSION does not resolve draining",
+  /**
+   * `exportKeyingMaterial` writes the session ID into the exporter's context as a QUIC varint
+   * (Firefox: neqo's `webtransport_export_keying_material`) where the draft's "WebTransport
+   * Exporter Context" has `WebTransport Session ID (64)`, as the shim writes it: the browser's
+   * exporter is not the server's, and the server refuses an exporter-bound IDENT.
+   */
+  exporterContext: "the exporter's context carries the session ID as a varint",
+} as const;
+
+type Departure = keyof typeof departures;
+
+/** The departures of each browser, as of the version Playwright brings (Firefox 157 with 1.64.1). */
+const departuresOf: { readonly [name in typeof browserName]: readonly Departure[] } = {
+  chromium: [],
+  firefox: ['noStopSending', 'closeRace', 'drainIgnored', 'exporterContext'],
+};
+
+/** Whether the project's browser departs from the drafts in [departure]. */
+const departs = (departure: Departure): boolean => departuresOf[browserName].includes(departure);
+
+/** The capabilities the browser's version must have, which the session reports in [seen]. */
+function expectCapabilitiesOfVersion(seen: WebTransportCapabilities): void {
+  if (browser === undefined) throw new Error('the browser did not start');
+  const major = Number.parseInt(browser.browserVersion, 10);
+  for (const [capability, version] of Object.entries(firstVersionWith[browserName])) {
+    if (major >= version) {
+      expect(
+        seen[capability as keyof WebTransportCapabilities],
+        `${capability} in ${title} ${major}`,
+      ).toBe(true);
+    }
+  }
+}
+
 describe.skipIf(!availability.available)(
-  `WebTransport in Chromium${availability.available ? '' : ` (skipped: ${availability.reason})`}`,
+  `WebTransport in ${title}${availability.available ? '' : ` (skipped: ${availability.reason})`}`,
   () => {
     beforeAll(async () => {
       if (!availability.available) return;
-      browser = await startBrowserTests(availability.playwright);
-      console.info(`browser tests: Chromium ${browser.chromiumVersion}`);
+      browser = await startBrowserTests(availability.playwright, browserName);
+      console.info(`browser tests: ${title} ${browser.browserVersion}`);
+      for (const departure of departuresOf[browserName]) {
+        console.info(`browser tests: ${title} departs: ${departures[departure]}`);
+      }
     });
 
     afterEach(async () => {
@@ -86,8 +182,9 @@ describe.skipIf(!availability.available)(
           };
         });
         console.info(
-          `web provider: ${JSON.stringify(seen.capabilities)}, stream error codes up to ${seen.maxStreamErrorCode}`,
+          `web provider: ${title} ${JSON.stringify(seen.capabilities)}, stream error codes up to ${seen.maxStreamErrorCode}`,
         );
+        expectCapabilitiesOfVersion(seen.capabilities);
       });
 
       test('a session that offers no protocol: none selected', async () => {
@@ -101,6 +198,41 @@ describe.skipIf(!availability.available)(
           h.eq(session.protocol, undefined, 'the protocol');
           await session.close(0, '');
         });
+      });
+
+      test('protocols: the browser offers them, the server selects the first it serves and refuses a session offering none it serves', async () => {
+        const seen = await run(async ({ sb, h }) => {
+          const id = h.newId();
+          const session = await h.within(
+            sb.webTransport().connect(h.url('echo', id), {
+              alpn: ['other', 'switchboard'],
+              serverCertificateHashes: [h.server.hash],
+            }),
+          );
+          h.addTearDown(() => session.close(0, ''));
+          const request = await h.reported(id, (e) => e['event'] === 'session');
+          if (session.capabilities.protocol) {
+            // WT-Available-Protocols, in the order given; the answer's WT-Protocol.
+            h.eq(request['protocols'], ['other', 'switchboard'], 'what the server saw offered');
+            h.eq(request['protocol'], 'switchboard', 'what the server selected');
+            h.eq(session.protocol, 'switchboard', 'what the browser reports');
+            const refused = await h.rejects(
+              sb.webTransport().connect(h.url('echo', h.newId()), {
+                alpn: ['other'],
+                serverCertificateHashes: [h.server.hash],
+              }),
+            );
+            h.eq(refused.kind, 'handshakeFailed', 'a session offering only another protocol');
+          } else {
+            // A browser without the protocols option offers none: the server selects none.
+            h.eq(request['protocols'], [], 'what the server saw offered');
+            h.eq(request['protocol'], null, 'what the server selected');
+            h.eq(session.protocol, undefined, 'what the browser reports');
+          }
+          return { capabilities: session.capabilities, draft: request['draft'] };
+        });
+        console.info(`web provider: ${title} signals the WebTransport draft ${seen.draft}`);
+        expectCapabilitiesOfVersion(seen.capabilities);
       });
 
       test('a stream echoed, FIN both ways, acknowledgement', async () => {
@@ -205,7 +337,7 @@ describe.skipIf(!availability.available)(
       });
 
       test('stop(5) reaches the server as STOP_SENDING 5, and ends the read direction at once', async () => {
-        await run(async ({ h }) => {
+        await run(async ({ h }, noStopSending) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           const stream = await session.openStream();
@@ -217,9 +349,17 @@ describe.skipIf(!availability.available)(
           h.eq([first.name, first.code], ['QuicStreamReset', 5], 'the pending read');
           const later = await h.rejects(stream.read(100));
           h.eq([later.name, later.code], ['QuicStreamReset', 5], 'a later read');
-          await h.reported(id, (e) => e['event'] === 'stopped' && e['code'] === 5);
+          if (noStopSending) {
+            // The departure: nothing reaches the server (which records a STOP_SENDING within
+            // milliseconds where the browser sends one).
+            await h.sleep(1000);
+            const stops = (await h.report(id)).filter((e) => e['event'] === 'stopped');
+            h.eq(stops, [], 'what the server saw');
+          } else {
+            await h.reported(id, (e) => e['event'] === 'stopped' && e['code'] === 5);
+          }
           h.ok(await h.pendingAfter(stream.resetReceived, 0), 'resetReceived pending');
-        });
+        }, departs('noStopSending'));
       });
 
       test("the server's STOP_SENDING 9 resolves stopped with 9 and fails writes", async () => {
@@ -235,7 +375,7 @@ describe.skipIf(!availability.available)(
       });
 
       test('close(7, reason) reaches the server; the session ends as a local application close', async () => {
-        await run(async ({ h }) => {
+        const reached = await run(async ({ h }, closeRace) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           const stream = await session.openStream();
@@ -247,21 +387,48 @@ describe.skipIf(!availability.available)(
           h.eq((await h.rejects(session.openStream())).kind, 'sessionEnded', 'openStream');
           h.eq((await h.rejects(stream.write(h.bytes('y')))).kind, 'sessionEnded', 'a write');
           const seen = await h.reported(id, (e) => e['event'] === 'end');
+          if (closeRace && seen['lost'] === true) {
+            // The departure: the connection's close came first.
+            h.eq([seen['code'], seen['byPeer']], [null, false], 'seen');
+            return false;
+          }
           h.eq([seen['code'], seen['reason'], seen['byPeer']], [7, 'browser done', true], 'seen');
-        });
+          return true;
+        }, departs('closeRace'));
+        console.info(
+          `web provider: ${title}'s close(7) ${reached ? 'reached' : 'did not reach'} the server`,
+        );
       });
 
       test('a reason is cut to 1024 bytes of UTF-8 at a character boundary', async () => {
-        await run(async ({ h }) => {
+        const reached = await run(async ({ h }, closeRace) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           await session.close(300, 'é'.repeat(600));
-          const seen = await h.reported(id, (e) => e['event'] === 'end');
-          h.eq(seen['code'], 300, 'the code');
-          h.eq(seen['reason'], 'é'.repeat(512), 'the reason');
+          // The browser reports the close it sent: the reason as the provider cut it.
+          h.eq(
+            await session.done,
+            { code: 300, reason: 'é'.repeat(512), byPeer: false, lost: false },
+            'the end',
+          );
           h.eq(h.throws(() => session.close(-1, '')).name, 'RangeError', 'close(-1)');
           h.eq(h.throws(() => session.close(0x100000000, '')).name, 'RangeError', 'close(2^32)');
-        });
+          const seen = await h.reported(id, (e) => e['event'] === 'end');
+          if (closeRace && seen['lost'] === true) {
+            // The departure: the connection's close came first.
+            h.eq([seen['code'], seen['byPeer']], [null, false], 'seen');
+            return false;
+          }
+          h.eq(
+            [seen['code'], seen['reason'], seen['byPeer']],
+            [300, 'é'.repeat(512), true],
+            'seen',
+          );
+          return true;
+        }, departs('closeRace'));
+        console.info(
+          `web provider: ${title}'s close(300) ${reached ? 'reached' : 'did not reach'} the server`,
+        );
       });
 
       test("the server's close is the session's end with its code and reason; what is pending fails", async () => {
@@ -288,18 +455,22 @@ describe.skipIf(!availability.available)(
       });
 
       test("draining resolves on the server's drain where the browser has the promise, and stays pending where it has not", async () => {
-        await run(async ({ h }) => {
+        await run(async ({ h }, drainIgnored) => {
           const id = h.newId();
           const session = await h.open('drain', id);
           const stream = await session.openStream();
           await stream.write(h.bytes('x'));
           await h.reported(id, (e) => e['event'] === 'drain sent');
-          if (session.capabilities.draining) {
+          if (drainIgnored) {
+            // The departure: the browser has the promise, and leaves it pending.
+            h.ok(session.capabilities.draining, 'the draining promise');
+            h.ok(await h.pendingAfter(session.draining, 300), 'draining pending');
+          } else if (session.capabilities.draining) {
             await h.within(session.draining);
           } else {
             h.ok(await h.pendingAfter(session.draining, 300), 'draining pending');
           }
-        });
+        }, departs('drainIgnored'));
       });
 
       test('a refused path, a wrong certificate hash, a closed port: the connect fails', async () => {
@@ -351,14 +522,15 @@ describe.skipIf(!availability.available)(
             serverCertificateHashes: [new Uint8Array(16)],
           });
           h.eq((await h.rejects(short)).name, 'RangeError', 'a 16-byte hash');
-          // Chromium sends no WT-Available-Protocols and refuses nothing: the provider does.
+          // Chromium before 143 sends no WT-Available-Protocols and refuses nothing: the provider
+          // checks the protocols itself.
           const twice = provider.connect('https://127.0.0.1:1/sb', { alpn: ['a', 'a'] });
           h.eq((await h.rejects(twice)).name, 'TypeError', 'a protocol offered twice');
         });
       });
 
-      test("the exporter: undefined without exportKeyingMaterial (Chromium 141), the server's value with it", async () => {
-        await run(async ({ sb, h }) => {
+      test("the exporter: undefined without exportKeyingMaterial, the server's value with it", async () => {
+        await run(async ({ sb, h }, exporterContext) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           const exporter = await session.exportKeyingMaterial(
@@ -372,11 +544,24 @@ describe.skipIf(!availability.available)(
             h.eq((seen['value'] as string).length, 64, "the server's exporter");
           } else {
             h.eq(exporter?.length, 32, 'the exporter');
-            h.eq(sb.hexString(exporter ?? []).replaceAll(' ', ''), seen['value'], 'the value');
+            const again = await session.exportKeyingMaterial(
+              'switchboard-ident',
+              new Uint8Array(0),
+              32,
+            );
+            h.eq(again, exporter, 'the exporter asked again');
+            const value = sb.hexString(exporter ?? []).replaceAll(' ', '');
+            if (exporterContext) {
+              // The departure: the browser derives another value.
+              h.eq((seen['value'] as string).length, 64, "the server's exporter");
+              h.ok(value !== seen['value'], "a value that is not the server's");
+            } else {
+              h.eq(value, seen['value'], 'the value');
+            }
           }
           const zero = session.exportKeyingMaterial('x', new Uint8Array(0), 0);
           h.eq((await h.rejects(zero)).name, 'RangeError', 'a length of 0');
-        });
+        }, departs('exporterContext'));
       });
 
       test('a stream the server opens arrives on incomingStreams', async () => {
@@ -511,12 +696,34 @@ describe.skipIf(!availability.available)(
         );
       });
 
-      test('stats where the browser has getStats', async () => {
-        await run(async ({ h }) => {
+      test("stats where the browser's getStats gives them, undefined where it has none or fails", async () => {
+        const seen = await run(async ({ h }) => {
           const session = await h.open('echo', h.newId());
           const stats = await session.stats();
-          h.eq(stats !== undefined, session.capabilities.getStats, 'stats');
+          // What the browser's own getStats does, on a session of the page's own.
+          let raw = 'no getStats';
+          if (session.capabilities.getStats) {
+            const transport = new WebTransport(h.url('echo', h.newId()), {
+              protocols: ['switchboard'],
+              serverCertificateHashes: [
+                { algorithm: 'sha-256', value: new Uint8Array(h.server.hash) },
+              ],
+            }) as WebTransport & { getStats(): Promise<unknown> };
+            transport.closed.catch(() => {});
+            try {
+              await h.within(transport.ready);
+              const value = await h.within(transport.getStats());
+              raw = typeof value === 'object' && value !== null ? 'stats' : `a ${typeof value}`;
+            } catch (error) {
+              raw = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+            } finally {
+              transport.close();
+            }
+          }
+          h.eq(stats !== undefined, raw === 'stats', `stats (getStats: ${raw})`);
+          return { raw, stats };
         });
+        console.info(`web provider: ${title} getStats: ${seen.raw}, ${JSON.stringify(seen.stats)}`);
       });
     });
 
@@ -558,8 +765,8 @@ describe.skipIf(!availability.available)(
         });
       });
 
-      test('a nonce-bound IDENT from the browser, accepted by a listener with QuicIdentityRules.none', async () => {
-        await run(async ({ sb, h, node }) => {
+      test('an IDENT from the browser (exporter-bound where it exports keying material, nonce-bound elsewhere), accepted by a listener with QuicIdentityRules.none', async () => {
+        await run(async ({ sb, h, node }, exporterContext) => {
           const connection = await node.dial();
           const key = await sb.Ed25519HolderKey.generate();
           const issuing = node.talkTo(connection, 'issue');
@@ -567,12 +774,20 @@ describe.skipIf(!availability.available)(
           const credential = sb.Credential.decode(issued.payload);
           await issuing.close();
           h.eq(credential.identity, 'browser-1', 'the identity issued');
+          if (exporterContext) {
+            // The departure: the proof is bound to the browser's exporter, which is not the
+            // node's, and the node refuses it.
+            h.eq(connection.exporterBound, true, 'exporterBound');
+            const refused = await h.rejects(connection.identify(credential, { holderKey: key }));
+            h.eq(refused.status, sb.StatusCode.unauthenticated, 'the IDENT');
+            return;
+          }
           await h.within(connection.identify(credential, { holderKey: key }));
           const asking = node.talkTo(connection, 'control');
           const who = await h.within(asking.request('WHOAMI', new Uint8Array(0)));
           h.eq(h.text(who.payload), 'browser-1', 'WHOAMI');
           await asking.close();
-        });
+        }, departs('exporterContext'));
       });
 
       test("the node's GOAWAY: the browser stops opening, finishes, and the connection closes", async () => {
