@@ -25,7 +25,7 @@ import type {
   ReconnectIncomingEvent,
   ReconnectStateEvent,
 } from '../protocol.ts';
-import { hex, pattern, sha256 } from './support.ts';
+import { expectEndedWith, hex, pattern, sha256 } from './support.ts';
 
 /** The first retry's delay; no jitter, so that every delay is exact. */
 const initialBackoffMs = 100;
@@ -226,7 +226,11 @@ describeCells('reconnecting client', {}, (peers) => {
 
     await peers.server.rpc('connection.close', { connection: far.connection });
     const lost = lostOnClose(peers);
-    expect(await nthOf(peers, 'persistent.closed', persistent)).toMatchObject({ code: lost });
+    expectEndedWith(
+      await nthOf(peers, 'persistent.closed', persistent),
+      lost,
+      peers.cell.transport,
+    );
     expect(
       await peers.client.events.waitFor({
         event: 'connection.closed',
@@ -409,9 +413,11 @@ describeCells('reconnecting client', {}, (peers) => {
 
     // The server closes the new connection: the same on the next one.
     await peers.server.rpc('accepted.close');
-    expect(await nthOf(peers, 'persistent.closed', persistent, 2)).toMatchObject({
-      code: lostOnClose(peers),
-    });
+    expectEndedWith(
+      await nthOf(peers, 'persistent.closed', persistent, 2),
+      lostOnClose(peers),
+      peers.cell.transport,
+    );
     const third = await opened(peers, persistent, 3);
     expect([first.connection, second.connection]).not.toContain(third.connection);
     expect(await nthOf(peers, 'persistent.reply', persistent, 3)).toMatchObject({

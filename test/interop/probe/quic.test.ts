@@ -29,6 +29,7 @@ import type { Peer } from '../launcher.ts';
 import { tsTransportGaps } from '../matrix.ts';
 import { startPeer, unavailable } from '../peers.ts';
 import type { Implementation, PeerConfig, PeerEvent } from '../protocol.ts';
+import { expectEndedWith } from '../scenarios/support.ts';
 import {
   control,
   type DialOptions,
@@ -817,27 +818,23 @@ for (const server of servers) {
               // The probe's stack resets the session's streams with
               // WT_SESSION_GONE, which carries no code, only once its close
               // is acknowledged; such a reset reads as UNKNOWN "unless the
-              // connection is ending", as it is here. The TS peer over
-              // WebTransport now and then reads the reset before the
-              // session's end and ends the channel UNKNOWN (both use the same
-              // Rust shim; the Dart peer has not).
-              const sessionGoneGap =
-                server === 'ts' && transport === 'webtransport'
-                  ? ' (skipped: TS gap: a WT_SESSION_GONE reset read before the session end it follows ends the channel UNKNOWN)'
-                  : '';
-              test.skipIf(sessionGoneGap !== '')(
-                `after an application close the open channel ends GOING_AWAY${sessionGoneGap}`,
-                async () => {
-                  for (const code of [0, StatusCode.unavailable, 300]) {
-                    const { s } = await open();
-                    const { channel } = await rawChannel(s, 2);
-                    await s.close(code, 'closing');
-                    expect(
-                      await peerOf().events.waitFor({ event: 'channel.closed', channel }),
-                    ).toMatchObject({ code: StatusCode.goingAway });
-                  }
-                },
-              );
+              // connection is ending", as it is here. A peer that reads the
+              // reset before the session's close still ends the channel
+              // UNKNOWN: rare, seen with the TS peer here and in every
+              // pairing of the close and reconnect scenarios, Dart to Dart
+              // too (expectEndedWith).
+              test('after an application close the open channel ends GOING_AWAY', async () => {
+                for (const code of [0, StatusCode.unavailable, 300]) {
+                  const { s } = await open();
+                  const { channel } = await rawChannel(s, 2);
+                  await s.close(code, 'closing');
+                  expectEndedWith(
+                    await peerOf().events.waitFor({ event: 'channel.closed', channel }),
+                    StatusCode.goingAway,
+                    transport,
+                  );
+                }
+              });
 
               if (transport === 'webtransport') {
                 test('WT_DRAIN_SESSION from the probe reads as GOAWAY GOING_AWAY; the server closes once the channel is done', async () => {
