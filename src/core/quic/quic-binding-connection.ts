@@ -47,7 +47,7 @@ import {
   QuicStreamStopped,
   rawQuicExporterLabel,
   switchboardAlpn,
-  webTransportExporterLabel,
+  webTransportIdentLabel,
 } from './contract.ts';
 import { quicExporterLength } from './exporter.ts';
 import { QuicHello, quicHelloType } from './hello.ts';
@@ -318,7 +318,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       const exporting = Promise.race([
         attempt(() =>
           session.exportKeyingMaterial(
-            isWebTransport ? webTransportExporterLabel : rawQuicExporterLabel,
+            isWebTransport ? webTransportIdentLabel : rawQuicExporterLabel,
             new Uint8Array(0),
             quicExporterLength,
           ),

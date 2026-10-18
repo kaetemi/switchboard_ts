@@ -639,9 +639,10 @@ Differences found, none a failing cell:
   run past the TS server's channel limit before it knows it; the server then
   refuses the extra channel with RESOURCE_EXHAUSTED, a valid outcome. The
   mux scenario waits for a PONG first.
-* Names: TS `webTransportExporterLabel` is Dart's `webTransportIdentLabel`
-  (`switchboard-ident`), and TS `webTransportTlsExporterLabel` is Dart's
-  `webTransportExporterLabel` (`EXPORTER-WebTransport`).
+* Names: TS `webTransportExporterLabel` was Dart's `webTransportIdentLabel`
+  (`switchboard-ident`), and TS `webTransportTlsExporterLabel` was Dart's
+  `webTransportExporterLabel` (`EXPORTER-WebTransport`). TS has taken Dart's
+  names since, so both ports read alike; the values were never swapped.
 * Reference behaviour worth knowing, pinned by the scenarios: an
   application status (256 and above) in a mux CLOSE or GOAWAY is refused
   before sending (`ArgumentError`, `RangeError` in TS); a cancel is

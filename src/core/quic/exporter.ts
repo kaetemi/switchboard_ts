@@ -13,11 +13,11 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  * raw TLS exporter and raw HTTP/3 codes) needs. A port of `exporter.dart`.
  *
  * The labels the binding passes to `QuicSession.exportKeyingMaterial`
- * are `rawQuicExporterLabel` and `webTransportExporterLabel` of the
+ * are `rawQuicExporterLabel` and `webTransportIdentLabel` of the
  * contract.
  */
 
-import { webTransportExporterLabel } from './contract.ts';
+import { webTransportIdentLabel } from './contract.ts';
 
 /** Bytes of the exporter an exporter-bound `IDENT` proof signs. */
 export const quicExporterLength = 32;
@@ -27,7 +27,7 @@ export const quicExporterLength = 32;
  * (draft-ietf-webtrans-http3, "Use of Keying Material Exporters"); the
  * application's label (`switchboard-ident`) goes into the context.
  */
-export const webTransportTlsExporterLabel = 'EXPORTER-WebTransport';
+export const webTransportExporterLabel = 'EXPORTER-WebTransport';
 
 /**
  * The TLS exporter context of WebTransport's keying material exporter for
@@ -40,7 +40,7 @@ export const webTransportTlsExporterLabel = 'EXPORTER-WebTransport';
  */
 export function webTransportExporterContext(
   sessionId: number,
-  label: string = webTransportExporterLabel,
+  label: string = webTransportIdentLabel,
   context: ArrayLike<number> = new Uint8Array(0),
 ): Uint8Array {
   if (!Number.isSafeInteger(sessionId) || sessionId < 0) {

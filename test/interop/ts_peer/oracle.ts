@@ -76,7 +76,7 @@ import {
   webTransportCodeToHttp3,
   webTransportExporterContext,
   webTransportExporterLabel,
-  webTransportTlsExporterLabel,
+  webTransportIdentLabel,
 } from '../../../src/node/index.ts';
 import {
   ArgumentProblem,
@@ -289,9 +289,9 @@ export function decodeKind(kind: string, bytes: Uint8Array): Json {
       const id = view.getUint32(0) * 0x100000000 + view.getUint32(4);
       return {
         context: hex(webTransportExporterContext(id)),
-        webTransportLabel: hex(utf8Encode(webTransportTlsExporterLabel)),
+        webTransportLabel: hex(utf8Encode(webTransportExporterLabel)),
         rawQuicLabel: hex(utf8Encode(rawQuicExporterLabel)),
-        identLabel: hex(utf8Encode(webTransportExporterLabel)),
+        identLabel: hex(utf8Encode(webTransportIdentLabel)),
       };
     }
     default:

@@ -37,7 +37,7 @@ import { serviceRecord } from '../../src/core/naming/naming-protocol.ts';
 import {
   type QuicCertificateHash,
   type QuicListener,
-  webTransportExporterLabel,
+  webTransportIdentLabel,
 } from '../../src/core/quic/index.ts';
 import { QuicBindingChannel } from '../../src/core/quic/quic-binding-channel.ts';
 import { QuicBindingConnection } from '../../src/core/quic/quic-binding-connection.ts';
@@ -763,7 +763,7 @@ function webTransportCases(mode: Mode): void {
     ).toBe('npc for npc-7');
     const initiated = binding.dialled[0] as QuicBindingConnection;
     const exported = await initiated.session.exportKeyingMaterial(
-      webTransportExporterLabel,
+      webTransportIdentLabel,
       new Uint8Array(0),
       32,
     );
