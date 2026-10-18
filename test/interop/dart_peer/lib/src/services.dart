@@ -97,21 +97,16 @@ void _serveRaw(
   Switchboard node,
 ) {
   final connection = ctx.trackConnection(incoming.connection, node);
-  final handle = ctx.trackChannel(incoming.channel, listen: false);
-  ctx.out.event('channel.incoming', {
-    'channel': handle,
-    'connection': connection,
-    'service': spec.type,
-    'id': incoming.channel.id,
-    ..._addressJson(incoming.address),
-    'identity': incoming.peerIdentity?.identity,
-  });
-  incoming.channel.stream.listen(
-    (subframe) => ctx.out.event('channel.data', {
+  ctx.trackChannel(
+    incoming.channel,
+    announce: (handle) => ctx.out.event('channel.incoming', {
       'channel': handle,
-      'hex': hex(subframe),
+      'connection': connection,
+      'service': spec.type,
+      'id': incoming.channel.id,
+      ..._addressJson(incoming.address),
+      'identity': incoming.peerIdentity?.identity,
     }),
-    onError: (Object _) {},
   );
 }
 

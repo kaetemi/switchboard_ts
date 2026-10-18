@@ -14,8 +14,10 @@ import {
   hexBytes,
   type MuxChannel,
   Name,
+  type NativeQuicSession,
   nativeQuic,
   nativeQuicAvailability,
+  QuicBindingConnection,
   type Resolver,
   Status,
   StatusCode,
@@ -58,6 +60,7 @@ export const clientOps = [
   'connection.ping',
   'connection.goAway',
   'connection.close',
+  'connection.drain',
   'connection.identify',
   'request',
 ] as const;
@@ -204,6 +207,16 @@ export class Client {
       case 'connection.close':
         await h.get(cmd['connection'], 'c', 'connection').close();
         return null;
+      case 'connection.drain': {
+        const c = h.get(cmd['connection'], 'c', 'connection');
+        const binding = c instanceof QuicBindingConnection ? c : undefined;
+        const session = binding?.session;
+        if (session === undefined || !binding?.isWebTransport || !('drain' in session)) {
+          throw new ArgumentProblem('connection.drain needs a WebTransport connection');
+        }
+        (session as NativeQuicSession).drain();
+        return null;
+      }
       case 'request':
         return this.#request(cmd);
       default:
