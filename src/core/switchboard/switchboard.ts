@@ -783,12 +783,9 @@ export class Switchboard implements AsyncDisposable {
           ? parsed.host
           : undefined
         : canonicalHost(options.address);
+    // Listed before the wait for the hosts, as Dart does, so that a close()
+    // starting meanwhile forgets it with the rest.
     const hosts = new Set([parsed.host]);
-    if (bound !== undefined) {
-      for (const host of await this.hostsOf(bound)) {
-        hosts.add(host);
-      }
-    }
     this.#endpoints.push(endpoint);
     this.#own.push({
       uri: endpoint,
@@ -798,6 +795,11 @@ export class Switchboard implements AsyncDisposable {
       viaBinding: true,
     });
     this.log('info', `listening on ${endpoint} (a binding's listener)`);
+    if (bound !== undefined) {
+      for (const host of await this.hostsOf(bound)) {
+        hosts.add(host);
+      }
+    }
   }
 
   /**
