@@ -23,6 +23,7 @@ and, where the change touches them, `npm run test:browser`, `npm run test:intero
 - Every exported symbol has a JSDoc comment. The source header comment is the one in the existing files.
 - `const` objects instead of enums; options objects with frozen defaults and a merge helper; `RangeError` and `TypeError` for misuse, plain `Error` where Dart has `StateError`; `process.env['X']` (bracket access to index signatures).
 - No `console`; use the `logger` option. No global timers; use the `clock` option.
+- Test doubles are named by what they are or do, never by their status as doubles: `Memory*` for an in-memory implementation of a contract (`MemoryQuicNetwork`, `MemoryMuxConnection`), an adjective for a double defined by one behaviour (`HeldVerifier`, `ScriptedEndpoint`, `GatedTransport`). No "fake" or "mock" in code, comments or documents ("stub" is fine); time a test controls is virtual time. Third-party names such as `fake_async` and `vi.useFakeTimers` stay. The Dart repositories share the rule and the names (`docs/design.md`, section 9).
 - Internal promises a caller may drop are pre-caught so nothing is an unhandled rejection.
 - Every observable difference from Dart is listed in `docs/design.md`, section 12.
 

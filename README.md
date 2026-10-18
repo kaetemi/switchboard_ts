@@ -47,7 +47,7 @@ await server.close(); // the listener keeps the process alive until then
 | `@kaetemi/switchboard` | any | the runtime-neutral core: codecs, transports over Web Streams (memory pair, stream framing, WebSocket client), the frame mux, identity, Talk, addressing, the node core with policies, resolvers, proxy, relay, `PeerSet` and `MeshNode`, naming and sharding, the reconnecting client, the QUIC binding over the provider contract |
 | `@kaetemi/switchboard/node` | Node, Bun, Deno | the core plus the Node `Switchboard` (TCP, WebSocket, QUIC and WebTransport listeners and dialers), `connectTcp`, `listenTcp`, `listenWebSocket`, `acceptWebSocket`, `connectTransport`, and the native QUIC provider (`nativeQuic()`, `selfSignedCertificate`) |
 | `@kaetemi/switchboard/web` | browsers | the core plus a connect-only browser `Switchboard` (`ws`, `wss`, and `https` over WebTransport) and the WebTransport provider (`webTransport()`, `webTransportConnector`) |
-| `@kaetemi/switchboard/testing` | tests | `ManualClock` and the fake QUIC provider |
+| `@kaetemi/switchboard/testing` | tests | `ManualClock` and the in-memory QUIC provider |
 
 ## Developing
 

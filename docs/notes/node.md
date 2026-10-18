@@ -41,10 +41,10 @@ Information for the lead and the other threads, not instructions.
 ## Test fixtures (`test/support/node/`)
 
 - `toy-mux.ts`: a small in-memory `MuxConnection` over a `FrameTransport`
-  (OPEN, data, CLOSE, GOAWAY, LIMITS, NONCE/IDENT with the fake verifier).
+  (OPEN, data, CLOSE, GOAWAY, LIMITS, NONCE/IDENT with `TestVerifier`).
   Not a frame-mux port: once `FrameMuxConnection` lands the harness can run
   the suites over it too.
-- `fake-identity.ts`: fake credentials, holder keys and a verifier.
+- `seeded-identity.ts`: credentials from fixed seeds, holder keys and a verifier.
 - `memory-table.ts`: a per-test `mem://` registry (same rules and id form
   as `MemoryEndpoints`); the harness fails a test that leaks a listener.
 - `harness.ts`: `node()` closed after the test, `tagged`/`tagOf`,

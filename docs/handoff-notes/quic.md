@@ -9,7 +9,7 @@ and 6.10. The Dart reference is `kaetemi/switchboard_quic` (read-only).
 ## Merged
 
 * **#2**: the record codecs (`records.ts`, `record-reader.ts`), HELLO, the exporter helpers, and
-  the fake provider (`src/testing/memory-quic-provider.ts`), with the record vectors.
+  the in-memory provider (`src/testing/memory-quic-provider.ts`), with the record vectors.
 * **#8**: the binding and the native provider.
   * `QuicBindingConnection` and `QuicBindingChannel` extend the core's `BindingConnection` and
     reuse its control codecs and `verifyIdent`.

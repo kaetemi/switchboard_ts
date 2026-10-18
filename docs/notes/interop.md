@@ -150,7 +150,7 @@ Everything a scenario needs to vary, passed in `--config` or a
   ids; optionally a naming service (`_ns/1`) the other peer can join, a
   relay, a sharded store.
 
-Timeouts cannot use fake time across a process boundary, so every timeout a
+Timeouts cannot use virtual time across a process boundary, so every timeout a
 scenario exercises is configured short (100 to 500 ms) on the side that
 enforces it, and tests wait for events instead of sleeping.
 
@@ -297,7 +297,7 @@ Two ways, in order of cost:
   porting the two-peer tests of the Dart suites listed in section 5 where
   the Dart side is in-process and fully observable. The existing Dart tests
   themselves cannot point at a TS process: they build both ends in memory
-  (`MemoryTransport.pair`, the fake binding and the fake provider) and many
+  (`MemoryTransport.pair`, the memory binding and the in-memory provider) and many
   use `fake_async`.
 
 ## 5. The Dart test suites
@@ -322,11 +322,11 @@ By how the tests build their peers:
 * **Codec only** (no connection): `test/vectors/*`, `address`, `bytes`,
   `name`, `status`, `naming_protocol`, QUIC `vectors_test`. Directly
   reusable as data (section 6).
-* **In-memory pairs** (`MemoryTransport.pair`, `RawPeer`, the fake binding,
-  the fake QUIC provider): most of `mux_*`, `talk_*`, `identity_test`, the
+* **In-memory pairs** (`MemoryTransport.pair`, `RawPeer`, the memory binding,
+  the in-memory QUIC provider): most of `mux_*`, `talk_*`, `identity_test`, the
   QUIC `binding_test` and its 27 review cases. These are the wire rules,
   and the scenarios worth porting run over real sockets instead.
-* **Fake time** (`fake_async`): heavy in `talk_test` (42 uses),
+* **Virtual time** (`fake_async`): heavy in `talk_test` (42 uses),
   `reconnecting_client_test` (38), `sharding_test` (27),
   `sharding_client_test`, `talk_window_test`, `talk_bulk_test` (12 each).
   These cannot cross a process boundary; their timeout scenarios are ported
@@ -369,7 +369,7 @@ source; the expectations there are the reference.
 | 12 | Channels held until IDENT, refused UNAUTHENTICATED after `identityTimeout` | `identity_node_test.dart`, `vectors/binding_protocol_test.dart` | all |
 | 13 | Talk: items then final with payload, exact abort status, handler exception as ABORT INTERNAL, cancel, unknown response id, `maxIncomingRequests`, 200 interleaved requests, chained replies, id wrap, empty abort payload | `talk_test.dart`, `mux_talk_test.dart` | all |
 | 14 | Item windows and credits: exactly N items, window 0, final/abort/extend at zero, bad credits close PROTOCOL_ERROR, an item beyond the window | `talk_window_test.dart` | all |
-| 15 | EXTEND and declared deadlines (ported from fake time to short real timeouts) | `talk_test.dart`, `talk_forward_test.dart` | all |
+| 15 | EXTEND and declared deadlines (ported from virtual time to short real timeouts) | `talk_test.dart`, `talk_forward_test.dart` | all |
 | 16 | Bulk payloads: known and unknown length uploads, bulk responses, items and plain messages, the inline/bulk boundary at `maxSubframeLength − 12` | `talk_bulk_test.dart` "over TCP" | all |
 | 17 | Bulk rules: unknown or reused bulk number, no parent, wrong length, order kept while reassembling, parent close cancels | `talk_bulk_test.dart`, `switchboard_test.dart` | all |
 | 18 | Node dispatch: exact instance, NOT_FOUND, malformed OPEN payload, default service, `denyReserved`, symmetric dispatch, GOAWAY on close, retry after GOAWAY | `switchboard_test.dart` | all |

@@ -64,8 +64,8 @@ The test support is in `test/support/naming/`:
 * time: `ManualClock` with `await clock.elapseAsync(ms)`, the fake_async
   port (the thread's own `TestClock` was folded into it in the third round)
 * `harness.ts`, `sharding-harness.ts`: ports of the Dart harnesses
-* `fake-identity.ts`: fake credentials, issuer, verifier and naming
-  connection
+* `placeholder-identity.ts`: placeholder credentials, issuer, verifier and
+  naming connection
 
 ## Done since: everything the work split left open
 
@@ -73,7 +73,7 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
 
 1. **`SlotGate`, `SlotLifecycle`, `SlotGates`** (`src/core/naming/slot-gate.ts`, Dart `switchboard/slot_gate.dart`) on `claude/slot-routing`, with `slot-gate.test.ts` (53 of `slot_gate_test.dart`) and `slot-gate-credential.test.ts` (6 of `slot_gate_credential_test.dart`); the two `sharding-client.test.ts` tests once marked `// Not ported: SlotGate` run.
 2. **Slot routing in the node** (`claude/slot-routing`): `Switchboard.openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner` and slot-routed `selectAndConnect`, `src/core/switchboard/slot-layer.ts` wired to `SlotChannel` and `reopenAtSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups; `slot-routing.test.ts` has the routing group and the Talk and proxy MOVED cases, over the node's `openChannelToSlot`. `isSlotResolver` moved to `src/core/switchboard/resolver.ts`.
-3. **Real Talk:** the suites run over real `TalkChannel`s (`test/support/naming/talk-link.ts`, an in-memory frame link), the fake pair (`memory-talk.ts`) staying only where a test needs synchronous delivery; `SlotChannel`'s replacement is followed by Talk's bulk routes (`followBulkTarget`). The suites that need nodes also run over the frame mux (`test/unit/naming/over-frame-mux/`).
+3. **Real Talk:** the suites run over real `TalkChannel`s (`test/support/naming/talk-link.ts`, an in-memory frame link), the memory pair (`memory-talk.ts`) staying only where a test needs synchronous delivery; `SlotChannel`'s replacement is followed by Talk's bulk routes (`followBulkTarget`). The suites that need nodes also run over the frame mux (`test/unit/naming/over-frame-mux/`).
 4. **`NamingClient.renew()`** on `claude/identity` (with `Credential.decode`); MeshNode's renewal schedule is in `test/unit/switchboard/mesh.test.ts`.
 5. **Integration tests:** `test/integration/naming-mesh.test.ts` (`naming_mesh_test.dart`, over TCP, WebSocket and `mem`), and the whole Dart sharding suite in `test/integration/sharding/` with `cluster.ts` (`claude/sharding`, together with `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave`).
 6. **The node-side identity tests** of `naming_identity_test.dart` that need real nodes are in `naming-identity-nodes.test.ts` (brokered connections, dial-back GOAWAY, the `broker` preconditions) and `test/unit/switchboard/mesh.test.ts`; each place left in `naming-identity.test.ts` says where.
@@ -83,14 +83,15 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
 
 ## Known gaps and deviations from Dart
 
-* The fake Talk pair follows Dart's delivery: one frame per microtask,
+* The memory Talk pair follows Dart's delivery: one frame per microtask,
   `ordered` answers released after the consumer is done with what precedes
   them, a zero responder timeout that EXTEND does not re-arm, and a local
   close that fails requests with the close status (CANCELLED for OK). A close
   by the peer fails requests with UNAVAILABLE, where Dart uses
   CONNECTION_LOST.
-* When a fake request declares both a deadline and a renewal, it times out at
-  the earlier of the two; Dart uses the later. No test exercises this.
+* When a request on the memory Talk pair declares both a deadline and a
+  renewal, it times out at the earlier of the two; Dart uses the later. No
+  test exercises this.
 * `isSlotResolver` is a duck-typed guard, now in
   `src/core/switchboard/resolver.ts` beside `isBrokeringResolver`.
 * `SlotChannel.close` throws `RangeError` for an application status code, as
@@ -99,7 +100,7 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
 * Error types: `ArgumentError` becomes `RangeError` or `TypeError`, and
   `StateError` becomes `Error`. Decode errors are `ProtocolError`.
 * `TestClock` and the node thread's `SteppingClock` are merged into
-  `ManualClock.elapseAsync` (third round), as Talk's `FakeClock` was.
+  `ManualClock.elapseAsync` (third round), as Talk's own test clock was.
 * Dart SDK finding: `Uri.parse` throws `RangeError` for some IPv6 literals,
   so the Dart record decoder can let a non-protocol exception escape. It was
   reported in PR #3 only, since the Dart repositories are read-only.

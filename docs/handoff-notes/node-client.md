@@ -110,7 +110,7 @@ Every file of this thread ports its Dart file, over the toy mux and over the fra
 - **Test fixtures** in `test/support/node/`:
   - `harness.ts`: `node()`, `onCleanup`, `until`, `pump`, `rejectsWith`
   - `toy-mux.ts`: an in-memory `MuxConnection` without flow control
-  - `fake-identity.ts`
+  - `seeded-identity.ts`: real credentials from fixed seeds
   - `memory-table.ts`: per-test `mem://` registry; a leaked listener fails
     the test
   - time: `ManualClock` with `elapseAsync` (the `stepping-clock.ts` of
@@ -119,7 +119,7 @@ Every file of this thread ports its Dart file, over the toy mux and over the fra
   - `table-mesh.ts`: `TableMesh`/`MeshResolver`, a naming stand-in with
     `CONNECT` brokering that needs `broker` rights
 
-  The naming thread has its own fake Talk in `test/support/naming/`,
+  The naming thread has its own in-memory Talk in `test/support/naming/`,
   which overlaps with these. `gated-transport.ts`
   is the port of Dart's `GatedTransport` (a transport whose output
   readiness the test gates).

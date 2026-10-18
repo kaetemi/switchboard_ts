@@ -5,7 +5,7 @@
 | Layer | Where | What | Command |
 | --- | --- | --- | --- |
 | `unit` | `src/**/*.test.ts`, `test/unit`, `test/vectors` | codecs against the wiki vectors; ports of the Dart unit tests, one TS file per Dart file, with `ManualClock` | `npm run test:unit` |
-| `integration` | `test/integration` | nodes end to end over memory, TCP, WebSocket and QUIC on the loopback (the fake QUIC provider, and the native one when the addon is built) | `npm run test:integration` |
+| `integration` | `test/integration` | nodes end to end over memory, TCP, WebSocket and QUIC on the loopback (the in-memory QUIC provider, and the native one when the addon is built) | `npm run test:integration` |
 | `interop` | `test/interop` | the Dart reference implementation and the TS port as peers of each other, in every pairing | `npm run test:interop` |
 | browser | `test/browser` (its own `vitest.config.ts`) | the WebTransport provider and the QUIC binding in Playwright's headless Chromium and Firefox (projects `chromium` and `firefox`) against native listeners in the test process | `npm run test:browser` |
 
@@ -85,7 +85,7 @@ In CI the `interop` job checks out the two Dart repositories at the pinned commi
 
 ## Clocks
 
-Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@kaetemi/switchboard/testing`, the port of Dart's `fake_async`: `advance(ms)` and `flush()` fire due timers synchronously; code driven by promises (a Talk channel, a mux reading its transport, a Web Streams pipe) uses `await clock.elapseAsync(ms)` and `await clock.flushAsync()`, which let promise jobs run before, between and after the timers, and `await ManualClock.settle()` lets everything not waiting for a timer run. `pendingCount` and `nextAt` tell what is armed. Timeouts cannot be faked across a process boundary, so an interop scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
+Every timer in the library comes from its `clock` option. Tests use `ManualClock` from `@kaetemi/switchboard/testing`, the port of Dart's `fake_async`: `advance(ms)` and `flush()` fire due timers synchronously; code driven by promises (a Talk channel, a mux reading its transport, a Web Streams pipe) uses `await clock.elapseAsync(ms)` and `await clock.flushAsync()`, which let promise jobs run before, between and after the timers, and `await ManualClock.settle()` lets everything not waiting for a timer run. `pendingCount` and `nextAt` tell what is armed. Timeouts cannot run on virtual time across a process boundary, so an interop scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
 
 ```ts
 import { ManualClock } from '@kaetemi/switchboard/testing';

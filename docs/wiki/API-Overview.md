@@ -7,7 +7,7 @@
 | `@kaetemi/switchboard` | the runtime-neutral core: everything below except the Node and browser specifics |
 | `@kaetemi/switchboard/node` | the core, plus the Node `Switchboard` (TCP, WebSocket, QUIC and WebTransport listeners and dialers), `connectTcp`, `listenTcp`, `listenWebSocket`, `acceptWebSocket`, `connectWebSocket` (over `ws` when installed), `connectTransport`, and the native QUIC provider (`nativeQuic`, `selfSignedCertificate`, `certificateHash`, `nativeQuicAvailability`) |
 | `@kaetemi/switchboard/web` | the core, plus a connect-only browser `Switchboard` and the WebTransport provider (`webTransport`, `webTransportConnector`, `WebTransportProvider`, its sessions and streams) |
-| `@kaetemi/switchboard/testing` | `ManualClock` and the fake QUIC provider (`MemoryQuicNetwork`, `MemoryQuicConnector`, ...) |
+| `@kaetemi/switchboard/testing` | `ManualClock` and the in-memory QUIC provider (`MemoryQuicNetwork`, `MemoryQuicConnector`, ...) |
 
 `Switchboard` and `SwitchboardOptions` of the node and web entries replace the core's of the same names; import the node from the entry of your runtime.
 
