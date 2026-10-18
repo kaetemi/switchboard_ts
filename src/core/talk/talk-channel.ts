@@ -272,6 +272,14 @@ export class TalkChannel implements TalkChannelContract {
   #heldMux: MuxChannel | undefined;
   #readHeld = 0;
 
+  /**
+   * The cost of the frames of {@link #heldMux} this channel holds and
+   * reported consumed ahead of their delivery, to read on while bulk
+   * channels wait for their references ({@link #readOn}): what their
+   * delivery owes is taken from it, not reported again.
+   */
+  #readOnCost = 0;
+
   // Bulk payloads: the mux channel the bulk channels of the peer are routed
   // for; bulk numbers this side used; transfers in both directions.
   #registeredMux: MuxChannel | undefined;
@@ -1466,6 +1474,7 @@ export class TalkChannel implements TalkChannelContract {
           break;
         }
         this.#onData(value);
+        this.#readOn();
         if (this.#unclaimedRecount) {
           this.#recountUnclaimed();
         }
@@ -1525,6 +1534,26 @@ export class TalkChannel implements TalkChannelContract {
     if (consume === undefined || frames === 0) {
       return;
     }
+    const mux = this.#mux;
+    if (mux !== undefined && mux === this.#heldMux && this.#readOnCost > 0) {
+      // Reported ahead already ({@link #readOn}): what is owed comes out of
+      // that first, the rest is reported at cost.
+      const cost = bytes + mux.sendCost(0) * frames;
+      const ahead = Math.min(cost, this.#readOnCost);
+      this.#readOnCost -= ahead;
+      const rest = cost - ahead;
+      if (rest > 0) {
+        try {
+          consume(rest, 0);
+        } catch (e) {
+          this._log('warn', `credit accounting: ${e}`);
+          return;
+        }
+        this.#readHeld -= rest;
+      }
+      this.#readOn();
+      return;
+    }
     try {
       consume(bytes, frames);
     } catch (e) {
@@ -1532,11 +1561,74 @@ export class TalkChannel implements TalkChannelContract {
       this._log('warn', `credit accounting: ${e}`);
       return;
     }
-    const mux = this.#mux;
     if (mux !== undefined && mux === this.#heldMux) {
       // What the mux channel counts as consumed: the bytes and an overhead per frame.
       this.#readHeld -= bytes + mux.sendCost(0) * frames;
     }
+  }
+
+  /**
+   * Over a connection whose channels are not ordered (a stream each: the
+   * QUIC binding), reads on past the frames this channel holds while bulk
+   * channels of the peer wait unclaimed. Such a binding reads a channel's
+   * next frame only once the previous one was consumed, so a frame held
+   * here (a message waiting for its bulk payload, or for the application)
+   * leaves the frames behind it unread, and the references among them,
+   * while their bulk channels keep arriving, where the frame mux reads the
+   * references within the window. So, while a bulk channel waits for its
+   * reference, the frames held here are reported consumed ahead of their
+   * delivery, which lets the binding read the next one, up to one window
+   * (`MuxOptions.initialWindow`) of them: what is held here stays bounded
+   * as over the frame mux, the stack holding at most its stream window
+   * besides. Only while a bulk channel waits, and while fewer than
+   * `maxUnclaimedBulk` references wait for their bulk channels: over
+   * independent streams the references usually run ahead of their bulk
+   * channels, and one more waiting would be a channel protocol error,
+   * which a fixed read-ahead would provoke. Nothing goes on the wire.
+   */
+  #readOn(): void {
+    if (this.#bulkUnclaimed.size === 0) {
+      return;
+    }
+    const room = this.#readOnRoom();
+    const held = this.#readHeld;
+    const consume = this.#consume;
+    if (room === undefined || consume === undefined || held <= 0 || held > room) {
+      return;
+    }
+    try {
+      consume(held, 0);
+    } catch (e) {
+      this._log('warn', `credit accounting: ${e}`);
+      return;
+    }
+    this.#readHeld = 0;
+    this.#readOnCost += held;
+  }
+
+  /**
+   * How much more of the frames held here {@link #readOn} may report ahead
+   * of their delivery; undefined where it does not read on: the channels
+   * are ordered, the channel is closing, or as many references as
+   * `maxUnclaimedBulk` wait for their bulk channels.
+   */
+  #readOnRoom(): number | undefined {
+    const mux = this.#mux;
+    if (
+      mux === undefined ||
+      this.#consume === undefined ||
+      this.#orderedBulk ||
+      this.#closing ||
+      this._bulkAwaited.size >= this.options.maxUnclaimedBulk
+    ) {
+      return undefined;
+    }
+    if (mux !== this.#heldMux) {
+      // Nothing read on it yet.
+      return mux.connection.options.initialWindow;
+    }
+    const room = mux.connection.options.initialWindow - this.#readOnCost;
+    return room > 0 ? room : 0;
   }
 
   /** A frame of [length] bytes was taken from the reader: its cost is held by this channel now. */
@@ -1549,6 +1641,7 @@ export class TalkChannel implements TalkChannelContract {
       // A slot channel's replacement: nothing was received on the first.
       this.#heldMux = mux;
       this.#readHeld = 0;
+      this.#readOnCost = 0;
     }
     this.#readHeld += mux.sendCost(length);
   }
@@ -1731,6 +1824,7 @@ export class TalkChannel implements TalkChannelContract {
       this.#unclaimedRecount = true;
     }
     this.#bulkUnclaimed.set(number, b);
+    this.#readOn();
     // A bulk channel no message references in time is not waited for.
     b.unclaimedTimer = this._clock.setTimeout(() => {
       b.unclaimedTimer = undefined;
@@ -1758,17 +1852,26 @@ export class TalkChannel implements TalkChannelContract {
 
   /**
    * At most how many BULK references the frames this channel received and
-   * did not read yet can carry: those the mux channel buffers, and those
-   * it delivered toward the reader that were not read yet
-   * ({@link #deliveredUnread}). Each costs at least what a message frame
-   * of a bare reference does.
+   * did not read yet can carry: those the mux channel buffers, those it
+   * delivered toward the reader that were not read yet
+   * ({@link #deliveredUnread}), and, where this channel reads on
+   * ({@link #readOn}), those it may still read on. Over independent
+   * streams the bulk channels of a burst arrive side by side while their
+   * parent is read a frame at a time, so their references are usually
+   * there, unread; a bulk channel beyond `maxUnclaimedBulk` is refused once
+   * the frames that could carry its reference were read, or could not be.
+   * Each costs at least what a message frame of a bare reference does.
    */
   #unreadReferences(): number {
     const mux = this.#mux;
     if (mux === undefined) {
       return 0;
     }
-    const unread = mux.bufferedBytes + this.#deliveredUnread(mux);
+    let unread = mux.bufferedBytes + this.#deliveredUnread(mux);
+    const room = this.#readOnRoom();
+    if (room !== undefined && room > this.#readHeld) {
+      unread += room - this.#readHeld;
+    }
     return unread > 0 ? Math.floor(unread / mux.sendCost(TalkBulkReference.encodedLength + 1)) : 0;
   }
 

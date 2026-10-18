@@ -414,6 +414,46 @@ function cases(mode: Mode): void {
       expect(bytesEqual(twins[1].payload, pattern(200_000, 2))).toBe(true);
     }, 90_000);
 
+    test('bursts of bulk messages are not refused: 30, 30 behind a 4 MiB one, and 100', async () => {
+      // Each payload a bulk stream of its own, opened beside the parent
+      // stream that carries the references: the streams of a burst arrive
+      // side by side, ahead of the references, which the binding reads a
+      // frame at a time, and behind a message held for its payload. Beyond
+      // maxUnclaimedBulk (16) waiting, the rest were refused
+      // RESOURCE_EXHAUSTED, without a lag (design §13 item 6).
+      const server = node();
+      const seen: number[] = [];
+      server.registerService(sink, (incoming) => {
+        void incoming.talk().serve((m) => {
+          seen.push(m.payload.length);
+        });
+      });
+      const listener = await listen(mode, server);
+      const client = node({ bindings: [dialler()] });
+      const talk = await client.openTalkAt(listener.endpoint, new ChannelAddress({ type: sink }));
+      const send = (payload: Uint8Array): Promise<unknown> =>
+        talk.send('PUT', payload).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+      const rounds: (readonly number[])[] = [
+        Array(30).fill(50_000),
+        [4 << 20, ...Array(30).fill(50_000)],
+        Array(100).fill(50_000),
+      ];
+      let expected: number[] = [];
+      for (const round of rounds) {
+        const failures = (
+          await within(Promise.all(round.map((n, i) => send(pattern(n, i)))), 60_000)
+        ).filter((e) => e !== undefined);
+        expect(failures).toEqual([]);
+        expected = [...expected, ...round];
+        await until(() => seen.length === expected.length);
+        expect(seen).toEqual(expected);
+      }
+      expect(talk.isOpen).toBe(true);
+    }, 90_000);
+
     test('whenWritable paces a publisher at the stream window', async () => {
       const server = node();
       let served: TalkChannel | undefined;

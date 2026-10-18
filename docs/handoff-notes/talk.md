@@ -78,15 +78,14 @@ All of these are documented in the code.
 * **Bulk admission at the bound** (the `_adoptBulk` allowance above, commit "Talk: count frames on their way to the reader in bulk admission"; test 'a reference on its way to Talk frees its place for the next OPEN, over a slot channel').
 * **After this side's GOAWAY, `installBulkRouting` admits a `_bulk` continuation for a parent that is open or that the connection retains for its drain** (Dart's QUIC binding: open or retained for its drain). Before, a late bulk stream of a closed parent Talk waited for was refused GOING_AWAY (test "after this side's GOAWAY, the late bulk channel Talk waits for is admitted, and the GOAWAY waits for it" in `talk-quic.test.ts`). The node thread fixed the same on main at the same time (by `retainedForDrain`, which also covers a proxy's pipe); the merge kept that version.
 
-## Known gap (reported, `test.fails` in `talk-quic.test.ts`)
+## Closed: the QUIC bulk burst gap
 
-Over the QUIC binding, which reads a channel's stream only as far as what it delivered was consumed or granted ahead (as Dart's does), a message Talk holds for its payload holds every frame behind it in the QUIC stack. When an early bulk stream lags, the references behind it stay unread while their bulk streams keep arriving: past `maxUnclaimedBulk` Talk refuses them RESOURCE_EXHAUSTED and those messages fail at the sender. The frame mux reads references as they arrive. Either the binding reads ahead for Talk or Talk grants its parent a window ahead on unordered connections; the Dart reference has the same shape.
+Over the QUIC binding, which reads a channel's stream only as far as what it delivered was consumed or granted ahead (as Dart's does), a message Talk holds for its payload held every frame behind it in the QUIC stack, and the bulk streams of a burst arrive beside their references: past `maxUnclaimedBulk` Talk refused them RESOURCE_EXHAUSTED, even without a lag over the native provider. Talk now reads on for itself on unordered connections (`#readOn` in `talk-channel.ts`): while bulk channels wait unclaimed and fewer than `maxUnclaimedBulk` references wait for their channels, it reports the frames it holds consumed ahead of their delivery, up to one `initialWindow`, and `_adoptBulk`'s allowance counts the frames it may still read on. The binding and the contracts are unchanged; design section 13, item 6, has the options and why a fixed grant ahead is wrong. The Dart reference keeps the gap.
 
 ## Remaining
 
 1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) come with the TS peer (`claude/ts-peer`, in flight). Talk itself is ready for them; the node's Talk seam (`src/core/switchboard/talk-layer.ts`) is wired to `TalkChannel` since `claude/node-talk`.
-2. **The QUIC bulk burst gap** above (design section 13, item 6, has the two options).
-3. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
+2. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
 
 ## Conventions this thread followed
 
