@@ -1,11 +1,11 @@
 // Review findings (connectQuic, docs/notes/review-quic.md), both in quic-dial.ts:
 //
-// - The dial's AbortSignal is watched only while the provider connects. Once the session is
-//   there, `QuicBindingConnection.start` runs unwatched (it asks the session for its exporter,
+// - The dial's AbortSignal was watched only while the provider connected. Once the session was
+//   there, `QuicBindingConnection.start` ran unwatched (it asks the session for its exporter,
 //   bounded by the control stream timeout, 10 s by default, and on the initiator waits for the
-//   control stream to open), and the signal is looked at again only after it: an abort meanwhile
-//   rejects the dial only then. Design section 5 puts an AbortSignal on every operation that
-//   waits, connect first.
+//   control stream to open), and the signal was looked at again only after it: an abort meanwhile
+//   rejected the dial only then. Design section 5 puts an AbortSignal on every operation that
+//   waits, connect first. `start` is raced against the signal now, as the connect is.
 // - The binding's own options were checked by `QuicBindingConnection.start` only, after the
 //   provider connected: a `recordLimit` out of range rejected the dial with its RangeError and
 //   left the session open, until the acceptor gave up waiting for a HELLO (the session holds a
@@ -14,7 +14,7 @@
 //   (INTERNAL, logged as a warning). Both check them first now (`checkQuicBindingOptions`), and
 //   the dial closes the session should `start` throw all the same.
 //
-// The cases are `test.fails` until fixed. In-memory provider, virtual time.
+// In-memory provider, virtual time.
 import { describe, expect, test } from 'vitest';
 import type { MuxOptions } from '../../../src/core/mux/contract.ts';
 import type { QuicConnector } from '../../../src/core/quic/contract.ts';
@@ -70,7 +70,7 @@ function track(promise: Promise<unknown>): {
 }
 
 describe('review: connectQuic', () => {
-  test.fails('an abort while the binding starts rejects the dial at once and closes the session', async () => {
+  test('an abort while the binding starts rejects the dial at once and closes the session', async () => {
     const clock = new ManualClock();
     const exporter = new Deferred<void>();
     // The session's exporter takes its time (a browser's may, and the WebTransport one is async).

@@ -48,8 +48,9 @@ export interface QuicConnectOptions {
   /** This side's identity, set before anything from the peer is handled. */
   readonly localIdentity?: string | undefined;
   /**
-   * Gives up the dial: it rejects with the signal's reason, and a session
-   * the provider still yields is closed with `CANCELLED`.
+   * Gives up the dial, while the provider connects or the binding starts:
+   * it rejects with the signal's reason at once, and the session (one the
+   * provider still yields) is closed with `CANCELLED`.
    */
   readonly signal?: AbortSignal | undefined;
 }
@@ -216,7 +217,14 @@ async function dial(
     session.close(StatusCode.internal, 'internal error').catch(() => {});
     throw error;
   }
-  const connection = await starting;
+  const connection = await withAbort(signal, starting, () => {
+    session.close(StatusCode.cancelled, 'dial abandoned').catch(() => {});
+    // Started over the closed session, it is closed too: nothing to wait for.
+    starting.then(
+      (started) => started.close(),
+      () => {},
+    );
+  });
   if (signal?.aborted) {
     await connection.close();
     throw signal.reason;
@@ -244,6 +252,10 @@ function withAbort<T>(
 ): Promise<T> {
   if (signal === undefined) {
     return promise;
+  }
+  if (signal.aborted) {
+    onAbort();
+    return Promise.reject(signal.reason);
   }
   return new Promise<T>((resolve, reject) => {
     const aborted = (): void => {
