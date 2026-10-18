@@ -813,7 +813,7 @@ describe.skipIf(!availability.available)(
       });
 
       test('a close from the browser: the node reads it as GOING_AWAY', async () => {
-        await run(async ({ sb, h, node }) => {
+        const reached = await run(async ({ sb, h, node }, closeRace) => {
           const id = h.newId();
           const connection = await node.dial();
           const asking = node.talkTo(connection, 'control');
@@ -824,8 +824,17 @@ describe.skipIf(!availability.available)(
           h.eq([end.code, end.byPeer], [0, false], 'the end of the session');
           h.eq(connection.isOpen, false, 'isOpen');
           const seen = await h.reported(id, (e) => e['event'] === 'connection done');
+          if (closeRace && seen['code'] === sb.StatusCode.connectionLost) {
+            // The departure: the connection's close came first, and with no channel open the
+            // binding's GOAWAY record goes with the session (design section 13, item 8).
+            return false;
+          }
           h.eq(seen['code'], sb.StatusCode.goingAway, 'what the node saw');
-        });
+          return true;
+        }, departs('closeRace'));
+        console.info(
+          `the binding: ${title}'s close ${reached ? 'reached' : 'did not reach'} the node as GOING_AWAY`,
+        );
       });
 
       describe('ReconnectingClient over webTransportConnector', () => {
