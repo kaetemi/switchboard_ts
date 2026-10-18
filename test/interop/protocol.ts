@@ -208,6 +208,50 @@ export interface TalkItemEvent extends PeerEvent {
   readonly sha256?: string;
 }
 
+/** A status as events carry it: the code, the reason, the bytes after the code (hex). */
+export interface StatusInfo {
+  readonly code: number;
+  readonly reason: string;
+  readonly body: string;
+}
+
+/** `reconnect.state`: a reconnecting client's state changed. */
+export interface ReconnectStateEvent extends PeerEvent {
+  readonly event: 'reconnect.state';
+  readonly reconnect: string;
+  readonly phase: 'disconnected' | 'connecting' | 'connected';
+  readonly attempt: number;
+  readonly lastStatus: StatusInfo | null;
+  /** The delay of the attempt scheduled, in milliseconds, or null. */
+  readonly retryMs: number | null;
+  /** While connected, the connection's handle (null when the client already left it). */
+  readonly connection: string | null;
+}
+
+/** `persistent.opened`: a persistent channel opened a channel. */
+export interface PersistentOpenedEvent extends PeerEvent {
+  readonly event: 'persistent.opened';
+  readonly persistent: string;
+  readonly channel: string;
+  readonly connection: string;
+  /** The Talk channel's handle, for a persistent Talk channel. */
+  readonly talk?: string;
+}
+
+/** `reconnect.incoming`: the endpoint opened a channel towards a reconnecting client. */
+export interface ReconnectIncomingEvent extends PeerEvent {
+  readonly event: 'reconnect.incoming';
+  readonly reconnect: string;
+  readonly channel: string;
+  readonly connection: string;
+  readonly id: number;
+  readonly type: string | null;
+  readonly instance: number;
+  readonly shard: number | null;
+  readonly host: string | null;
+  readonly payload: string;
+}
+
 /** A Talk message as the client commands report it. */
 export interface MessageInfo {
   readonly procedure: string;
