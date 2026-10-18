@@ -50,6 +50,51 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run test:unit
 
+  # Deno 2.9, which runs the Node entry through its Node compatibility: the
+  # unit project under Deno (the runner with -A), then the built package as a
+  # consumer installs it, from tarballs (the package, the prebuilt addon for
+  # Linux x64 packed as release.yml packs it, and ws), its TCP, WebSocket, raw
+  # QUIC and WebTransport round trips run with the permissions a deployment
+  # grants (test/runtime/smoke.mjs). What does not run on Deno is written in
+  # docs/wiki/Runtimes-and-QUIC.md.
+  deno:
+    name: Deno
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.99.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: native -> target
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.9.x
+      - run: npm ci
+      - run: npm run build:native
+      - name: The unit project on Deno
+        run: deno run -A node_modules/vitest/vitest.mjs run --project unit
+      - name: The built package on Deno, installed from its tarballs
+        run: |
+          npm run build
+          packages="$RUNNER_TEMP/packages"
+          consumer="$RUNNER_TEMP/consumer"
+          mkdir -p "$packages" "$consumer"
+          cp native/sbq-node.node native/npm/linux-x64-gnu/sbq-node.node
+          npm pack --pack-destination "$packages"
+          (cd native/npm/linux-x64-gnu && npm pack --pack-destination "$packages")
+          cp test/runtime/smoke.mjs "$consumer/"
+          cd "$consumer"
+          echo '{ "private": true, "type": "module" }' > package.json
+          npm install --no-save --no-audit --no-fund "$packages"/*.tgz ws
+          deno --version
+          deno run --allow-net --allow-read --allow-env --allow-ffi smoke.mjs
+
   build:
     name: Build
     runs-on: ubuntu-latest
