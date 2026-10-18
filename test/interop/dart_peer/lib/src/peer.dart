@@ -20,6 +20,8 @@ import 'package:switchboard_quic/switchboard_quic_native.dart';
 import 'client.dart';
 import 'config.dart';
 import 'context.dart';
+import 'identity.dart';
+import 'mesh.dart';
 import 'oracle.dart';
 import 'protocol.dart';
 import 'services.dart';
@@ -85,6 +87,7 @@ class _Peer {
   final Duration watchdog;
   final Client client;
   late final Switchboard node;
+  late final MeshServices mesh;
   final List<QuicSwitchboardListener> _quicListeners = [];
   final List<QuicListener> _rawListeners = [];
   late final Map<String, Object?> _ready;
@@ -95,14 +98,46 @@ class _Peer {
       stderr.writeln('dart_peer: watchdog after $watchdog, exiting');
       exit(3);
     });
+    final id = ctx.config.identity;
+    final identity = await NodeIdentity.of(id);
     node = Switchboard(
       localConnections: false,
       muxOptions: ctx.config.mux,
       talkOptions: ctx.config.talk,
+      credential: identity.credential,
+      holderKey: identity.holderKey,
+      verifier: identity.verifier,
+      identifyOutgoing: id.identifyOutgoing,
+      identityTimeout: id.identityTimeout,
+      // A proxy, a relay or a naming client of this node dials QUIC and
+      // WebTransport endpoints too.
+      bindings: [
+        QuicSwitchboardBinding(
+          NativeQuicProvider(),
+          webTransportCertificateVerified: false,
+        ),
+      ],
     );
+    await client.identify(identity);
+    // Accepted connections are reported once their peer identified; with
+    // identifyInReturn the node identifies in return on those whose peer
+    // asked (the QUIC listener does so itself).
+    node.connections.listen((c) {
+      unawaited(c.peerIdentified.then((_) => ctx.trackConnection(c, node)));
+      if (id.identifyInReturn &&
+          identity.credential != null &&
+          c is! QuicBindingConnection) {
+        unawaited(
+          c.identityRequested.then(
+            (_) => node.identifyOn(c).catchError((Object _) {}),
+          ),
+        );
+      }
+    });
     for (final s in ctx.config.services) {
-      registerService(node, s, ctx);
+      registerService(node, s, ctx, client);
     }
+    mesh = MeshServices(node, ctx.config.mesh);
     _ready = {
       'protocol': peerProtocolVersion,
       'implementation': 'dart',
@@ -110,6 +145,7 @@ class _Peer {
       'pid': pid,
       'oracle': oracleKinds,
     };
+    mesh.listening(ctx.endpoints);
     ctx.out.line('READY ${jsonEncode(_ready)}');
     for (final signal in [ProcessSignal.sigterm, ProcessSignal.sigint]) {
       try {
@@ -133,12 +169,15 @@ class _Peer {
     final listen = ctx.config.listen;
     final path = ctx.config.path;
     final endpoints = <String, Object?>{};
+    final policy = ctx.config.identity.channelPolicy;
     if (listen.contains('tcp')) {
-      endpoints['tcp'] = '${await node.listenTcp(loopback, 0)}';
+      endpoints['tcp'] = '${await node.listenTcp(loopback, 0, policy: policy)}';
+      ctx.endpoints.add(endpoints['tcp']! as String);
     }
     if (listen.contains('ws')) {
       endpoints['ws'] =
-          '${await node.listenWebSocket(loopback, 0, path: path)}';
+          '${await node.listenWebSocket(loopback, 0, path: path, policy: policy)}';
+      ctx.endpoints.add(endpoints['ws']! as String);
     }
     if (listen.contains('quic') || listen.contains('webtransport')) {
       final provider = NativeQuicProvider();
@@ -153,9 +192,16 @@ class _Peer {
         final l = await QuicSwitchboardListener.start(
           node,
           raw,
-          identityRules: QuicIdentityRules.none,
+          policy: policy,
+          identityRules: switch (ctx.config.identity.quicRules) {
+            'none' => QuicIdentityRules.none,
+            'listener' => QuicIdentityRules.listener,
+            final r => throw ArgumentError('unknown QUIC identity rules $r'),
+          },
+          identifyInReturn: ctx.config.identity.identifyInReturn,
         );
         _quicListeners.add(l);
+        ctx.endpoints.add('${l.endpoint}');
         return '${l.endpoint}';
       }
 
@@ -215,7 +261,7 @@ class _Peer {
           objectArg(cmd, 'fields') ?? const {},
         );
       default:
-        if (Client.ops.contains(op)) {
+        if (Client.answers(op)) {
           return client.command(op, cmd);
         }
         throw ArgumentError('unknown op $op');
@@ -239,6 +285,7 @@ class _Peer {
     try {
       await ctx.closeAll();
       await client.close();
+      await mesh.close();
       for (final l in _quicListeners) {
         await l.close();
       }

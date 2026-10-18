@@ -3,9 +3,8 @@
 State on 2026-10-14, for the session that picks this up. Repository
 `kaetemi/switchboard_ts`, integration branch `main` (the first phase's PRs
 went into `claude/switchboard-ts-design-s5r9na`, from which `main` was
-initialised). Updated by the docs pass for what changed around this thread;
-the TS peer itself is in flight on `claude/ts-peer`, whose own notes are
-the current word on it.
+initialised). Updated by the docs pass for what changed around this thread
+and, by the lead, for the merge of `claude/ts-peer` (the TS peer).
 The longer background is `../notes/interop.md` (sections 1 to 9 are the
 phase 1 design, section 10 the phase 2 status); the peer protocol is
 specified in `test/interop/README.md` in the repository.
@@ -34,40 +33,29 @@ tests are every TS cell, and each skipped suite names what it waits on.
 
 ## Unmerged
 
-The first thread branch `claude/switchboard-ts-interop-x2iz7c` holds no
-commit `main` lacks. The TS peer, the scenario matrix, more oracle kinds and
-the identity, naming and relay scenarios are being written on
-`claude/ts-peer` (worktree `/home/user/wt/ts-peer`).
+Nothing. The first thread branch `claude/switchboard-ts-interop-x2iz7c` and
+`claude/ts-peer` hold no commit `main` lacks.
 
-## Remaining from the work split
+## Done since (branch `claude/ts-peer`, merged into `main`)
 
-1. **Deliverable 2: the TS peer and the mux and Talk matrix.**
-   * It needed the frame mux connection (thread 1) and the Talk channel
-     layer (thread 2); both have landed since, with the node's entry points
-     and every transport (TCP, WebSocket, native QUIC and WebTransport).
-   * The TS peer goes in `test/interop/ts_peer/main.ts`, using the public
-     API only. It implements the commands, events and `echo`, `raw` and
-     `sink` services in `test/interop/README.md`, and prints the same READY
-     line. `peers.ts` finds it by that path.
-   * Clear the entries in `tsTransportGaps` (`test/interop/matrix.ts`) as
-     transports become servable. `src/core/quic/` and `src/node/quic/` have
-     landed (thread 5), so check whether QUIC can be served on Node.
-   * Then add the scenarios: request, stream, abort, extend, bulk, close,
-     GOAWAY and protocol-error injection. Also point `probe/conformance.test.ts`
-     at the TS server, which it already loops over.
-2. **More oracle kinds.**
-   * The TS talk frame (`src/core/talk/talk-frame.ts`) and stream framing
-     codecs exist, and the Dart peer already answers the `talk` and `stream`
-     kinds. Agreement checks for these two are not written yet.
-   * Naming, sharding, credential and QUIC record kinds need new cases in
-     `dart_peer/lib/src/oracle.dart` first.
-3. **Deliverable 3:** identity (NONCE and IDENT both ways, holder key and
-   bearer, exporter-bound over QUIC), naming and sharding, relay and proxy,
-   and mixed-language meshes.
-4. **Deliverable 4:** a Dart driver under `test/interop/dart_driver/` that
-   spawns the TS peer.
-5. **Vector coverage:** done. Every vector test names its ids through
-   `test/support/vectors.ts`, and `SWITCHBOARD_VECTORS_STRICT=1` passes.
+The TS peer, the scenario matrix in all four pairings over TCP, WebSocket,
+raw QUIC and WebTransport, chains of three peers in every assignment of
+the implementations, the identity, naming, sharding, proxy and relay
+scenarios, the oracle for every codec, the Dart driver and the CI steps:
+see `../notes/interop.md`, section 11. 3686 interop tests pass, none
+skipped, with the native addon.
+
+## Remaining
+
+1. Sharding beyond a static space and one hand-over: managed and lazy
+   spaces, refused hand-overs (RESUME, roll-back), and the MOVED retry of
+   slot-routed opens once the node routes by slot.
+2. The reconnecting client against a server's GOAWAY and close (scenario
+   23 of the notes) and the QUIC record-level cases (24): they need a raw
+   QUIC probe or more peer commands.
+3. A browser peer (the web entry in Chromium) as a third implementation of
+   the client half.
+4. More of the Dart repositories' two-peer tests in the Dart driver.
 
 Conventions:
 * The lead merges with real merge commits. Keep branch history granular,

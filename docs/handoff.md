@@ -59,13 +59,22 @@ Deno needs `--allow-ffi` for the addon (and `--allow-read --allow-env` for its l
 
 ## 4. Interop status
 
-_To be filled in by the lead once the `claude/ts-peer` branch is merged: which cells of the matrix pass in each pairing (Dart and Dart, Dart and TS, TS and Dart, TS and TS) over each transport (tcp, ws, quic, webtransport), which scenarios exist, the oracle kinds checked, and what is still skipped and why._
+`claude/ts-peer` is merged (2026-10-18). With the native addon and the Dart peer built, the interop project passes 3702 tests in 13 files, none skipped, in about three minutes (`SWITCHBOARD_INTEROP=required SWITCHBOARD_NATIVE=required npx vitest run --project interop`); the Dart driver (`node tool/dart-peer.mjs driver`) passes 35.
+
+- **Pairings and transports:** every scenario runs in the 16 cells of server and client (Dart and Dart, Dart and TS, TS and Dart, TS and TS) over TCP, WebSocket, raw QUIC and WebTransport, and every cell passes. The all-Dart cell checks the scenario against the reference. Without the native addon the TS cells over raw QUIC and WebTransport skip with the reason (`tsTransportGaps` in `test/interop/matrix.ts`).
+- **Scenarios** (`test/interop/scenarios/`): basics; Talk (requests, streams with item windows, aborts with MOVED and RELOCATED byte for byte, timeouts, EXTEND, cancellation); Talk byte for byte against raw channels (`talk-wire`); bulk payloads at the inline boundary and beyond; close and GOAWAY; mux limits, keep-alive and liveness; protocol errors injected both ways; forwarding; identity (holder keys and bearer credentials, intents, receivers, refused and forged credentials, channels held until IDENT, scoped policies; exporter-bound over QUIC and WebTransport); naming and sharding (a naming service of either language serving clients of the other: registrations, watches, resolution, a static slot space with CLAIM, LOCATE, RELEASE and one MIGRATE hand-over with its DRAIN, ASSIGN and FORWARD phases).
+- **Chains** (`chain.ts`, `scenarios/mesh.test.ts`): a proxy, a relay, a forwarding service or a naming service of either language between a client and a backend of either, eight implementation cells per transport.
+- **Oracle** (`oracle.test.ts`, through the TS peer's `ts_peer/oracle.ts` and the Dart peer's): names, statuses, addresses, mux frames and control messages, Talk frames, the stream binding, every naming and sharding payload, MOVED and RELOCATED, credentials, slot keys, QUIC records, HELLO, QUIC and HTTP/3 codes and the WebTransport exporter context, on the wiki vectors and on seeded random and mutated inputs. No vector table is `todo` (`SWITCHBOARD_VECTORS_STRICT=1` passes).
+- **Probes** (`probe/`): each raw-byte probe runs against the Dart server and the TS server.
+- **Differences found, none a failing cell** (`docs/notes/interop.md`, section 11): the TS WebSocket listener closes with 1009 before the mux can send GOAWAY FRAME_TOO_LARGE where Dart sends the GOAWAY first; Dart normalises endpoint URIs in naming payloads where TS carries them as written; a fresh TS server sends LIMITS a little later than the Dart one; two exporter label names are swapped between the ports (`webTransportExporterLabel` and `webTransportTlsExporterLabel` against Dart's `webTransportIdentLabel` and `webTransportExporterLabel`).
+- **Seen once in CI, not reproduced** (run 157 on `claude/ts-peer`; five local runs of `scenarios/close.test.ts` passed): "subframes sent before the CLOSE arrive before it" with a Dart client and a TS server over TCP reported the close before the third subframe, and "closing the connection ends its channels" with TS and TS over WebTransport read CONNECTION_LOST where GOING_AWAY was expected. The interop thread of the third round looks into both.
+- **Remaining** (`docs/handoff-notes/interop.md`): sharding beyond a static space and one hand-over (managed and lazy spaces, refused hand-overs, the MOVED retry of slot-routed opens), the reconnecting client against a server's GOAWAY and close, the QUIC record-level cases, more Dart driver tests, and a browser peer as a third implementation of the client half.
 
 ## 5. Decisions
 
 The design's section 11 is the list; the ones a session meets first:
 
-- **Package** `@kaetemi/switchboard`; prebuilt addons `@kaetemi/switchboard-quic-<target>` as optional dependencies (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64).
+- **Package** `@kaetemi/switchboard`; prebuilt addons `@kaetemi/switchboard-quic-<target>` as optional dependencies of the published package (Linux x64 and arm64 glibc, macOS arm64 and x64, Windows x64), added by `tool/prebuilt-deps.mjs --apply` in the release workflow's pack step and not listed in the repository's `package.json` until they are published (npm 11 refuses `npm ci` with a lock file that cannot resolve them; this broke every CI job but Node 22 and Bun on 2026-10-14).
 - **QUIC provision:** an N-API addon over a vendored copy of `switchboard_quic/native/sbq` with one change (`"rlib"` in the crate types), byte-identical otherwise and separable; the pin outside the copy (`native/sbq-vendor.commit`); a shared shim repository is the intended later direction. No upstream change.
 - **Browsers:** `webTransport(init?)` returns the provider (a `QuicConnector`); `webTransportConnector(url, init)` returns a `ReconnectingClient`'s connector.
 - **Placement:** `MeshNode` and `PeerSet` in `core/switchboard/`; `SlotGate`, `SlotLifecycle` and `SlotGates` in `core/naming/slot-gate.ts`; `isSlotResolver` in `core/switchboard/resolver.ts`; `StaticResolver` is a `SlotResolver`.
@@ -87,8 +96,8 @@ The design's section 11 is the list; the ones a session meets first:
 
 ## 7. What remains
 
-- **Interop:** the TS peer and its cells (in flight on `claude/ts-peer`, section 4).
-- **Packaging and publishing:** musl Linux prebuilds (the loader looks for `-linux-<arch>-musl`); the first publish (the user's call; `release.yml` publishes only when asked, and the lock file needs regenerating after the first publish so that `npm ci` resolves the optional dependencies); only Linux x64 is built in CI.
+- **Interop:** the scenarios listed at the end of section 4 (the third round's interop thread, `claude/interop-2`).
+- **Packaging and publishing:** musl Linux prebuilds (the loader looks for `-linux-<arch>-musl`); the first publish (the user's call; `release.yml` publishes only when asked; after it, the optional dependencies can move into the repository's `package.json` with `node tool/prebuilt-deps.mjs --apply` and a regenerated lock file); only Linux x64 is built in CI.
 - **The GitHub wiki push:** the wiki repository could not be written from this environment; `docs/wiki/` is ready to push as it is.
 - **Deno in CI:** checked by hand on Deno 2.9 (TCP, WebSocket and native QUIC round trips with the built package); add a job once the suite is known to pass there.
 - **Browsers:** Firefox's exporter path (Firefox 155+ has `exportKeyingMaterial`) is untested; the `protocols` negotiation needs Chromium 143+, which needs a Playwright newer than 1.56.1.
@@ -114,3 +123,4 @@ The design's section 11 is the list; the ones a session meets first:
 - `claude/slot-routing`: `openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups, `SlotGate`, `SlotLifecycle` and `SlotGates`, the naming suites over real Talk.
 - `claude/sharding`: `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave`, the Dart sharding integration suite (`test/integration/sharding/`).
 - `claude/docs`: this document, the design, the work split, the wiki pages (five new), the README and the CHANGELOG brought in step with the code.
+- `claude/ts-peer` (merged by the third round's lead, 2026-10-18): the TS interop peer, the scenario matrix in every pairing and transport, the chains, the oracle for every codec, the Dart driver, the interop CI job running the TS cells and the driver.

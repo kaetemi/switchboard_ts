@@ -113,13 +113,19 @@ jobs:
   # test/interop/dart_peer/dart_commits.txt, where the peer's path
   # dependencies find them; Dart 3.13.5 and Rust 1.99.0 (switchboard_quic's
   # build hook compiles its QUIC library with cargo) build the AOT peer, which
-  # is cached on its sources and the pins. When a toolchain cannot be
-  # installed the job warns and the Dart cells skip; otherwise a missing peer
-  # fails the run (SWITCHBOARD_INTEROP=required).
+  # is cached on its sources and the pins. The same Rust toolchain builds this
+  # package's native QUIC addon (native/, from the vendored sbq), so the TS
+  # peer serves and dials raw QUIC and WebTransport too. The matrix then runs
+  # every pairing (Dart and TS, server and client) over TCP, WebSocket, raw
+  # QUIC and WebTransport, and the Dart driver (test/interop/dart_driver) runs
+  # Dart-written scenarios against the TS peer. When a toolchain cannot be
+  # installed the job warns and the cells needing it skip; otherwise a missing
+  # peer or addon fails the run (SWITCHBOARD_INTEROP=required,
+  # SWITCHBOARD_NATIVE=required).
   interop:
-    name: Interop (Dart reference)
+    name: Interop (Dart reference and TS peer)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: switchboard_ts
@@ -168,7 +174,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         if: steps.rust.outcome == 'success'
         with:
-          workspaces: switchboard_quic/native/sbq -> target
+          workspaces: |
+            switchboard_quic/native/sbq -> target
+            switchboard_ts/native -> target
 
       - uses: actions/cache@v4
         with:
@@ -182,6 +190,11 @@ jobs:
         if: steps.dart.outcome == 'success' && steps.rust.outcome == 'success'
         run: node tool/dart-peer.mjs build --expect-pins
 
+      - name: Build the native QUIC addon
+        id: addon
+        if: steps.rust.outcome == 'success'
+        run: npm run build:native
+
       - name: Interop tests
         run: |
           if [ "${{ steps.peer.outcome }}" = success ]; then
@@ -190,7 +203,20 @@ jobs:
             echo "::warning::Dart or Rust could not be installed: the Dart interop cells skip"
             export SWITCHBOARD_INTEROP=skip
           fi
+          if [ "${{ steps.addon.outcome }}" = success ]; then
+            export SWITCHBOARD_NATIVE=required
+          else
+            echo "::warning::the native QUIC addon could not be built: the TS cells over raw QUIC and WebTransport skip"
+          fi
           npm run test:interop
+
+      - name: Dart driver against the TS peer
+        if: steps.peer.outcome == 'success'
+        run: |
+          if [ "${{ steps.addon.outcome }}" != success ]; then
+            echo "::warning::no native QUIC addon: the driver's QUIC and WebTransport groups skip"
+          fi
+          node tool/dart-peer.mjs driver
 
   # The QUIC thread's jobs: the native addon built from the vendored sbq
   # (checked against switchboard_quic at the pin) and its tests over loopback.

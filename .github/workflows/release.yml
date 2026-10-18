@@ -83,7 +83,7 @@ jobs:
 
       - run: npm ci
       - run: node tool/sync-sbq.mjs --check switchboard_quic
-      # The manifests, native/README.md, the loader, optionalDependencies and
+      # The manifests, native/README.md, the loader, tool/prebuilt-deps.mjs and
       # this workflow agree.
       - run: npx vitest run --project unit test/unit/quic/packages.test.ts
 
@@ -195,7 +195,13 @@ jobs:
             (cd "$dir" && npm pack --pack-destination "$GITHUB_WORKSPACE/dist-packages")
           done
           npm run build
+          # The packed package pulls the addon for its platform: the five
+          # packages as optionalDependencies, which the repository's
+          # package.json does not list (npm ci cannot resolve them before
+          # they are published).
+          node tool/prebuilt-deps.mjs --apply
           npm pack --pack-destination dist-packages
+          git checkout -- package.json
           ls -l dist-packages
           (cd dist-packages && sha256sum -- *.tgz | tee SHA256SUMS)
 

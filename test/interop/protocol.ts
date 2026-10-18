@@ -54,6 +54,46 @@ export interface PeerConfig {
   talk?: TalkConfig;
   /** Services to register; default `echo`, `raw` and `sink` at instance 1. */
   services?: readonly ServiceConfig[];
+  /** What the peer presents and verifies; default nothing. */
+  identity?: IdentityConfig;
+  /** Serve a naming service as `_ns` instance 1; `assignmentHoldMs` defaults to 0. */
+  naming?: { assignmentHoldMs?: number };
+  /** Proxy [types] (default `echo`) to their instance 1 at [endpoint]. */
+  proxy?: { endpoint: string; types?: readonly string[]; revealOwners?: boolean };
+  /** Relay `_relay` channels for [types] (default `echo`) to their instance 1 at [endpoint]. */
+  relay?: { endpoint: string; types?: readonly string[] };
+}
+
+/** A credential a peer presents, issued at its start by one of the shared test authorities. */
+export interface CredentialConfig {
+  identity: string;
+  /** `ed25519` (default, `auth1`), `hmac` (`mesh1`, bearer only) or `rogue` (untrusted). */
+  authority?: 'ed25519' | 'hmac' | 'rogue';
+  /** Whether it names a holder key; default true but for `hmac`. */
+  holder?: boolean;
+  /** Default `node`. */
+  kind?: 'node' | 'client' | 'device';
+  /** Default open, register, watch and claim on `*`. */
+  scopes?: readonly { right: string; pattern: string }[];
+  /** Flip the signature's last byte. */
+  forge?: boolean;
+}
+
+/** The `identity` configuration (README, "Identity"). */
+export interface IdentityConfig {
+  /** Verify IDENTs with the shared authorities. */
+  verify?: boolean;
+  credential?: CredentialConfig;
+  /** Identify on dialled connections; default true. */
+  identifyOutgoing?: boolean;
+  /** Identify in return on accepted connections whose peer asked. */
+  identifyInReturn?: boolean;
+  /** How long a channel waits for its connection's IDENT. */
+  identityTimeoutMs?: number;
+  /** The listeners' policy. */
+  policy?: 'scoped' | 'requireIdentity' | 'denyReserved';
+  /** The QUIC listeners' identification rules; default `none`. */
+  quicRules?: 'none' | 'listener';
 }
 
 /** Mux options by the Dart names; durations in milliseconds. */
@@ -84,11 +124,18 @@ export interface TalkConfig {
   creditTimeoutMs?: number;
 }
 
-/** A service: `echo` serves the interop procedures, `raw` hands out channels, `sink` never reads. */
+/**
+ * A service: `echo` serves the interop procedures, `raw` hands out channels,
+ * `sink` never reads, `forward` forwards Talk to [target].
+ */
 export interface ServiceConfig {
   type: string;
-  behaviour?: 'echo' | 'raw' | 'sink';
+  behaviour?: 'echo' | 'raw' | 'sink' | 'forward';
   instance?: number;
+  /** Also serve every instance of the type no other registration serves. */
+  anyInstance?: boolean;
+  /** `forward`: the service forwarded to; the endpoint defaults to the peer's first listener. */
+  target?: { endpoint?: string; type?: string; instance?: number };
 }
 
 /** An error as a peer reports it. */
@@ -100,6 +147,8 @@ export interface PeerErrorInfo {
   readonly message: string;
   readonly code?: number;
   readonly reason?: string;
+  /** For kind `status`: the status payload's bytes after the code, hex, as received. */
+  readonly body?: string;
 }
 
 /** A failed command, carrying what the peer reported. */
