@@ -2,6 +2,8 @@
 
 Scope: `src/core/transport/**`, `src/node/transport/**`, `src/core/mux/**`, the `src/core/util/**` pieces they use, against the Dart `transport/*.dart` and `mux/*.dart`, `dart-design.md` (Transports, Mux, Binding seam, Resource limits) and design sections 5, 6.2, 6.3, 7 and 12. Each finding has a test in `test/unit/mux/review-*.test.ts` or `test/unit/transport/review-*.test.ts`, written as `test.fails`: the body fails against the current sources, deterministically (10 runs, identical assertion failures), and each was checked to pass against a prototype fix (not committed). When a fix lands its test passes, `test.fails` reports that, and the `.fails` goes. No source was changed.
 
+**Status after the fixes (same branch):** findings 1, 2, 4 and 5 are fixed and their tests no longer `test.fails`; finding 3 is decided as the wiki and Dart have it (no accounting change; closing an ended channel nobody reads, or cancelling its readable, releases its bytes; the concern is design section 13, item 9). Of the surprising items, `#heldFrames` is removed, `sleep()` takes a clock, and the lazy writable's ordering is documented (design section 12, item 18). Each finding says how below.
+
 ## Findings, most severe first
 
 ### 1. `ping()` hands out promises that are not pre-caught
