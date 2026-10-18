@@ -40,7 +40,7 @@ export interface TalkOptions {
   readonly extendBuffer: number;
   /** Sending: largest encoded message sent inline; undefined = the channel's `maxSubframeLength`. */
   readonly bulkThreshold: number | undefined;
-  /** Sending: a bulk source is coalesced into chunks of this; default 64 KiB. */
+  /** Sending: a bulk source is coalesced into chunks of this; default 64 KiB; a positive integer. */
   readonly bulkChunkSize: number;
   /** Receiving: largest bulk payload reassembled per message; default 16 MiB. */
   readonly maxInlinePayload: number;
@@ -91,8 +91,22 @@ export const defaultTalkOptions: TalkOptions = Object.freeze({
   logger: undefined,
 });
 
+/**
+ * [options] over {@link defaultTalkOptions}.
+ *
+ * @throws {RangeError} for a `bulkChunkSize` that is not a positive
+ * integer (a bulk sender would loop on empty chunks).
+ */
 export function talkOptions(options?: Partial<TalkOptions>): TalkOptions {
-  return options === undefined ? defaultTalkOptions : { ...defaultTalkOptions, ...options };
+  if (options === undefined) {
+    return defaultTalkOptions;
+  }
+  const merged = { ...defaultTalkOptions, ...options };
+  const chunk = merged.bulkChunkSize;
+  if (!Number.isInteger(chunk) || chunk < 1) {
+    throw new RangeError(`bulkChunkSize ${chunk} is not a positive integer`);
+  }
+  return merged;
 }
 
 /** A byte source sent as a bulk payload. */
