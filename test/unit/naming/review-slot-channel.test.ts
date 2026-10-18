@@ -175,15 +175,33 @@ describe('review: SlotChannel against the MuxChannel idioms', () => {
 
   // Design 12.10: cancelling a channel's readable discards what arrives and
   // returns its credit. SlotChannel's readable has no reader of the mux
-  // channel until its first pull, and its `cancel` only cancels that reader,
-  // so a cancel before the first read leaves the mux channel's readable
-  // live: what the owner sends piles up there, holding its credit.
-  test.fails('cancelling a SlotChannel readable before reading discards what arrives too', async () => {
+  // channel until its first pull; a cancel before it reaches the mux
+  // channel's readable all the same, so what the owner sends does not pile
+  // up there, holding its credit.
+  test('cancelling a SlotChannel readable before reading discards what arrives too', async () => {
     backend.mode = 'flood';
     const channel = await router.openChannelToSlot(svc, 1);
     await channel.readable.cancel();
     await until(() => backend.channels.length > 0);
     await pump();
     expect(channel.channel.bufferedBytes).toBe(0);
+  });
+
+  test('cancelling a SlotChannel readable discards what its replacement receives too', async () => {
+    backend.mode = 'moved';
+    const first = await router.openChannel(new ServiceAddress(svc, 1), { shard: 1 });
+    await first.done;
+    const reopened = new Deferred<MuxChannel | undefined>();
+    const channel = new SlotChannel(svc, 1, first, () => reopened.promise);
+    await pump(1);
+    // Cancelled while the replacement is being opened.
+    await channel.readable.cancel();
+    backend.mode = 'flood';
+    reopened.resolve(await router.openChannel(new ServiceAddress(svc, 1), { shard: 1 }));
+    await until(() => channel.retried && backend.channels.length > 1);
+    await pump();
+    expect(channel.channel).not.toBe(first);
+    expect(channel.channel.bufferedBytes).toBe(0);
+    expect(channel.canSend).toBe(true);
   });
 });

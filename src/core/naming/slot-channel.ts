@@ -97,6 +97,8 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   #readerOf: MuxChannel | undefined;
   /** The first channel once rejected: nothing more is read from it. */
   #abandoned: MuxChannel | undefined;
+  /** Whether {@link readable} was cancelled: what arrives on the current channel and a replacement is discarded. */
+  #readCancelled = false;
   #readable: ReadableStream<Uint8Array> | undefined;
   #writable: WritableStream<Uint8Array> | undefined;
   readonly #done = new Deferred<Status>();
@@ -165,17 +167,24 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   /**
    * Incoming DATA subframes of the current channel; one reader, buffered
    * (by the mux channel) until read. Ends when the final channel ends; read
-   * {@link done} for the reason.
+   * {@link done} for the reason. Cancelling it, before the first read or
+   * after, cancels the current channel's readable and a replacement's:
+   * what arrives is discarded and its credit returned, and the channel
+   * stays open (design section 12, item 10).
    */
   get readable(): ReadableStream<Uint8Array> {
     this.#readable ??= new ReadableStream<Uint8Array>(
       {
         pull: (controller) => this.#pull(controller),
         cancel: (reason) => {
+          this.#readCancelled = true;
           const reader = this.#reader;
           this.#reader = undefined;
           this.#readerOf = undefined;
-          return reader?.cancel(reason);
+          if (reader !== undefined) {
+            return reader.cancel(reason);
+          }
+          return cancelReadable(this.#current, reason);
         },
       },
       { highWaterMark: 0 },
@@ -414,6 +423,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   /** Reads the next subframe of the current channel into [controller], across a replacement. */
   async #pull(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
     for (;;) {
+      if (this.#readCancelled) {
+        return;
+      }
       const channel = this.#current;
       if (this.#reopening || this.#abandoned === channel) {
         // Nothing to read until the replacement takes over, or ever.
@@ -435,6 +447,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
       } catch (error) {
         if (channel !== this.#current) continue;
         controller.error(error);
+        return;
+      }
+      if (this.#readCancelled) {
         return;
       }
       if (channel !== this.#current) {
@@ -524,6 +539,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
     // (to the Talk layer or the pipe over this slot channel).
     followBulkTarget(this.#current, next);
     this.#current = next;
+    if (this.#readCancelled) {
+      void cancelReadable(next);
+    }
     this.#settle();
     this.#watch(next);
     const requested = this.#closeRequested;
@@ -558,4 +576,13 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
       `${this.#retried ? ', retried' : ''})`
     );
   }
+}
+
+/** Cancels [channel]'s readable unless something reads it already; never rejects. */
+function cancelReadable(channel: MuxChannel, reason?: unknown): Promise<void> {
+  const readable = channel.readable;
+  if (readable.locked) {
+    return Promise.resolve();
+  }
+  return readable.cancel(reason).catch(() => {});
 }
