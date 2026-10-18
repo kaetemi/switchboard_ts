@@ -21,6 +21,7 @@ import 'context.dart';
 import 'identity.dart';
 import 'mesh.dart';
 import 'protocol.dart';
+import 'reconnect.dart';
 import 'services.dart' show pattern;
 
 /// The client commands, on a node of their own that never listens.
@@ -84,9 +85,13 @@ class Client {
     ],
   );
 
+  late final ReconnectCommands _reconnect = ReconnectCommands(ctx);
+
   /// Whether [command] answers [op].
   static bool answers(String op) =>
-      ops.contains(op) || NamingCommands.ops.contains(op);
+      ops.contains(op) ||
+      NamingCommands.ops.contains(op) ||
+      ReconnectCommands.ops.contains(op);
 
   /// Runs the client command [op].
   Future<Object?> command(String op, Map<String, Object?> cmd) async {
@@ -99,6 +104,9 @@ class Client {
             ? _adoptTalk(channel, ctx.trackConnection(channel.connection))
             : _adoptTalk(channel),
       );
+    }
+    if (ReconnectCommands.ops.contains(op)) {
+      return _reconnect.command(op, cmd);
     }
     switch (op) {
       case 'connect':
@@ -142,7 +150,7 @@ class Client {
             ..._extensionJson(deadline, renew),
           }),
         );
-        return _messageJson(await r.response, digest: boolArg(cmd, 'digest'));
+        return messageJson(await r.response, digest: boolArg(cmd, 'digest'));
       case 'talk.stream':
         return _talkStream(cmd);
       case 'talk.send':
@@ -229,20 +237,7 @@ class Client {
     if (cmd.containsKey('openHex')) {
       return bytesOf(cmd['openHex']);
     }
-    final a = objectArg(cmd, 'address') ?? const {};
-    final type = stringArg(a, 'type');
-    final typeHex = stringArg(a, 'typeHex');
-    return ChannelAddress(
-      type: typeHex != null
-          ? Name.fromBytes(hexBytes(typeHex))
-          : type == null
-          ? null
-          : Name(type),
-      instance: intArg(a, 'instance') ?? 0,
-      shard: intArg(a, 'shard'),
-      host: stringArg(a, 'host'),
-      payload: bytesOf(a['payload']),
-    ).encode();
+    return addressArg(cmd).encode();
   }
 
   /// A command's payload, and with `bulkPattern` (`{length, chunk,
@@ -254,7 +249,7 @@ class Client {
   ) {
     final spec = objectArg(cmd, 'bulkPattern');
     if (spec == null) {
-      return (_payload(cmd), null, null);
+      return (payloadOf(cmd), null, null);
     }
     final length = intArg(spec, 'length') ?? 0;
     final chunk = intArg(spec, 'chunk') ?? 1000;
@@ -281,20 +276,6 @@ class Client {
     'renewMs': renew?.inMilliseconds,
   };
 
-  /// A command's payload: `payload` (hex), `text` (UTF-8) or
-  /// `patternLength` (the `BIG` pattern of that many bytes).
-  static Uint8List _payload(Map<String, Object?> cmd) {
-    final text = stringArg(cmd, 'text');
-    if (text != null) {
-      return utf8.encode(text);
-    }
-    final length = intArg(cmd, 'patternLength');
-    if (length != null) {
-      return pattern(length);
-    }
-    return bytesOf(cmd['payload']);
-  }
-
   Future<Map<String, Object?>> _talkOpen(Map<String, Object?> cmd) async {
     final h = ctx.handles;
     String? connection = stringArg(cmd, 'connection');
@@ -313,7 +294,6 @@ class Client {
   /// channel has no one connection, and its handle is reported as
   /// `slotChannel`.
   Map<String, Object?> _adoptTalk(Object ch, [String? connection]) {
-    final h = ctx.handles;
     final options = ctx.config.talk;
     final (channel, talk) = switch (ch) {
       final SlotChannel c => (
@@ -326,17 +306,7 @@ class Client {
       ),
       _ => throw ArgumentError.value(ch, 'ch', 'not a channel'),
     };
-    final handle = h.add('t', talk);
-    talk.messages.listen((m) async {
-      ctx.out.event('talk.message', {
-        'talk': handle,
-        'requestId': m.requestId,
-        ...await _messageJson(m),
-      });
-      if (m.canReply) {
-        await m.replyAbort(Status.of(StatusCode.unimplemented));
-      }
-    }, onError: (Object _) {});
+    final handle = reportTalk(ctx, talk);
     return ch is SlotChannel
         ? {'talk': handle, 'slotChannel': channel}
         : {'talk': handle, 'channel': channel, 'connection': connection};
@@ -367,7 +337,7 @@ class Client {
           ctx.out.event('talk.item', {
             'stream': handle,
             'index': index++,
-            ...await _messageJson(item, digest: digest),
+            ...await messageJson(item, digest: digest),
           });
         }
       } on Object catch (_) {
@@ -378,7 +348,7 @@ class Client {
         ctx.out.event('talk.done', {
           'stream': handle,
           'items': index,
-          ...await _messageJson(last, digest: digest),
+          ...await messageJson(last, digest: digest),
         });
       } on Object catch (e) {
         ctx.out.event('talk.done', {
@@ -407,10 +377,10 @@ class Client {
       try {
         final reply = await talk.request(
           requiredString(cmd, 'procedure'),
-          _payload(cmd),
+          payloadOf(cmd),
           timeout: msArg(cmd, 'timeoutMs'),
         );
-        return await _messageJson(reply, digest: boolArg(cmd, 'digest'));
+        return await messageJson(reply, digest: boolArg(cmd, 'digest'));
       } finally {
         await talk.close();
       }
@@ -418,22 +388,72 @@ class Client {
       await c.goAway();
     }
   }
+}
 
-  /// A received message as JSON: its procedure, whether it came as bulk,
-  /// and the payload as hex, or with [digest] its size and SHA-256.
-  static Future<Map<String, Object?>> _messageJson(
-    TalkMessage m, {
-    bool digest = false,
-  }) async {
-    final payload = await m.payloadBytes();
-    return {
-      'procedure': m.procedureName,
-      'bulk': m.isBulk,
-      if (digest) ...{
-        'size': payload.length,
-        'sha256': '${sha256.convert(payload)}',
-      } else
-        'payload': hex(payload),
-    };
+/// The command's `address`: `{type, typeHex, instance, shard, host,
+/// payload}`, every field optional.
+ChannelAddress addressArg(Map<String, Object?> cmd) {
+  final a = objectArg(cmd, 'address') ?? const {};
+  final type = stringArg(a, 'type');
+  final typeHex = stringArg(a, 'typeHex');
+  return ChannelAddress(
+    type: typeHex != null
+        ? Name.fromBytes(hexBytes(typeHex))
+        : type == null
+        ? null
+        : Name(type),
+    instance: intArg(a, 'instance') ?? 0,
+    shard: intArg(a, 'shard'),
+    host: stringArg(a, 'host'),
+    payload: bytesOf(a['payload']),
+  );
+}
+
+/// A command's payload: `payload` (hex), `text` (UTF-8) or `patternLength`
+/// (the `BIG` pattern of that many bytes).
+Uint8List payloadOf(Map<String, Object?> cmd) {
+  final text = stringArg(cmd, 'text');
+  if (text != null) {
+    return utf8.encode(text);
   }
+  final length = intArg(cmd, 'patternLength');
+  if (length != null) {
+    return pattern(length);
+  }
+  return bytesOf(cmd['payload']);
+}
+
+/// [talk] as a handle: the messages the far side sends on it are reported
+/// as `talk.message`, and its requests refused with UNIMPLEMENTED.
+String reportTalk(PeerContext ctx, TalkChannel talk) {
+  final handle = ctx.handles.add('t', talk);
+  talk.messages.listen((m) async {
+    ctx.out.event('talk.message', {
+      'talk': handle,
+      'requestId': m.requestId,
+      ...await messageJson(m),
+    });
+    if (m.canReply) {
+      await m.replyAbort(Status.of(StatusCode.unimplemented));
+    }
+  }, onError: (Object _) {});
+  return handle;
+}
+
+/// A received message as JSON: its procedure, whether it came as bulk, and
+/// the payload as hex, or with [digest] its size and SHA-256.
+Future<Map<String, Object?>> messageJson(
+  TalkMessage m, {
+  bool digest = false,
+}) async {
+  final payload = await m.payloadBytes();
+  return {
+    'procedure': m.procedureName,
+    'bulk': m.isBulk,
+    if (digest) ...{
+      'size': payload.length,
+      'sha256': '${sha256.convert(payload)}',
+    } else
+      'payload': hex(payload),
+  };
 }
