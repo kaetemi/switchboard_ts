@@ -667,6 +667,9 @@ export class Switchboard implements AsyncDisposable {
    * a connection the node initiated, what {@link expectedIdentityFor} gives
    * for its endpoint, else nobody.
    *
+   * [options.signal] abandons the wait: the call rejects with its reason
+   * (sending nothing when it has aborted already).
+   *
    * Rejects like `MuxConnection.identify`, and with INTERNAL when
    * {@link expectedIdentityFor} throws (no IDENT is sent).
    *
@@ -674,11 +677,19 @@ export class Switchboard implements AsyncDisposable {
    */
   identifyOn(
     connection: MuxConnection,
-    options: { intent?: Uint8Array | undefined; receiver?: string | undefined } = {},
+    options: {
+      intent?: Uint8Array | undefined;
+      receiver?: string | undefined;
+      signal?: AbortSignal | undefined;
+    } = {},
   ): Promise<void> {
     const credential = this.#credential;
     if (credential === undefined) {
       throw new Error('the node has no credential');
+    }
+    const signal = options.signal;
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason);
     }
     const dialled = this.#dialled.get(connection);
     let named: string | undefined;
@@ -693,17 +704,21 @@ export class Switchboard implements AsyncDisposable {
       return Promise.reject(e);
     }
     const intent = options.intent;
-    return connection
-      .identify(credential, {
-        holderKey: this.holderKey,
-        intent,
-        receiver: named,
-        timeout: this.identityTimeout,
-      })
-      .then(() => {
-        this.#identified.set(connection, { intent, receiver: named });
-        return this.#presentCurrent(connection, credential);
-      });
+    return abortable(
+      connection
+        .identify(credential, {
+          holderKey: this.holderKey,
+          intent,
+          receiver: named,
+          timeout: this.identityTimeout,
+          signal,
+        })
+        .then(() => {
+          this.#identified.set(connection, { intent, receiver: named });
+          return this.#presentCurrent(connection, credential);
+        }),
+      signal,
+    );
   }
 
   // Listening ---------------------------------------------------------------
@@ -2502,15 +2517,19 @@ export class Switchboard implements AsyncDisposable {
    * Rejects with `SwitchboardError`: FAILED_PRECONDITION without a
    * {@link relay}, without a resolver to find the relays in, or after
    * {@link close}; NOT_FOUND when no relay is known; and like
-   * `Resolver.resolve`.
+   * `Resolver.resolve`. Rejects with the reason of [options.signal] once it
+   * aborts.
    */
-  async resolveRelays(options: { resolver?: Resolver | undefined } = {}): Promise<ServiceRecord[]> {
+  async resolveRelays(
+    options: { resolver?: Resolver | undefined; signal?: AbortSignal | undefined } = {},
+  ): Promise<ServiceRecord[]> {
     this.checkOpen();
+    checkAborted(options.signal);
     const config = this.relay;
     if (config === undefined) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'no relay configured');
     }
-    return this.#relayCandidates(config, options.resolver ?? this.resolver, undefined);
+    return this.#relayCandidates(config, options.resolver ?? this.resolver, options.signal);
   }
 
   async #relayCandidates(

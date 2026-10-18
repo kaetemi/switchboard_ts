@@ -382,8 +382,8 @@ class Switchboard {
   connect(endpoint: string, options?: { policy?, record?, signal? }): Promise<MuxConnection>;   // pooled
   dial(endpoint, options?: { policy?, intent?, receiver?, record?, signal? }): Promise<MuxConnection>;   // not pooled
   broker(address, options?: { resolver?, signal? }): Promise<MuxConnection>; readonly canBroker: boolean;
-  resolveRelays(options?): Promise<ServiceRecord[]>;
-  identifyOn(connection, options?: { intent?, receiver? }): Promise<void>; updateCredential(credential): Promise<void>;
+  resolveRelays(options?: { resolver?, signal? }): Promise<ServiceRecord[]>;
+  identifyOn(connection, options?: { intent?, receiver?, signal? }): Promise<void>; updateCredential(credential): Promise<void>;
   listenMemory(options?: { policy?, name? }): Promise<string>;
   accept(transport, options?: { policy?, remote? }): Promise<MuxConnection>; adopt(connection, options?): Promise<MuxConnection>;
   addListeningEndpoint(endpoint, options?): Promise<void>; removeListeningEndpoint(endpoint): boolean;
