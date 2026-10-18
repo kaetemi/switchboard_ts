@@ -4,7 +4,7 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Review findings (Talk): a graceful close of the parent loses bulk
+// Review findings (Talk): a graceful close of the parent lost bulk
 // payloads the peer sent whole before it. Talk reads the parent and each
 // bulk channel through ReadableStreams of their own, so when the mux takes
 // several channels' frames in one go (the memory mux here; the native QUIC
@@ -14,18 +14,19 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // order, so a bulk channel that ended before the parent's CLOSE ended
 // before Talk saw that CLOSE.
 //
-// 1. `#terminate` (`#endBulk`) abandons every BulkIn still in `_bulkIns`.
-//    A streamed payload (`streamBulk`) whose bulk channel had closed but
-//    whose reader had not reached its end is abandoned while its message
-//    is still delivered: `message.bulk` then throws "the bulk payload is
-//    read already" and the bytes are gone. `#peerEnded` waits for the
-//    reassemblies only. (Over the frame mux the readers stayed in step in
-//    every probe: it reads the transport a frame per await.)
-// 2. Over unordered channels, `#linger` returns at once when every
-//    attached bulk channel is in state `closed` (`#bulkSettled`), without
-//    waiting for the reassemblies `#peerEnded` waits for over ordered ones;
-//    `#terminate` then drops the message whose payload was still being
-//    read from the closed channel's queue.
+// 1. `#terminate` (`#endBulk`) abandoned every BulkIn still in `_bulkIns`:
+//    a streamed payload (`streamBulk`) whose bulk channel had closed but
+//    whose reader had not reached its end was abandoned while its message
+//    was still delivered, and `message.bulk` then threw "the bulk payload
+//    is read already". `#peerEnded` waited for the reassemblies only.
+// 2. Over unordered channels, `#linger` returned at once when every
+//    attached bulk channel was in state `closed`, without waiting for the
+//    reassemblies, and `#terminate` dropped the message whose payload was
+//    still being read from the closed channel's queue.
+//    Now a graceful end, under both orderings, waits until the reader of
+//    every bulk channel that ended has reached its end and the
+//    reassemblies of those have finished (`#drainBulk`, at most
+//    `bulkIdleTimeout`), so both are delivered.
 // 3. Over unordered channels, a bulk channel the mux routes between the
 //    parent's end and `#linger` registering the lingering target (Talk's
 //    reader lags the mux, then awaits `raw.done`) finds no open parent and
@@ -38,8 +39,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // A peer that sends the parent's CLOSE right behind its bulk channels is
 // allowed ("a peer need only have sent them", dart-design.md); a Talk
 // sender waits for their confirmation first, a raw peer or a relay need
-// not. The tests are `test.fails` while the defects are there: the fixes
-// flip them to `test`.
+// not. The test of item 3 is `test.fails` while the defect is there.
 
 import { expect, test } from 'vitest';
 import { MuxFrame } from '../../../src/core/mux/mux-frame.ts';
@@ -71,7 +71,7 @@ function put(length: number): Uint8Array {
 }
 
 for (const ordered of [false, true]) {
-  test.fails(`a streamed payload sent whole before the parent closed is still readable after the end, ${
+  test(`a streamed payload sent whole before the parent closed is still readable after the end, ${
     ordered ? 'ordered' : 'unordered'
   } channels`, async () => {
     const [client, server] = memoryMuxPair({ ordered });
@@ -116,7 +116,7 @@ test('control: a reassembled payload sent whole before the parent closed is deli
   expectBytes((await messages.next()).payload, payload);
 });
 
-test.fails('a reassembled payload sent whole before the parent closed is delivered (unordered channels)', async () => {
+test('a reassembled payload sent whole before the parent closed is delivered (unordered channels)', async () => {
   const [client, server] = memoryMuxPair({ ordered: false });
   installBulkRouting(client);
   installBulkRouting(server);

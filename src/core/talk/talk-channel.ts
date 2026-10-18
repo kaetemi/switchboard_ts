@@ -298,6 +298,9 @@ export class TalkChannel implements TalkChannelContract {
   /** The reassemblies in progress, by bulk payload: a graceful end waits for those that arrived whole ({@link #peerEnded}). */
   readonly #collecting = new Map<BulkIn, Promise<void>>();
 
+  /** Set while a graceful end waits for the readers of the bulk channels that ended ({@link #drainBulk}). */
+  #draining: Deferred<void> | undefined;
+
   /** @internal Messages whose bulk channel was not adopted yet, by bulk number. */
   readonly _bulkAwaited = new Map<number, Awaited>();
 
@@ -2248,6 +2251,7 @@ export class TalkChannel implements TalkChannelContract {
     this.#collecting.set(b, collecting);
     const collected = (): void => {
       this.#collecting.delete(b);
+      this._checkLinger();
     };
     collecting.then(collected, collected);
   }
@@ -2594,21 +2598,9 @@ export class TalkChannel implements TalkChannelContract {
     const error = new SwitchboardError(status);
     if (graceful && !this.#orderedBulk) {
       await this.#linger(error);
-    } else if (graceful) {
-      // The bulk channels of the messages that arrived before the close
-      // arrived whole before it too, but their bytes are read
-      // asynchronously here (the Dart mux delivers them as they arrive):
-      // the reassemblies of those that ended finish before the channel
-      // ends, as there.
-      const arrived: Promise<void>[] = [];
-      for (const [b, collecting] of this.#collecting) {
-        if (b.channel.state === 'closed') {
-          arrived.push(collecting);
-        }
-      }
-      if (arrived.length > 0) {
-        await Promise.allSettled(arrived);
-      }
+    }
+    if (graceful) {
+      await this.#drainBulk();
     }
     this.#terminate(error);
     // What waited for the peer's LIMITS goes nowhere: after the requests it
@@ -2703,12 +2695,69 @@ export class TalkChannel implements TalkChannelContract {
     await new Promise<void>((resolve) => this._clock.setTimeout(resolve, 0));
   }
 
-  /** @internal Ends the wait for bulk payloads after the peer's close once nothing it waits for is left. */
+  /** @internal Ends the waits for bulk payloads after the peer's close once nothing they wait for is left. */
   _checkLinger(): void {
     const settled = this._lingering;
     if (settled !== undefined && !settled.isSettled && this.#bulkSettled) {
       settled.resolve();
     }
+    const drained = this.#draining;
+    if (drained !== undefined && !drained.isSettled && this.#bulkDrained) {
+      drained.resolve();
+    }
+  }
+
+  /**
+   * The peer closed the channel gracefully, and the bulk channels of the
+   * messages that arrived before the close ended before it (over
+   * unordered channels: while {@link #linger} waited), but this side reads
+   * their bytes asynchronously, where the Dart mux delivers them as they
+   * arrive: waits until the reader of every bulk channel that ended has
+   * reached its end and the reassemblies of those have finished, so that
+   * a payload that arrived whole is delivered (a streamed one readable from
+   * `bulk`, a reassembled one with its message), as there. They read what
+   * the mux holds already, without waiting for anyone; at most
+   * `bulkIdleTimeout` (30 s when that is 0) all the same. Payloads still in
+   * transfer, or waiting for the reassembly budget, end with the channel,
+   * as in Dart.
+   */
+  async #drainBulk(): Promise<void> {
+    if (this.#bulkDrained) {
+      return;
+    }
+    const drained = new Deferred<void>();
+    this.#draining = drained;
+    let limit = this.options.bulkIdleTimeout;
+    if (limit <= 0) {
+      limit = 30_000;
+    }
+    const timer = this._clock.setTimeout(
+      () => {
+        if (!drained.isSettled) {
+          this._log('debug', `bulk channels not read to their end within ${limit} ms of the close`);
+          drained.resolve();
+        }
+      },
+      limit > maxTimerDelay ? maxTimerDelay : limit,
+    );
+    await drained.promise;
+    this._clock.clearTimeout(timer);
+    this.#draining = undefined;
+  }
+
+  /** Every bulk channel that ended was read to its end, and the reassemblies of those finished. */
+  get #bulkDrained(): boolean {
+    for (const b of this._bulkIns) {
+      if (b.channel.state === 'closed') {
+        return false;
+      }
+    }
+    for (const b of this.#collecting.keys()) {
+      if (b.channel.state === 'closed') {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** No bulk channel is awaited, and every one attached arrived whole or failed. */

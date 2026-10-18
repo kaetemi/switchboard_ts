@@ -70,7 +70,7 @@ All of these are documented in the code.
 * **Bulk receive allows for Talk running behind the mux.** Talk reads its channels through ReadableStreams, while the Dart mux delivers synchronously in wire order. These are the fixes in commit 9c2919d, `talk-channel.ts`:
   * `streamHold` counts the bulk channel's `heldBytes + bufferedBytes`, plus its window while it is open.
   * `_adoptBulk` refuses only beyond `maxUnclaimedBulk` plus the references that the parent's unread frames could carry: those the mux channel buffers (`bufferedBytes`) and those delivered toward Talk's reader and not read yet (the channel's `heldBytes` less what Talk took from its reader and holds). It then recounts after each frame read. (The second half closed the gap where a peer exactly at the bound got a spurious RESOURCE_EXHAUSTED, reachable through a slot channel over a transport that queues frames ahead.)
-  * On an ordered connection, a graceful close waits for the reassemblies of bulk channels that had already closed.
+  * A graceful close (both orderings; over unordered ones after the linger) waits until the reader of every bulk channel that had already closed has reached its end and the reassemblies of those have finished (`#drainBulk`, at most `bulkIdleTimeout`), so that a payload that arrived whole is delivered, streamed or reassembled, as in Dart.
 * **On a frame channel that is not a mux channel, a status close waits for the last write.** This is so a channel abort sent just before the close is not lost. A sink that never accepts the write would hold that close.
 
 ## Fixes the integration tests found
