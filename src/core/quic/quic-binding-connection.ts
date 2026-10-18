@@ -1355,7 +1355,8 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       );
     }
     const id = this.#allocateId();
-    const entry = this.#makeChannel(id, true, openPayload.slice());
+    // A copy: a Buffer's own `slice` is a view, and the OPEN record is written later.
+    const entry = this.#makeChannel(id, true, Uint8Array.prototype.slice.call(openPayload));
     this.#channels.set(id, entry);
     return entry;
   }
@@ -1428,7 +1429,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       );
     }
     const pending: PendingPing = {
-      payload: message.payload.slice(),
+      payload: Uint8Array.prototype.slice.call(message.payload),
       done,
       start: this.options.clock.now(),
       cleanup: undefined,
@@ -1830,7 +1831,10 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
         throw new TypeError('not the holder key the credential names');
       }
     }
-    const intent = options.intent === undefined ? new Uint8Array(0) : options.intent.slice();
+    const intent =
+      options.intent === undefined
+        ? new Uint8Array(0)
+        : Uint8Array.prototype.slice.call(options.intent);
     const receiver = options.receiver;
     const receiverBytes = receiver === undefined ? new Uint8Array(0) : utf8Encode(receiver);
     const credentialBytes = credential.encode();
