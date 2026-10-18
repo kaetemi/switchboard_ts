@@ -12,79 +12,18 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // skipped with the reason.
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io' show InternetAddress;
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:switchboard/switchboard.dart';
-import 'package:switchboard_dart_driver/ts_peer.dart';
 import 'package:switchboard_dart_peer/switchboard_dart_peer.dart';
 import 'package:switchboard_quic/switchboard_quic.dart';
 import 'package:switchboard_quic/switchboard_quic_native.dart';
 import 'package:test/test.dart';
 
-const Duration limit = Duration(seconds: 10);
-
-/// Connections that close at once once their channels are gone.
-const MuxOptions fast = MuxOptions(goAwayGrace: Duration(milliseconds: 200));
-
-/// A Dart node that dials every scheme, QUIC and WebTransport unverified.
-Switchboard dartNode({Credential? credential, HolderKey? holderKey}) =>
-    Switchboard(
-      localConnections: false,
-      muxOptions: fast,
-      credential: credential,
-      holderKey: holderKey,
-      bindings: [
-        QuicSwitchboardBinding(
-          NativeQuicProvider(),
-          webTransportCertificateVerified: false,
-        ),
-      ],
-    );
-
-Uint8List text(String s) => Uint8List.fromList(utf8.encode(s));
-
-String textOf(Uint8List bytes) => utf8.decode(bytes);
-
-/// A TS peer started once for a group, skipped with the reason it could
-/// not start for.
-class Fixture {
-  TsPeer? peer;
-  String? skip;
-
-  TsPeer get ts => peer!;
-
-  Future<void> start(Map<String, Object?> config) async {
-    try {
-      peer = await TsPeer.start(config);
-    } on Object catch (e) {
-      skip = 'the TS peer cannot serve this: $e';
-    }
-  }
-
-  /// Whether the test runs; marks it skipped otherwise.
-  bool get runs {
-    final reason = skip;
-    if (reason != null) {
-      markTestSkipped(reason);
-      return false;
-    }
-    return true;
-  }
-
-  Future<void> afterEach() async {
-    final p = peer;
-    if (p == null) {
-      return;
-    }
-    final errors = p.errors;
-    await p.reset();
-    expect(errors, isEmpty, reason: 'errors the TS peer reported');
-  }
-}
+import 'support.dart';
 
 void main() {
   for (final transport in ['tcp', 'ws', 'quic', 'webtransport']) {
