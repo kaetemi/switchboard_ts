@@ -288,33 +288,76 @@ describe('bulk payloads on streams of their own', () => {
     expect([...(await within(answer)).payload]).toEqual([100]);
   });
 
-  // Known gap, shared with the Dart reference: the binding reads a
-  // channel's stream only as far as what it delivered was consumed (or
-  // granted ahead), and Talk holds a message's frame until its payload is
-  // there. When an early bulk stream lags, the references behind its
-  // message stay unread in the QUIC stack while their bulk streams keep
-  // arriving: beyond maxUnclaimedBulk (16) of them Talk refuses the rest
-  // RESOURCE_EXHAUSTED ("peer opened more than 16 bulk channels ahead of
-  // their messages"), and those messages fail at the sender. Over the frame
-  // mux the references are read as they arrive, each right after its OPEN.
-  // Remove `.fails` once the binding reads ahead for Talk (or Talk grants
-  // its parent a window ahead on unordered connections).
-  test.fails('a burst of bulk messages behind a lagging bulk stream is not refused (fails: the references behind the held message are not read)', async () => {
+  // The binding reads a channel's stream only as far as what it delivered
+  // was consumed (or granted ahead), and Talk holds a message's frame until
+  // its payload is there: when an early bulk stream lags, the references
+  // behind its message would stay unread in the QUIC stack while their bulk
+  // streams keep arriving, and beyond maxUnclaimedBulk (16) of them Talk
+  // would refuse the rest RESOURCE_EXHAUSTED ("peer opened more than 16 bulk
+  // channels ahead of their messages"). Over the frame mux the references
+  // are read as they arrive, each right after its OPEN. Here, while bulk
+  // channels wait for their references, Talk reports the frames it holds
+  // consumed ahead of their delivery, up to one window, so the binding reads
+  // on to the references; and it refuses a bulk channel beyond 16 only once
+  // the frames that could carry its reference were read (design §13 item
+  // 6). The Dart reference keeps the gap.
+  /** Sends [count] messages of [size] bytes as bulk; what each send failed with, if it did. */
+  function burst(talk: TalkChannel, count: number, size: number): Promise<unknown[]> {
+    const sends = Array.from({ length: count }, (_, i) =>
+      talk.send('PUT', pattern(size, i)).then(
+        () => undefined,
+        (e: unknown) => e,
+      ),
+    );
+    return Promise.all(sends).then((results) => results.filter((e) => e !== undefined));
+  }
+
+  test('a burst of bulk messages behind a lagging bulk stream is not refused', async () => {
     const { network, delays } = delayedNetwork();
     const { talk, responder } = await quicTalk({ network });
     // The first bulk channel's stream (2) lags behind the 29 after it.
     delays.set(2, 100);
     const seen: TalkMessage[] = [];
     serve(responder, (m) => seen.push(m));
-    const sends = Array.from({ length: 30 }, (_, i) =>
-      talk.send('PUT', pattern(50_000, i)).then(
-        () => undefined,
-        (e: unknown) => e,
-      ),
-    );
-    const failures = (await Promise.all(sends)).filter((e) => e !== undefined);
-    expect(failures).toEqual([]);
+    expect(await burst(talk, 30, 50_000)).toEqual([]);
     await until(() => seen.length === 30);
+    // In the order sent, each with its payload.
+    seen.forEach((m, i) => {
+      expectBytes(m.payload, pattern(50_000, i));
+    });
+    expect(responder.isOpen).toBe(true);
+  });
+
+  test('a burst of 100 bulk messages behind lagging bulk streams is not refused', async () => {
+    const { network, delays } = delayedNetwork();
+    const { talk, responder } = await quicTalk({ network });
+    // Streams 2, 7 and 40 lag: a held message each, the others arriving.
+    delays.set(2, 60);
+    delays.set(7, 120);
+    delays.set(40, 80);
+    let seen = 0;
+    serve(responder, () => {
+      seen++;
+    });
+    expect(await burst(talk, 100, 50_000)).toEqual([]);
+    await until(() => seen === 100);
+    expect(responder.isOpen).toBe(true);
+  });
+
+  test('a burst of 100 bulk messages is not a protocol error: no more than 16 references wait for their channels', async () => {
+    // Without a lag the references run ahead of their bulk streams: reading
+    // on regardless (a window granted ahead) would leave more than 16
+    // waiting, a channel PROTOCOL_ERROR ("too many BULK references waiting
+    // for their channels").
+    const { talk, responder } = await quicTalk();
+    let seen = 0;
+    serve(responder, () => {
+      seen++;
+    });
+    expect(await burst(talk, 100, 50_000)).toEqual([]);
+    await until(() => seen === 100);
+    expect(responder.isOpen).toBe(true);
+    expect(talk.isOpen).toBe(true);
   });
 
   test('messages keep their order while their payloads arrive out of it', async () => {

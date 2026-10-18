@@ -49,6 +49,7 @@ class Client {
     'connection.ping',
     'connection.goAway',
     'connection.close',
+    'connection.drain',
     'connection.identify',
     'request',
   ];
@@ -189,6 +190,16 @@ class Client {
         return null;
       case 'connection.close':
         await h.get<MuxConnection>(cmd['connection'], 'connection').close();
+        return null;
+      case 'connection.drain':
+        final c = h.get<MuxConnection>(cmd['connection'], 'connection');
+        final session = c is QuicBindingConnection ? c.session : null;
+        if (session is! NativeQuicSession || !session.isWebTransport) {
+          throw ArgumentError(
+            'connection.drain needs a WebTransport connection',
+          );
+        }
+        session.drain();
         return null;
       case 'request':
         return _request(cmd);

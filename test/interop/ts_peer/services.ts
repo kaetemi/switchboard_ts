@@ -112,16 +112,16 @@ function serveRaw(
   node: Switchboard,
 ): void {
   const connection = ctx.trackConnection(incoming.connection, node);
-  const handle = ctx.trackChannel(incoming.channel, false);
-  ctx.out.event('channel.incoming', {
-    channel: handle,
-    connection,
-    service: spec.type,
-    id: incoming.channel.id,
-    ...addressJson(incoming.address),
-    identity: incoming.peerIdentity?.identity ?? null,
-  });
-  ctx.reportData(incoming.channel, handle);
+  ctx.trackChannel(incoming.channel, true, (handle) =>
+    ctx.out.event('channel.incoming', {
+      channel: handle,
+      connection,
+      service: spec.type,
+      id: incoming.channel.id,
+      ...addressJson(incoming.address),
+      identity: incoming.peerIdentity?.identity ?? null,
+    }),
+  );
 }
 
 /** [a] as the `channel.incoming` event names it. */
