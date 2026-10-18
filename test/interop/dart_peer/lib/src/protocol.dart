@@ -115,6 +115,18 @@ int? intArg(Map<String, Object?> cmd, String key) {
   throw ArgumentError('$key: integer expected, got $v');
 }
 
+/// An optional number argument.
+double? numberArg(Map<String, Object?> cmd, String key) {
+  final v = cmd[key];
+  if (v == null) {
+    return null;
+  }
+  if (v is num && v.isFinite) {
+    return v.toDouble();
+  }
+  throw ArgumentError('$key: number expected, got $v');
+}
+
 /// An optional string argument.
 String? stringArg(Map<String, Object?> cmd, String key) {
   final v = cmd[key];

@@ -17,7 +17,7 @@ test/interop/
   chain.ts            chains of three or more peers, every role in either language, describeChains()
   scenarios/          the scenarios: basics, talk, talk-wire, bulk, close and GOAWAY, mux limits,
                       protocol errors, forward, identity, naming and sharding, mesh (proxy, relay,
-                      forwarding and naming chains)
+                      forwarding and naming chains), the reconnecting client
   oracle.test.ts      the wiki vectors against the Dart codecs; the TS codecs against Dart, fuzzed
   probe/              raw byte conformance: hand-built frames against each server's listeners
 ```
@@ -96,7 +96,7 @@ Version 1. The peer is started as `<peer> [--config <json>] [--log <level>] [--w
 - **Commands**, one JSON object per line on stdin: `{"id": 7, "op": "talk.request", ...}`. Each gets exactly one response line, `{"id": 7, "ok": true, "value": ...}` or `{"id": 7, "ok": false, "error": {...}}`. Commands run concurrently, so responses can come out of order.
 - **Errors** are `{"kind", "type", "message"}` plus `code`, `reason` and `body` (the status payload's bytes after the code, hex, as received) for kind `status`: `status` (a Switchboard status: an abort, a refused channel, a protocol error), `format` (malformed input to a codec), `argument` (a bad command), `other`. `type` is the implementation's error class and differs between implementations; tests compare `kind` and `code`.
 - **Events** are unsolicited lines `{"event": "channel.closed", "channel": "ch3", "code": 5, "reason": ""}`.
-- **Handles**: every object a command or a service creates gets a string handle that is never reused within the process: `c` connections, `ch` channels, `t` Talk channels, `s` streams.
+- **Handles**: every object a command or a service creates gets a string handle that is never reused within the process: `c` connections, `ch` channels, `t` Talk channels, `s` streams, `n` naming clients, `r` reconnecting clients, `p` persistent channels.
 - **Lifetime**: the peer exits on `shutdown`, at the end of stdin (so a test runner that dies leaves no orphan), on SIGTERM or SIGINT, and after the watchdog (default 600 s, exit code 3).
 
 Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are optional on input). JSON numbers carry 48-bit ids and `u32` windows exactly.
@@ -196,7 +196,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | --- | --- | --- |
 | `ping` | | `"pong"` |
 | `info` | | the READY object and `handles`, the number of live handles |
-| `reset` | | closes every handle's object (newest first) and forgets them: `{closed}`; the listeners stay |
+| `reset` | | closes every handle's object (newest first, the reconnecting clients stopped before anything, so that none reconnects meanwhile) and forgets them: `{closed}`; the listeners stay |
 | `shutdown` | | `null`, then the peer exits |
 | `decode` | `kind`, `hex` | the reference decoder's fields and `reencoded` (see the oracle) |
 | `decodeMany` | `kind`, `hexes` | `[{ok: true, value} \| {ok: false, error}]`, one per input |
@@ -217,10 +217,28 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | `connection.close` | `connection` | `null` |
 | `connection.identify` | `connection`, `intent`, `receiver` | `null`: identifies with the peer's credential |
 | `request` | `endpoint`, `service`, `instance`, `procedure`, payload, `timeoutMs`, `digest` | one request on a connection of its own, closed afterwards |
+| `accepted.goAway` | `code` (default 33), `reason` | `{connections}`: GOAWAY on every open connection the listeners accepted, without waiting for them to end; each is a handle from then on, reporting `connection.goAway` and `connection.closed` whether or not its peer identified. A connection is there once the node adopted it: over QUIC a dialler can be connected before, and a request on the connection makes sure |
+| `accepted.close` | | `{connections}`: closes every open connection the listeners accepted, the same way |
 
 An `address` is `{type, typeHex, instance, shard, host, payload}`, every field optional (`type` is text, `typeHex` the 8 name bytes, `payload` hex). A payload argument is one of `payload` (hex), `text` (UTF-8) or `patternLength` (the `BIG` pattern of that many bytes); `talk.request`, `talk.stream` and `talk.send` also take `bulkPattern: {length, chunk, declared}`, an empty payload with the `BIG` pattern of `length` bytes as a bulk source in pieces of `chunk` bytes (default 1000), its length declared unless `declared` is false. Endpoints are any the READY line names: `tcp://`, `ws://`, `quic://`, `https://` (WebTransport). The client side does not verify the QUIC certificate.
 
 Connections report `connection.goAway {connection, code, reason, body}` when the far side sends GOAWAY and `connection.closed {connection, code, reason, body}` when they end; channels report `channel.closed {channel, code, reason, body}` (`body`: the status payload's bytes after the code, hex). An error no command answers (in a service, say) is `peer.error {error}`.
+
+### Reconnecting client
+
+The `reconnect` commands run a `ReconnectingClient` of the peer's implementation against an endpoint: the frame mux over a transport for `tcp://` and `ws://` (the unnamed constructor, a transport connector), the QUIC binding for `quic://` and `https://` (`ReconnectingClient.connections` with `connectQuicBinding` in Dart, a `quicConnector` in TS), without verifying the listener's certificate. Its connections take the peer's `mux` and `talk` options. The channels it opens are `t` and `ch` handles the commands above drive, on `c` handles reporting `connection.goAway` and `connection.closed`; the server side of a scenario uses `accepted.goAway`, `accepted.close`, the `echo` service's `GOAWAY`, and `connection.close` on the connection a `raw` channel reported.
+
+| Op | Arguments | Value |
+| --- | --- | --- |
+| `reconnect.open` | `endpoint`, `initialBackoffMs`, `maxBackoffMs`, `backoffFactor`, `jitter`, `connectTimeoutMs`, `defaultPayload` (hex), `autoStart` (default true) | `{reconnect}`, the library's defaults for what is absent. Each change of its state (not the state at the start) is `reconnect.state {reconnect, phase, attempt, lastStatus, retryMs, connection}`: `lastStatus` as `{code, reason, body}` or null, `retryMs` the delay of the attempt scheduled (`nextAttemptAt` less `since`, rounded) or null, `connection` the handle while connected (null if a Dart client, whose states arrive a microtask late, already left it). Each channel the endpoint opens towards it is `reconnect.incoming {reconnect, channel, connection, id, type, instance, shard, host, payload}`, then its subframes and its end as for `open` |
+| `reconnect.talk` | `reconnect`, `address`, `openTimeoutMs` | `{talk, channel, connection}`: `openTalk`, waiting at most `openTimeoutMs` for a connection (default 30 000; 0 fails at once while there is none) |
+| `reconnect.channel` | `reconnect`, `address`, `openTimeoutMs` | `{channel, id, connection}`: `openChannel`, a raw channel as `open` makes |
+| `reconnect.persistent` | `reconnect`, `address`, `talk` (default true), `request` (`{procedure}` and a payload argument) | `{persistent}`: `openPersistentTalk`, or `openPersistent` with `talk` false. Each channel it opens is `persistent.opened {persistent, channel, connection, talk}` (`talk` for a Talk channel, which gets `request` and reports its outcome as `persistent.reply {persistent, talk, ...message}` or `{persistent, talk, error}`); each end is `persistent.closed {persistent, code, reason, body}` (`onClosed`), the end for good `persistent.done` with the same fields |
+| `reconnect.stop` | `reconnect` | the state after `stop()`, as `reconnect.state` reports it |
+| `reconnect.start` | `reconnect` | `null` |
+| `reconnect.now` | `reconnect`, `force` | `null`: `reconnectNow` |
+| `reconnect.close` | `reconnect` | `null`, once `close()` completed |
+| `persistent.close` | `persistent` | `{code, reason, body}`: the status `done` completed with |
 
 ### Oracle kinds
 

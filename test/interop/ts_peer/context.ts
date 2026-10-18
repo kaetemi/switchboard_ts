@@ -13,6 +13,9 @@ import type {
   MuxChannel,
   MuxConnection,
   PeerIdentity,
+  PersistentChannel,
+  PersistentTalk,
+  ReconnectingClient,
   Switchboard,
   TalkChannel,
   TalkStream,
@@ -34,6 +37,10 @@ export interface HandleKinds extends Record<string, object> {
   s: TalkStream;
   /** Naming clients. */
   n: NamingHandle;
+  /** Reconnecting clients. */
+  r: ReconnectingClient;
+  /** Persistent channels of a reconnecting client. */
+  p: PersistentChannel | PersistentTalk;
 }
 
 const closeTimeoutMs = 2000;
@@ -157,10 +164,20 @@ export class PeerContext {
     this.out.event('peer.error', { error: errorJson(error) });
   }
 
-  /** Closes every handle's object, newest first, and forgets them all. */
+  /**
+   * Closes every handle's object, newest first, and forgets them all. The
+   * reconnecting clients stop first: closing their connections and their
+   * persistent channels' channels would otherwise make them reconnect and
+   * open those again.
+   */
   async closeAll(): Promise<number> {
     const objects = this.handles.all;
     this.handles.clear();
+    for (const { prefix, object } of objects) {
+      if (prefix === 'r') {
+        (object as ReconnectingClient).stop();
+      }
+    }
     for (const { prefix, object } of objects) {
       try {
         switch (prefix) {
@@ -178,6 +195,12 @@ export class PeerContext {
             break;
           case 'n':
             await within((object as NamingHandle).close(), closeTimeoutMs);
+            break;
+          case 'p':
+            await within((object as PersistentChannel | PersistentTalk).close(), closeTimeoutMs);
+            break;
+          case 'r':
+            await within((object as ReconnectingClient).close(), closeTimeoutMs);
             break;
         }
       } catch {

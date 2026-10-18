@@ -12,10 +12,12 @@ import { createInterface } from 'node:readline';
 import {
   type Logger,
   type LogLevel,
+  type MuxConnection,
   nativeQuic,
   nativeQuicAvailability,
   QuicBindingConnection,
   QuicIdentityRules,
+  StatusCode,
   Switchboard,
   selfSignedCertificate,
 } from '../../../src/node/index.ts';
@@ -35,6 +37,7 @@ import {
   objectArg,
   peerProtocolVersion,
   requiredString,
+  statusArg,
 } from './protocol.ts';
 import { registerService } from './services.ts';
 
@@ -134,6 +137,8 @@ class Peer {
   #mesh: MeshServices | undefined;
   #ready: Json = {};
   #stopping = false;
+  /** The connections the listeners accepted that have not ended, in the order accepted. */
+  readonly #accepted = new Set<MuxConnection>();
 
   constructor(ctx: PeerContext, watchdogSeconds: number) {
     this.#ctx = ctx;
@@ -173,6 +178,10 @@ class Peer {
     // asked (the QUIC listener does so itself).
     void (async () => {
       for await (const c of node.connections) {
+        if (!c.isInitiator) {
+          this.#accepted.add(c);
+          void c.done.then(() => this.#accepted.delete(c));
+        }
         void c.peerIdentified.then(() => ctx.trackConnection(c, node));
         if (
           id.identifyInReturn &&
@@ -298,12 +307,36 @@ class Peer {
       }
       case 'encode':
         return encodeKind(requiredString(cmd, 'kind'), objectArg(cmd, 'fields') ?? {});
+      case 'accepted.goAway': {
+        const status = statusArg(cmd, StatusCode.goingAway);
+        return { connections: this.#eachAccepted((c) => c.goAway(status)) };
+      }
+      case 'accepted.close':
+        return { connections: this.#eachAccepted((c) => c.close()) };
       default:
         if (Client.answers(op)) {
           return this.#client.command(op, cmd);
         }
         throw new ArgumentProblem(`unknown op ${op}`);
     }
+  }
+
+  /**
+   * Runs [action] on every open connection the listeners accepted, without
+   * waiting for it, and answers their handles: each is tracked from then
+   * on, its GOAWAY and its end reported, whether or not its peer
+   * identified.
+   */
+  #eachAccepted(action: (c: MuxConnection) => Promise<void>): string[] {
+    const handles: string[] = [];
+    for (const c of this.#accepted) {
+      if (c.isOpen) {
+        handles.push(this.#ctx.trackConnection(c, this.#node));
+        // Throws at once for a status a GOAWAY cannot carry; settles once the connection ended.
+        action(c).catch(() => {});
+      }
+    }
+    return handles;
   }
 
   async #stop(): Promise<void> {

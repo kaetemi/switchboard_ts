@@ -148,6 +148,18 @@ export function intArg(cmd: Json, key: string): number | undefined {
   throw new ArgumentProblem(`${key}: integer expected, got ${JSON.stringify(v)}`);
 }
 
+/** An optional number argument. */
+export function numberArg(cmd: Json, key: string): number | undefined {
+  const v = cmd[key];
+  if (v === undefined || v === null) {
+    return undefined;
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return v;
+  }
+  throw new ArgumentProblem(`${key}: number expected, got ${JSON.stringify(v)}`);
+}
+
 /** An optional string argument. */
 export function stringArg(cmd: Json, key: string): string | undefined {
   const v = cmd[key];

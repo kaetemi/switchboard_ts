@@ -133,9 +133,17 @@ class PeerContext {
   }
 
   /// Closes every handle's object, newest first, and forgets them all.
+  /// The reconnecting clients stop first: closing their connections and
+  /// their persistent channels' channels would otherwise make them
+  /// reconnect and open those again.
   Future<int> closeAll() async {
     final objects = handles.all;
     handles.clear();
+    for (final o in objects) {
+      if (o is ReconnectingClient) {
+        o.stop();
+      }
+    }
     for (final o in objects) {
       try {
         switch (o) {
@@ -149,6 +157,12 @@ class PeerContext {
             s.cancel();
           case final NamingHandle n:
             await n.close().timeout(_closeTimeout, onTimeout: () {});
+          case final PersistentChannel p:
+            await p.close().timeout(_closeTimeout, onTimeout: () {});
+          case final PersistentTalk p:
+            await p.close().timeout(_closeTimeout, onTimeout: () {});
+          case final ReconnectingClient r:
+            await r.close().timeout(_closeTimeout, onTimeout: () {});
         }
       } on Object catch (_) {
         // Already closed or failing: nothing left to release.
