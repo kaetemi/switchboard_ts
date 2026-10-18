@@ -13,7 +13,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { networkInterfaces } from 'node:os';
+import { hostname, networkInterfaces } from 'node:os';
 import type { Duplex } from 'node:stream';
 import type { MuxConnection } from '../core/mux/contract.ts';
 import {
@@ -602,13 +602,19 @@ export class Switchboard extends CoreSwitchboard {
   /**
    * The host names that designate a listener bound to [address]: the
    * core's (the address, and the loopback names for loopback and wildcard
-   * binds) and, for a wildcard bind, the addresses of the network
-   * interfaces (IPv4 only for `0.0.0.0`), as Dart's node adds them.
+   * binds) and, for a wildcard bind, the machine's host name and the
+   * addresses of the network interfaces (IPv4 only for `0.0.0.0`), as
+   * Dart's node adds them.
    */
   protected override async hostsOf(address: string): Promise<Set<string>> {
     const hosts = await super.hostsOf(address);
     if (!isWildcard(address)) {
       return hosts;
+    }
+    try {
+      hosts.add(canonicalHost(hostname()));
+    } catch (error) {
+      this.log('debug', `cannot read the host name: ${error}`);
     }
     try {
       for (const addresses of Object.values(networkInterfaces())) {
