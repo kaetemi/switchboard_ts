@@ -11,7 +11,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // `talk_window_test.dart` again over a real mux channel: requests,
 // replies, streams, aborts, cancels, timeouts and EXTEND, item windows,
 // ordered answers, the end of the channel and of the connection. The unit
-// tests in test/unit/talk run the same over the fake mux pair; these check
+// tests in test/unit/talk run the same over the memory mux pair; these check
 // that the frame mux carries what they assume. Time is a ManualClock
 // throughout: the mux and Talk take it from the connection's options.
 //

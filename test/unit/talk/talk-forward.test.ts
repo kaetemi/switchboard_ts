@@ -25,7 +25,6 @@ import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { until } from '../../support/talk/bulk-peers.ts';
 import { Carrier } from '../../support/talk/carrier.ts';
-import { costOf, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { type FrameEnd, frameLink } from '../../support/talk/frame-link.ts';
 import {
   bytes,
@@ -44,6 +43,7 @@ import {
   rejectsStatus,
   toList,
 } from '../../support/talk/helpers.ts';
+import { costOf, type MemoryMuxChannel, memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 const hour = 3_600_000;
@@ -688,7 +688,7 @@ describe('frame level', () => {
     // the item FRAME_TOO_LARGE when sent, as `_LimitedSink` does: only a
     // mux channel (or one carrying it) refuses a frame when sending.
     const clock = new ManualClock();
-    const [left, right] = fakeMuxPair({ mux: { clock } });
+    const [left, right] = memoryMuxPair({ mux: { clock } });
     const toClient = left.open(empty);
     const client = await right.accept();
     const [toBackendLocal, toBackendForeign] = frameLink();
@@ -1138,7 +1138,7 @@ describe('bulk payloads', () => {
     near: Partial<TalkOptions> = {},
     far: Partial<TalkOptions> = {},
   ): Promise<[TalkChannel, TalkChannel]> {
-    const [left, right] = fakeMuxPair();
+    const [left, right] = memoryMuxPair();
     onTestFinished(async () => {
       await left.close();
       await right.close();
@@ -1344,8 +1344,8 @@ describe('forwarding credit', () => {
    * over it with [slot]) and the acceptor's end. Every Talk channel routes
    * the bulk channels of its connection.
    */
-  async function link(slot = false): Promise<[FakeMuxChannel | Carrier, FakeMuxChannel]> {
-    const [left, right] = fakeMuxPair();
+  async function link(slot = false): Promise<[MemoryMuxChannel | Carrier, MemoryMuxChannel]> {
+    const [left, right] = memoryMuxPair();
     onTestFinished(async () => {
       await left.close();
       await right.close();
@@ -1361,7 +1361,7 @@ describe('forwarding credit', () => {
    * batches of half the window), nothing while it is not.
    */
   function heldOf(talk: TalkChannel): number {
-    return (talk.raw as FakeMuxChannel).heldBytes;
+    return (talk.raw as MemoryMuxChannel).heldBytes;
   }
 
   /**
@@ -1374,7 +1374,7 @@ describe('forwarding credit', () => {
   async function relay(
     slotFront = false,
     slotBack = false,
-  ): Promise<[FakeMuxChannel, TalkChannel, TalkChannel, TalkChannel]> {
+  ): Promise<[MemoryMuxChannel, TalkChannel, TalkChannel, TalkChannel]> {
     const [frontRaw, client] = await link(slotFront);
     const [backRaw, backendRaw] = await link(slotBack);
     const front = new TalkChannel(frontRaw);
@@ -1385,7 +1385,7 @@ describe('forwarding credit', () => {
   }
 
   /** Sends request [id] on [client], a raw mux channel. */
-  function request(client: FakeMuxChannel, id: number, stream = false): void {
+  function request(client: MemoryMuxChannel, id: number, stream = false): void {
     void client.send(
       new TalkFrame({
         kind: TalkKind.message,
@@ -1398,7 +1398,7 @@ describe('forwarding credit', () => {
   }
 
   /** Counts the subframes [client], a raw mux channel, receives from now on. */
-  function countArrivals(client: FakeMuxChannel): () => number {
+  function countArrivals(client: MemoryMuxChannel): () => number {
     let answers = 0;
     void (async () => {
       const reader = client.readable.getReader();
@@ -1445,7 +1445,7 @@ describe('forwarding credit', () => {
       // The backend is held back by the intermediary's window, which holds
       // what waits for the client's.
       expect(heldOf(back)).toBeGreaterThan(30000);
-      expect((backend.raw as FakeMuxChannel).sendWindow).toBeLessThan(costOf(1004));
+      expect((backend.raw as MemoryMuxChannel).sendWindow).toBeLessThan(costOf(1004));
       items.resume();
       await request.done;
       await items.finished;

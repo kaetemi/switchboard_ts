@@ -1,5 +1,5 @@
 // Helpers of the binding's tests, a port of `switchboard_quic`'s
-// `test/harness.dart`: connection pairs over the fake provider, and a raw
+// `test/harness.dart`: connection pairs over the in-memory provider, and a raw
 // peer that writes and reads records by hand.
 import { expect, onTestFinished } from 'vitest';
 import { bytesEqual } from '../../../src/core/bytes.ts';
@@ -21,10 +21,10 @@ import {
 import { type Status, type StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { AsyncQueue } from '../../../src/core/util/async-queue.ts';
 import {
-  type FakeEndConfig,
-  type FakeQuicNetwork,
-  FakeQuicSession,
-} from '../../../src/testing/fake-quic-provider.ts';
+  type MemoryQuicEndConfig,
+  type MemoryQuicNetwork,
+  MemoryQuicSession,
+} from '../../../src/testing/memory-quic-provider.ts';
 
 /** How long a step of a test may take. */
 export const limit = 10_000;
@@ -220,18 +220,18 @@ export interface PairOptions {
   acceptor?: Partial<MuxOptions>;
   initiatorQuic?: Partial<QuicBindingOptions>;
   acceptorQuic?: Partial<QuicBindingOptions>;
-  initiatorEnd?: Partial<FakeEndConfig>;
-  acceptorEnd?: Partial<FakeEndConfig>;
-  network?: FakeQuicNetwork;
+  initiatorEnd?: Partial<MemoryQuicEndConfig>;
+  acceptorEnd?: Partial<MemoryQuicEndConfig>;
+  network?: MemoryQuicNetwork;
   initiatorIdentity?: string;
   acceptorIdentity?: string;
 }
 
-/** Two connections of the binding over a fake session pair, closed after the test. */
+/** Two connections of the binding over an in-memory session pair, closed after the test. */
 export async function connectionPair(
   init: PairOptions = {},
 ): Promise<[QuicBindingConnection, QuicBindingConnection]> {
-  const [a, b] = FakeQuicSession.pair({
+  const [a, b] = MemoryQuicSession.pair({
     ...(init.network === undefined ? {} : { network: init.network }),
     initiator: init.initiatorEnd ?? {},
     acceptor: init.acceptorEnd ?? {},
@@ -252,14 +252,14 @@ export async function connectionPair(
   return [client, accepted];
 }
 
-/** A peer that speaks the binding by hand, over the other end of a fake session. */
+/** A peer that speaks the binding by hand, over the other end of an in-memory session. */
 export class RawPeer {
-  readonly session: FakeQuicSession;
+  readonly session: MemoryQuicSession;
   readonly #streams: AsyncIterator<QuicStream>;
   control: QuicStream | undefined;
   controlReader: RecordReader | undefined;
 
-  constructor(session: FakeQuicSession) {
+  constructor(session: MemoryQuicSession) {
     this.session = session;
     // Taken for the session's life, so that streams queue in order.
     const queue = new AsyncQueue<QuicStream>();
@@ -391,8 +391,8 @@ export interface RawOptions {
   bindingIsInitiator?: boolean;
   options?: Partial<MuxOptions>;
   quicOptions?: Partial<QuicBindingOptions>;
-  bindingEnd?: Partial<FakeEndConfig>;
-  rawEnd?: Partial<FakeEndConfig>;
+  bindingEnd?: Partial<MemoryQuicEndConfig>;
+  rawEnd?: Partial<MemoryQuicEndConfig>;
   rawControl?: boolean;
   rawHello?: QuicHello;
   isWebTransport?: boolean;
@@ -410,7 +410,7 @@ export async function bindingAndRaw(
   const bindingIsInitiator = init.bindingIsInitiator ?? false;
   const bindingEnd = init.bindingEnd ?? {};
   const rawEnd = init.rawEnd ?? {};
-  const [a, b] = FakeQuicSession.pair({
+  const [a, b] = MemoryQuicSession.pair({
     initiator: bindingIsInitiator ? bindingEnd : rawEnd,
     acceptor: bindingIsInitiator ? rawEnd : bindingEnd,
   });

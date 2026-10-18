@@ -38,7 +38,7 @@ const hour = 60 * minute;
 const day = 24 * hour;
 
 /**
- * The fake clock starts away from 0, as `fake_async` starts at the time
+ * The manual clock starts away from 0, as `fake_async` starts at the time
  * of day: an instant of 0 must not read as unset.
  */
 const clockStart = 1_000_000;
@@ -308,7 +308,7 @@ describe('declared deadlines', () => {
 
   /**
    * A stream request from a raw peer's channel (default options unless
-   * given) on a fake clock, its outcome, and the time it was sent.
+   * given) on a manual clock, its outcome, and the time it was sent.
    */
   async function start(options: Partial<TalkOptions> = {}) {
     const clock = new ManualClock(clockStart);

@@ -8,7 +8,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // to the end (the groups 'timeouts', 'cancellation', 'failed payloads'
 // and 'bulk channel rules', and the tests between them): Talk bulk
 // payloads (wiki page "Polyverse Switchboard Talk", section "Bulk
-// payloads") over the fake mux pair. A Talk channel installs bulk routing
+// payloads") over the memory mux pair. A Talk channel installs bulk routing
 // on its connection itself; the peers here install it on both
 // connections at once, as the Dart `Peers` routes bulk channels with
 // `TalkChannel.adoptBulk` from the start. Timings the Dart tests take in
@@ -33,7 +33,6 @@ import {
   SourceController,
   until,
 } from '../../support/talk/bulk-peers.ts';
-import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { bulkMessage, bulkOpen } from '../../support/talk/frames.ts';
 import {
   bytes,
@@ -46,6 +45,7 @@ import {
   serve,
   sleep,
 } from '../../support/talk/helpers.ts';
+import { memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 
@@ -152,11 +152,11 @@ describe('timeouts', () => {
 test("messages sent before the peer's LIMITS are sized against the window it announces", async () => {
   // The server grants 256 bytes: frames of at most 112 bytes. The client
   // talks at once, before that LIMITS arrived.
-  // Adapted: the fake mux has no LIMITS frame; its channels wait for
+  // Adapted: the memory mux has no LIMITS frame; its channels wait for
   // `announceLimits`, and the subframe length the client's channel
   // assumes before it (the default window's, as the frame mux) is
   // modelled here.
-  const [client, server] = fakeMuxPair({ mux: { initialWindow: 256 }, awaitLimits: true });
+  const [client, server] = memoryMuxPair({ mux: { initialWindow: 256 }, awaitLimits: true });
   onTestFinished(async () => {
     await client.close();
     await server.close();
@@ -199,7 +199,7 @@ test('a large answer to a request completes while its requester drains', async (
   const request = await answering.promise;
   // The client sends GOAWAY: no new channels toward it, but the bulk
   // channel of an answer on a channel it opened is not a new one.
-  // Adapted: the fake mux closes at once on GOAWAY; the drain is modelled
+  // Adapted: the memory mux closes at once on GOAWAY; the drain is modelled
   // by holding its close until the client's channel is done.
   const close = peers.client.close.bind(peers.client);
   peers.client.close = async () => {
@@ -520,7 +520,7 @@ describe('bulk channel rules', () => {
   test('bulk payloads nobody reads yet do not pause the connection', async () => {
     // A small receive mark: 20 unread payloads, a window each, are well
     // beyond it.
-    // Adapted: the fake mux has no receive high-water mark (nor
+    // Adapted: the memory mux has no receive high-water mark (nor
     // `isReceivePaused`); what it models is what the connection's channels
     // buffer unread, which a paused connection would be paused for.
     const peers = await Peers.connect({ serverOptions: { streamBulk: () => true } });

@@ -1,4 +1,4 @@
-// Switchboard nodes over the QUIC binding, end to end over the fake
+// Switchboard nodes over the QUIC binding, end to end over the in-memory
 // provider: QuicSwitchboardBinding and QuicSwitchboardListener, the dial's
 // bounds and stack settings, identity under the rules of the binding page,
 // Talk and its bulk payloads over independent streams, the proxy between
@@ -54,13 +54,13 @@ import {
 } from '../../../src/core/talk/index.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import {
-  type FakeEndConfig,
-  type FakeQuicConnector,
-  FakeQuicNetwork,
-  FakeQuicSession,
-} from '../../../src/testing/fake-quic-provider.ts';
-import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
+  type MemoryQuicConnector,
+  type MemoryQuicEndConfig,
+  MemoryQuicNetwork,
+  MemoryQuicSession,
+} from '../../../src/testing/memory-quic-provider.ts';
 import { node as harnessNode, onCleanup, tagOf, useMux } from '../../support/node/harness.ts';
+import { issueCredential, TestVerifier } from '../../support/node/seeded-identity.ts';
 import {
   bindingAndRaw,
   bytes,
@@ -109,10 +109,10 @@ function node(options: SwitchboardOptions = {}): Switchboard {
 
 /** A listener of [server] at `quic://[host]:4433`, closed after the test. */
 async function listen(
-  network: FakeQuicNetwork,
+  network: MemoryQuicNetwork,
   server: Switchboard,
   host: string,
-  options: QuicSwitchboardListenerOptions & { config?: Partial<FakeEndConfig> } = {},
+  options: QuicSwitchboardListenerOptions & { config?: Partial<MemoryQuicEndConfig> } = {},
 ): Promise<QuicSwitchboardListener> {
   const listener = await QuicSwitchboardListener.start(
     server,
@@ -159,7 +159,7 @@ const npcAddress = (): ChannelAddress => new ChannelAddress({ type: npc });
 
 describe('two nodes', () => {
   test('Talk request and reply, each channel on a stream of its own, pooled by endpoint', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
     const listener = await listen(network, server, 'echo-1');
@@ -180,7 +180,7 @@ describe('two nodes', () => {
     expect(listener.accepted[0]?.peerHello).toBeDefined();
     // Raw QUIC: the session was dialled with the binding's ALPN and the
     // node's windows.
-    const config = (binding.connector as FakeQuicConnector).configs[0];
+    const config = (binding.connector as MemoryQuicConnector).configs[0];
     expect(config?.alpn).toEqual(['switchboard']);
     expect(config?.streamReceiveWindow).toBe(client.muxOptions.initialWindow);
     expect(config?.verifyCertificate).toBe(false);
@@ -189,7 +189,7 @@ describe('two nodes', () => {
   test('a 3 MiB bulk payload each way, its streams overtaking the parent and arriving out of order', async () => {
     // The first channel's stream is slow both ways: the bulk streams opened
     // after it arrive first; the others jitter.
-    const network = new FakeQuicNetwork({
+    const network = new MemoryQuicNetwork({
       delay: (info) => (info.ordinal === 1 ? 60 : (info.ordinal * 7) % 5),
     });
     const server = node();
@@ -202,7 +202,7 @@ describe('two nodes', () => {
     expect(reply.isBulk).toBe(true);
     expect(same(reply.payload, payload)).toBe(true);
     // The bulk stream (2) arrived before its parent (1).
-    const [, accepted] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [, accepted] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     expect(accepted.announced.indexOf(2)).toBeLessThan(accepted.announced.indexOf(1));
     // Two at once, numbers 1 and 2 racing each other.
     const twins = await within(
@@ -217,7 +217,7 @@ describe('two nodes', () => {
   }, 60_000);
 
   test('many channels at once over jittered streams: beyond the channels a listener states the pool opens another connection, and a burst of opens waits for stream credit', async () => {
-    const network = new FakeQuicNetwork({
+    const network = new MemoryQuicNetwork({
       delay: (info, fromInitiator) =>
         (((info.ordinal * 7919 + (fromInitiator ? 13 : 0)) % 97) * 50) / 1000,
     });
@@ -267,7 +267,7 @@ describe('two nodes', () => {
   }, 120_000);
 
   test('whenWritable paces a publisher at the stream window', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     let served: TalkChannelLike | undefined;
     server.registerService(echo, (incoming) => {
@@ -311,7 +311,7 @@ describe('two nodes', () => {
   });
 
   test('https endpoints go to the connector, which may not dial them: the node moves to the next endpoint', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService, { instance: 1 });
     const listener = await listen(network, server, 'both-1');
@@ -333,7 +333,7 @@ describe('two nodes', () => {
 
   test('a quic endpoint without a port is refused, an unreachable one is unavailable', async () => {
     const client = node({
-      bindings: [new QuicSwitchboardBinding(new FakeQuicNetwork().connector())],
+      bindings: [new QuicSwitchboardBinding(new MemoryQuicNetwork().connector())],
     });
     await expectCode(client.connect('quic://nowhere'), StatusCode.invalidArgument);
     await expectCode(client.connect('quic://nowhere:1'), StatusCode.unavailable);
@@ -349,7 +349,7 @@ describe('dialling', () => {
   });
 
   test('a connect that outlasts the dial timeout fails UNAVAILABLE, and the session it yields later is closed CANCELLED', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     const listener = await listen(network, server, 'slow-1');
     const connector = network.connector();
@@ -368,7 +368,7 @@ describe('dialling', () => {
     // The handshake completes after all: its session is closed at once.
     open();
     await until(() => network.pairs.length > 0);
-    const [client, acceptor] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [client, acceptor] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     const end = await within(client.done);
     expect(client.closes).toEqual([[StatusCode.cancelled, 'dial abandoned']]);
     expect([end.code, end.byPeer]).toEqual([StatusCode.cancelled, false]);
@@ -377,7 +377,7 @@ describe('dialling', () => {
   });
 
   test('through a node: its connect timeout bounds the dial, and the late session is closed CANCELLED', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
     const listener = await listen(network, server, 'slow-2');
@@ -392,7 +392,7 @@ describe('dialling', () => {
     expect(connector.configs[0]?.handshakeTimeout).toBe(100);
     open();
     await until(() => network.pairs.length > 0);
-    const [session] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [session] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     await within(session.done);
     expect(session.closes).toEqual([[StatusCode.cancelled, 'dial abandoned']]);
     expect(binding.dialled).toHaveLength(0);
@@ -404,7 +404,7 @@ describe('dialling', () => {
   });
 
   test('without a dial timeout the connect is not bounded, nor its handshake', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     const listener = await listen(network, server, 'slow-3');
     const connector = network.connector();
@@ -423,7 +423,7 @@ describe('dialling', () => {
   });
 
   test("the stack keep-alive is the binding's: a third of the idle timeout by default, none without one, or as given, whatever the control PING interval", async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const dialledWith = async (binding: QuicSwitchboardBinding, options: Partial<MuxOptions>) => {
       // Nothing listens: the dial fails, and the connector kept the
       // configuration it was asked for.
@@ -431,7 +431,7 @@ describe('dialling', () => {
         binding.dial('quic://nowhere:1', settings(options, limit)),
         StatusCode.unavailable,
       );
-      return (binding.connector as FakeQuicConnector).configs[0];
+      return (binding.connector as MemoryQuicConnector).configs[0];
     };
     for (const interval of [undefined, 1000, 10_000, 300_000]) {
       const options = { keepAliveInterval: interval };
@@ -465,7 +465,7 @@ describe('dialling', () => {
   });
 
   test('a negative idle timeout or keep-alive is a RangeError', () => {
-    const connector = new FakeQuicNetwork().connector();
+    const connector = new MemoryQuicNetwork().connector();
     expect(() => new QuicSwitchboardBinding(connector, { idleTimeout: -1 })).toThrow(RangeError);
     expect(() => new QuicSwitchboardBinding(connector, { keepAlive: -1 })).toThrow(RangeError);
   });
@@ -473,7 +473,7 @@ describe('dialling', () => {
 
 describe('identity', () => {
   test('nodes identify both ways with exporter-bound proofs, and the scoped policy admits the identified peer', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node({
       verifier: new TestVerifier(),
       credential: await credential('server-1', serverKey),
@@ -508,7 +508,7 @@ describe('identity', () => {
 
   test('a channel that overtakes the IDENT on its own stream is held by the node until the peer identified', async () => {
     // The control stream (0) is slow: the channel's stream arrives first.
-    const network = new FakeQuicNetwork({ delay: (info) => (info.ordinal === 0 ? 60 : 0) });
+    const network = new MemoryQuicNetwork({ delay: (info) => (info.ordinal === 0 ? 60 : 0) });
     let asked = 0;
     const scoped = ChannelPolicies.scoped();
     const server = node({ verifier: new TestVerifier() });
@@ -541,7 +541,7 @@ describe('identity', () => {
   });
 
   test('an initiator with a credential reaches only an acceptor that identifies in turn', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     // A listener without a credential cannot identify.
     const server = node({ verifier: new TestVerifier() });
     server.registerService(npc, answer);
@@ -579,7 +579,7 @@ describe('identity', () => {
   });
 
   test('a node without the exporter cannot identify to a self-signed listener, and a nonce-bound IDENT is refused', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node({ verifier: new TestVerifier() });
     server.registerService(npc, answer);
     const listener = await listen(network, server, 'id-4', { policy: ChannelPolicies.scoped() });
@@ -625,7 +625,7 @@ describe('identity', () => {
   });
 
   test('a bearer credential goes only to an authenticated end: a pin, not a self-signed certificate', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const hmac = CredentialIssuer.hmac('k1', new Uint8Array(32));
     const bearer = await hmac.issue({
       kind: CredentialKind.node,
@@ -675,7 +675,7 @@ describe('identity', () => {
 
 describe('the proxy between the frame mux and the binding', () => {
   test('a frame mux client through a proxy to a QUIC backend, bulk payloads included', async () => {
-    const network = new FakeQuicNetwork({
+    const network = new MemoryQuicNetwork({
       delay: (info) => (info.ordinal === 1 ? 30 : 0),
     });
     const backend = node();
@@ -713,7 +713,7 @@ describe('the proxy between the frame mux and the binding', () => {
   test('a QUIC client through a proxy to a frame mux backend: bulk twins forwarded in order', async () => {
     // The parent stream is slow: the two bulk streams of the client reach
     // the proxy before their references, the second one first.
-    const network = new FakeQuicNetwork({
+    const network = new MemoryQuicNetwork({
       delay: (info) => (info.ordinal === 1 ? 50 : info.ordinal === 2 ? 25 : 0),
     });
     const backend = node();
@@ -757,7 +757,7 @@ describe('the proxy between the frame mux and the binding', () => {
     expect(same(received[0] as Uint8Array, first)).toBe(true);
     expect(same(received[1] as Uint8Array, second)).toBe(true);
     // The second bulk stream reached the proxy first.
-    const [, accepted] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [, accepted] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     expect(accepted.announced.indexOf(3)).toBeLessThan(accepted.announced.indexOf(2));
   }, 60_000);
 });
@@ -852,7 +852,7 @@ describe("Talk's bulk routing on a QUIC connection", () => {
 
 describe('the end of a connection', () => {
   test("a node closing sends GOAWAY: the peer's channels end GOING_AWAY, and the session closes with code 0", async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
     const listener = await listen(network, server, 'end-1', {
@@ -866,12 +866,12 @@ describe('the end of a connection', () => {
     await server.close();
     expectStatus(await within(connection.peerGoAwayStatus), StatusCode.goingAway);
     expectStatus(await within(connection.done), StatusCode.goingAway);
-    const [, accepted] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [, accepted] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     expect(accepted.closes[0]?.[0]).toBe(0);
   });
 
   test('a GOAWAY with a status reaches the peer, and the session close carries it with its reason', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
     const listener = await listen(network, server, 'end-2', {
@@ -887,13 +887,13 @@ describe('the end of a connection', () => {
     expect(await within(accepted.peerGoAwayStatus)).toEqual(
       Status.of(StatusCode.unavailable, 'upgrade'),
     );
-    const [initiator] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [initiator] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     expect(initiator.closes[0]).toEqual([14, 'upgrade']);
     expect(await within(connection.done)).toEqual(Status.of(StatusCode.unavailable, 'upgrade'));
   });
 
   test('a lost session ends the channels with CONNECTION_LOST', async () => {
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const server = node();
     server.registerService(echo, echoService);
     const listener = await listen(network, server, 'end-3', {
@@ -902,7 +902,7 @@ describe('the end of a connection', () => {
     const client = node({ bindings: [new QuicSwitchboardBinding(network.connector())] });
     const talk = await client.openTalkAt(listener.endpoint, echoAddress());
     await ask(talk, bytes('x'));
-    const [initiator] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [initiator] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     initiator.lose('idle timeout');
     expectStatus(await within((talk.raw as MuxChannel).done), StatusCode.connectionLost);
   });
@@ -911,10 +911,10 @@ describe('the end of a connection', () => {
 describe('review cases', () => {
   test('closing the listener while a session starts keeps it from being adopted', async () => {
     const server = node();
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const provider = network.listen('quic://listener:4433');
     const listener = await QuicSwitchboardListener.start(server, provider);
-    const [a, b] = FakeQuicSession.pair({ network });
+    const [a, b] = MemoryQuicSession.pair({ network });
     let open = (): void => {};
     b.exporterGate = new Promise((resolve) => {
       open = resolve;
@@ -931,7 +931,7 @@ describe('review cases', () => {
   test('a ReconnectingClient reopens its persistent channel over a new QUIC session after a loss', async () => {
     const server = node();
     server.registerService(echo, echoService);
-    const network = new FakeQuicNetwork();
+    const network = new MemoryQuicNetwork();
     const listener = await listen(network, server, 'again-1', {
       identityRules: QuicIdentityRules.none,
     });
@@ -946,7 +946,7 @@ describe('review cases', () => {
     });
     await until(() => ready.length === 1);
     expect(text(await ask(ready[0] as TalkChannel, bytes('one')))).toBe('one');
-    const [session] = network.pairs[0] as [FakeQuicSession, FakeQuicSession];
+    const [session] = network.pairs[0] as [MemoryQuicSession, MemoryQuicSession];
     session.lose();
     await until(() => ready.length === 2);
     expect(listener.accepted).toHaveLength(2);

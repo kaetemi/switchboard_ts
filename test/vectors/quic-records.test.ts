@@ -41,7 +41,7 @@ import {
   writeQuicRecordHeader,
 } from '../../src/core/quic/index.ts';
 import { ProtocolError, Status, StatusCode } from '../../src/core/status.ts';
-import { FakeQuicSession } from '../../src/testing/fake-quic-provider.ts';
+import { MemoryQuicSession } from '../../src/testing/memory-quic-provider.ts';
 import { type WikiVector, wikiBytes, wikiVector, wikiVectors } from '../support/vectors.ts';
 
 /** C1 of the page "Polyverse Switchboard Test Vectors". */
@@ -564,8 +564,8 @@ describe('exporter', () => {
   });
 
   test('both ends of a session derive the same exporter, two sessions different ones', async () => {
-    const [a, b] = FakeQuicSession.pair();
-    const [c] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
+    const [c] = MemoryQuicSession.pair();
     const empty = new Uint8Array(0);
     const x = await a.exportKeyingMaterial(rawQuicExporterLabel, empty, 32);
     expect(hex((await b.exportKeyingMaterial(rawQuicExporterLabel, empty, 32)) ?? [])).toBe(

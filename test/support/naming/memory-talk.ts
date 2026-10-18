@@ -22,7 +22,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // channel abort. Frames are objects, not bytes, delivered one per
 // microtask as the controller's asynchronous stream delivers them (or
 // synchronously, with `sync`); bulk payloads and replies that are requests
-// are not supported. Its frame shape (`FakeFrame`) is also what the tests
+// are not supported. Its frame shape (`LinkFrame`) is also what the tests
 // see of the real links' wire.
 
 import { type PayloadLike, toPayload, utf8Decode } from '../../../src/core/bytes.ts';
@@ -45,7 +45,7 @@ import { type Clock, systemClock, type TimerHandle } from '../../../src/core/uti
 import { Deferred } from '../../../src/core/util/deferred.ts';
 
 /** The peer sent ABORT (the Talk thread's `TalkAbortError`). */
-export class FakeTalkAbortError extends SwitchboardError {
+export class MemoryTalkAbortError extends SwitchboardError {
   readonly isChannelAbort: boolean;
 
   constructor(status: Status, isChannelAbort: boolean) {
@@ -56,7 +56,7 @@ export class FakeTalkAbortError extends SwitchboardError {
 }
 
 /** A frame on the in-memory link. */
-export type FakeFrame =
+export type LinkFrame =
   | {
       readonly kind: 'message';
       readonly procedure: Name;
@@ -82,10 +82,10 @@ export type FakeFrame =
   | { readonly kind: 'close'; readonly status: Status };
 
 /** What a link does with the frames of one direction. */
-export type FrameFilter = (frame: FakeFrame) => boolean;
+export type FrameFilter = (frame: LinkFrame) => boolean;
 
-/** Options of {@link fakeTalkPair}. */
-export interface FakeTalkPairOptions {
+/** Options of {@link memoryTalkPair}. */
+export interface MemoryTalkPairOptions {
   /** Options of the first channel. */
   readonly a?: Partial<TalkOptions>;
   /** Options of the second channel. */
@@ -99,11 +99,11 @@ export interface FakeTalkPairOptions {
 }
 
 /** Two connected channels. */
-export function fakeTalkPair(
-  options: FakeTalkPairOptions = {},
-): [FakeTalkChannel, FakeTalkChannel] {
-  const a = new FakeTalkChannel(talkOptions(options.a), options.sync ?? false);
-  const b = new FakeTalkChannel(talkOptions(options.b), options.sync ?? false);
+export function memoryTalkPair(
+  options: MemoryTalkPairOptions = {},
+): [MemoryTalkChannel, MemoryTalkChannel] {
+  const a = new MemoryTalkChannel(talkOptions(options.a), options.sync ?? false);
+  const b = new MemoryTalkChannel(talkOptions(options.b), options.sync ?? false);
   a.connect(b, options.dropAtoB);
   b.connect(a, options.dropBtoA);
   return [a, b];
@@ -121,7 +121,7 @@ interface Outgoing {
   unlisten: (() => void) | undefined;
 }
 
-type LaneEntry = { message: FakeMessage } | { outcome: () => void };
+type LaneEntry = { message: MemoryTalkMessage } | { outcome: () => void };
 
 /** The incoming messages: one consumer, answers to `ordered` requests in their place. */
 class MessageLane implements AsyncIterable<TalkMessage> {
@@ -136,9 +136,9 @@ class MessageLane implements AsyncIterable<TalkMessage> {
    * one yet: it may not have seen it, so answers wait behind it.
    */
   #handedOut = false;
-  readonly #onCancel: (messages: FakeMessage[]) => void;
+  readonly #onCancel: (messages: MemoryTalkMessage[]) => void;
 
-  constructor(onCancel: (messages: FakeMessage[]) => void) {
+  constructor(onCancel: (messages: MemoryTalkMessage[]) => void) {
     this.#onCancel = onCancel;
   }
 
@@ -151,7 +151,7 @@ class MessageLane implements AsyncIterable<TalkMessage> {
     return this.#ended;
   }
 
-  push(message: FakeMessage): void {
+  push(message: MemoryTalkMessage): void {
     if (this.#ended) {
       return;
     }
@@ -241,7 +241,7 @@ class MessageLane implements AsyncIterable<TalkMessage> {
     }
     this.#cancelled = true;
     const entries = this.#entries.splice(0);
-    const dropped: FakeMessage[] = [];
+    const dropped: MemoryTalkMessage[] = [];
     for (const entry of entries) {
       if ('outcome' in entry) {
         entry.outcome();
@@ -335,9 +335,9 @@ class ItemQueue implements AsyncIterable<TalkMessage> {
 
 const textDecoder = utf8Decode;
 
-/** An incoming message of a {@link FakeTalkChannel}. */
-export class FakeMessage implements TalkMessage {
-  readonly channel: FakeTalkChannel;
+/** An incoming message of a {@link MemoryTalkChannel}. */
+export class MemoryTalkMessage implements TalkMessage {
+  readonly channel: MemoryTalkChannel;
   readonly procedure: Name;
   readonly payload: Uint8Array;
   readonly requestId: number;
@@ -357,8 +357,8 @@ export class FakeMessage implements TalkMessage {
   #replyTimeout: number | undefined;
 
   constructor(
-    channel: FakeTalkChannel,
-    frame: Extract<FakeFrame, { kind: 'message' }>,
+    channel: MemoryTalkChannel,
+    frame: Extract<LinkFrame, { kind: 'message' }>,
     responseTo?: number,
   ) {
     this.channel = channel;
@@ -571,50 +571,50 @@ export class FakeMessage implements TalkMessage {
   }
 
   replyRequest(): Promise<TalkMessage> {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 
   startReplyRequest(): TalkRequest {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 
   replyStreamRequest(): TalkStream {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 
   replyItemRequest(): Promise<TalkMessage> {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 
   startReplyItemRequest(): TalkRequest {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 
   replyItemStreamRequest(): TalkStream {
-    throw new Error('not supported by the fake Talk channel');
+    throw new Error('not supported by the memory Talk channel');
   }
 }
 
-/** One end of a {@link fakeTalkPair}. */
-export class FakeTalkChannel implements TalkChannel {
+/** One end of a {@link memoryTalkPair}. */
+export class MemoryTalkChannel implements TalkChannel {
   readonly options: TalkOptions;
   readonly raw: MuxChannel | undefined = undefined;
   readonly clock: Clock;
   readonly #sync: boolean;
-  #peer: FakeTalkChannel | undefined;
+  #peer: MemoryTalkChannel | undefined;
   #drop: FrameFilter | undefined;
   #nextRequestId = 1;
   readonly #outgoing = new Map<number, Outgoing>();
-  readonly #incoming = new Map<number, FakeMessage>();
+  readonly #incoming = new Map<number, MemoryTalkMessage>();
   readonly #lane: MessageLane;
   readonly #done = new Deferred<Status>();
   #open = true;
 
   /** Every frame this side sent, in order (for tests that check the wire). */
-  readonly sent: FakeFrame[] = [];
+  readonly sent: LinkFrame[] = [];
 
   /** Frames written and not delivered yet, and whether their delivery is scheduled. */
-  readonly #pending: FakeFrame[] = [];
+  readonly #pending: LinkFrame[] = [];
   #scheduled = false;
 
   constructor(options: TalkOptions, sync: boolean) {
@@ -631,7 +631,7 @@ export class FakeTalkChannel implements TalkChannel {
   }
 
   /** Links this side to [peer]. */
-  connect(peer: FakeTalkChannel, drop?: FrameFilter): void {
+  connect(peer: MemoryTalkChannel, drop?: FrameFilter): void {
     this.#peer = peer;
     this.#drop = drop;
   }
@@ -687,7 +687,7 @@ export class FakeTalkChannel implements TalkChannel {
   }
 
   /** Sends [frame] to the peer (unless the filter drops it). */
-  write(frame: FakeFrame): void {
+  write(frame: LinkFrame): void {
     this.sent.push(frame);
     const peer = this.#peer;
     if (peer === undefined || this.#drop?.(frame) === true) {
@@ -707,7 +707,7 @@ export class FakeTalkChannel implements TalkChannel {
    * the delivery set off, as Dart's asynchronous `StreamController` (the
    * Dart harness's `StreamChannelController`) delivers its events.
    */
-  #schedule(peer: FakeTalkChannel): void {
+  #schedule(peer: MemoryTalkChannel): void {
     if (this.#scheduled) {
       return;
     }
@@ -724,7 +724,7 @@ export class FakeTalkChannel implements TalkChannel {
     });
   }
 
-  forgetIncoming(message: FakeMessage): void {
+  forgetIncoming(message: MemoryTalkMessage): void {
     if (this.#incoming.get(message.requestId) === message) {
       this.#incoming.delete(message.requestId);
     }
@@ -784,7 +784,7 @@ export class FakeTalkChannel implements TalkChannel {
       },
       window: undefined,
       grant() {
-        throw new Error('the fake Talk pair has no item windows');
+        throw new Error('the memory Talk pair has no item windows');
       },
       items,
       done: out.response.promise,
@@ -896,7 +896,7 @@ export class FakeTalkChannel implements TalkChannel {
   }
 
   /** A frame from the peer. */
-  receive(frame: FakeFrame): void {
+  receive(frame: LinkFrame): void {
     if (!this.#open) {
       return;
     }
@@ -918,7 +918,7 @@ export class FakeTalkChannel implements TalkChannel {
             message.cancelled();
           }
         } else {
-          this.#lost(frame.status, new FakeTalkAbortError(frame.status, true));
+          this.#lost(frame.status, new MemoryTalkAbortError(frame.status, true));
         }
         return;
       case 'extend':
@@ -930,8 +930,8 @@ export class FakeTalkChannel implements TalkChannel {
     }
   }
 
-  #onMessage(frame: Extract<FakeFrame, { kind: 'message' }>): void {
-    const message = new FakeMessage(this, frame);
+  #onMessage(frame: Extract<LinkFrame, { kind: 'message' }>): void {
+    const message = new MemoryTalkMessage(this, frame);
     if (frame.requestId !== 0) {
       if (this.#incoming.size >= this.options.maxIncomingRequests) {
         this.write({
@@ -953,12 +953,12 @@ export class FakeTalkChannel implements TalkChannel {
     this.#lane.push(message);
   }
 
-  #onResponse(frame: Extract<FakeFrame, { kind: 'message' }>): void {
+  #onResponse(frame: Extract<LinkFrame, { kind: 'message' }>): void {
     const out = this.#outgoing.get(frame.responseId);
     if (out === undefined) {
       return;
     }
-    const message = new FakeMessage(this, frame);
+    const message = new MemoryTalkMessage(this, frame);
     if (frame.item) {
       if (out.items !== undefined) {
         this.#arm(out, out.gap);
@@ -984,7 +984,7 @@ export class FakeTalkChannel implements TalkChannel {
       return;
     }
     this.#end(out);
-    const error = new FakeTalkAbortError(status, false);
+    const error = new MemoryTalkAbortError(status, false);
     if (out.ordered) {
       this.#lane.pushOutcome(() => this.#fail(out, error));
     } else {
@@ -992,7 +992,7 @@ export class FakeTalkChannel implements TalkChannel {
     }
   }
 
-  #onExtend(frame: Extract<FakeFrame, { kind: 'extend' }>): void {
+  #onExtend(frame: Extract<LinkFrame, { kind: 'extend' }>): void {
     const out = this.#outgoing.get(frame.responseId);
     if (out === undefined) {
       return;

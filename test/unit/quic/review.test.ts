@@ -36,7 +36,10 @@ import { Status, StatusCode } from '../../../src/core/status.ts';
 import { TalkBulkOpen, TalkBulkReference } from '../../../src/core/talk/talk-bulk.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { FakeQuicSession, type FakeQuicStream } from '../../../src/testing/fake-quic-provider.ts';
+import {
+  MemoryQuicSession,
+  type MemoryQuicStream,
+} from '../../../src/testing/memory-quic-provider.ts';
 import {
   bindingAndRaw,
   bytes,
@@ -70,10 +73,10 @@ function expectSameStatus(actual: Status, expected: Status): void {
   expect(actual.equals(expected), `${actual}, expected ${expected}`).toBe(true);
 }
 
-/** The fake stream [connection] opened or accepted last. */
-function lastStream(connection: QuicBindingConnection): FakeQuicStream {
-  const streams = (connection.session as FakeQuicSession).streams;
-  return streams[streams.length - 1] as FakeQuicStream;
+/** The in-memory stream [connection] opened or accepted last. */
+function lastStream(connection: QuicBindingConnection): MemoryQuicStream {
+  const streams = (connection.session as MemoryQuicSession).streams;
+  return streams[streams.length - 1] as MemoryQuicStream;
 }
 
 /** Everything [channel] delivers until its end, joined. */
@@ -140,7 +143,7 @@ describe('review regressions', () => {
     const channel = connection.open(new Uint8Array(0));
     const stream = await raw.nextStream();
     await channel.whenWritable;
-    (stream as FakeQuicStream).stopWithoutCode();
+    (stream as MemoryQuicStream).stopWithoutCode();
     await until(() => !channel.canSend);
     await stream.write(encodeCloseRecord(Status.of(StatusCode.unknown, 'stopped')));
     await stream.finish();
@@ -150,12 +153,12 @@ describe('review regressions', () => {
   test('no-code STOP_SENDING on control is a protocol error', async () => {
     const [connection, raw] = await bindingAndRaw();
     await until(() => connection.peerHello !== undefined);
-    (raw.control as FakeQuicStream).stopWithoutCode();
+    (raw.control as MemoryQuicStream).stopWithoutCode();
     expectStatus(await within(connection.done), StatusCode.protocolError);
   });
 
   test('failed exporter is not silently negotiated as unavailable', async () => {
-    const [a] = FakeQuicSession.pair();
+    const [a] = MemoryQuicSession.pair();
     a.exporterFailure = new Error('export failed');
     const connection = await QuicBindingConnection.start(a, { options: fast });
     closeAfter(connection);
@@ -163,7 +166,7 @@ describe('review regressions', () => {
   });
 
   test('session loss interrupts an exporter still pending', async () => {
-    const [a] = FakeQuicSession.pair();
+    const [a] = MemoryQuicSession.pair();
     const gate = new Deferred<void>();
     a.exporterGate = gate.promise;
     const starting = QuicBindingConnection.start(a, { options: fast });
@@ -362,7 +365,7 @@ describe('review regressions', () => {
 
   for (const initiator of [true, false]) {
     test(`missing HELLO is bounded (initiator ${initiator})`, async () => {
-      const [a, b] = FakeQuicSession.pair();
+      const [a, b] = MemoryQuicSession.pair();
       const raw = new RawPeer(initiator ? b : a);
       const connection = await QuicBindingConnection.start(initiator ? a : b, {
         options: fast,
@@ -398,7 +401,7 @@ describe('review regressions', () => {
     });
     const verifier = new CredentialVerifier();
     await verifier.addIssuer(issuer);
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     b.exporterXor = 1;
     const receiver = await QuicBindingConnection.start(b, {
       options: { ...fast, identityVerifier: verifier },
@@ -417,7 +420,7 @@ describe('review regressions', () => {
     await until(() => connection.peerHello !== undefined);
     const first = await raw.openRaw([6]);
     // A header byte has arrived; the first OPEN remains incomplete.
-    await until(() => (connection.session as FakeQuicSession).announced.length === 2);
+    await until(() => (connection.session as MemoryQuicSession).announced.length === 2);
     const second = await raw.openRaw([6]);
     expect(await within(second.stopped)).toBe(StatusCode.resourceExhausted);
     expect(await within(first.stopped)).toBe(StatusCode.deadlineExceeded);
@@ -442,7 +445,7 @@ describe('review regressions', () => {
     const incoming = nextIncoming(connection);
     const stream = await raw.openRaw(encodeOpenRecord(2, []));
     const channel = await incoming;
-    (stream as FakeQuicStream).resetWithoutCode();
+    (stream as MemoryQuicStream).resetWithoutCode();
     expectStatus(await within(channel.done), StatusCode.unknown);
     expect(connection.isOpen).toBe(true);
   });
@@ -452,7 +455,7 @@ describe('review regressions', () => {
     const incoming = nextIncoming(b);
     const channel = a.open(new Uint8Array(0));
     await incoming;
-    (b.session as FakeQuicSession).drainPeer();
+    (b.session as MemoryQuicSession).drainPeer();
     expectStatus(await within(a.peerGoAwayStatus), StatusCode.goingAway);
     expectThrowsCode(() => a.open(new Uint8Array(0)), StatusCode.failedPrecondition);
     await within(channel.close());
@@ -461,7 +464,7 @@ describe('review regressions', () => {
 
   test('unidirectional streams are refused without losing the connection', async () => {
     const [a, b] = await connectionPair();
-    const stream = (a.session as FakeQuicSession).openUnidirectional();
+    const stream = (a.session as MemoryQuicSession).openUnidirectional();
     expect(await within(stream.stopped.promise)).toBe(StatusCode.unsupported);
     await within(b.ping());
     expect(a.isOpen && b.isOpen).toBe(true);
@@ -491,7 +494,7 @@ describe('review regressions', () => {
 
   test('stream open failure has a channel status, not CONNECTION_LOST', async () => {
     const [connection] = await bindingAndRaw({ bindingIsInitiator: true });
-    (connection.session as FakeQuicSession).openFailure = new QuicError('streamLimit', 'limit');
+    (connection.session as MemoryQuicSession).openFailure = new QuicError('streamLimit', 'limit');
     const channel = connection.open(new Uint8Array(0));
     expectStatus(await within(channel.done), StatusCode.resourceExhausted);
     expect(connection.isOpen).toBe(true);
@@ -514,7 +517,7 @@ describe('review regressions', () => {
 
   test('incoming stream source failure ends the session', async () => {
     const [connection] = await bindingAndRaw();
-    (connection.session as FakeQuicSession).failIncoming(new Error('failed source'));
+    (connection.session as MemoryQuicSession).failIncoming(new Error('failed source'));
     expectStatus(await within(connection.done), StatusCode.connectionLost);
     await connection.goAway();
   });

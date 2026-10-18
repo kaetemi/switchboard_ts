@@ -1,5 +1,5 @@
 // A man in the middle between two Switchboard nodes over the QUIC binding,
-// on the fake provider: the group "a man in the middle" of the identity
+// on the in-memory provider: the group "a man in the middle" of the identity
 // tests of `switchboard_quic`'s `test/switchboard_test.dart`. The relay
 // accepts the victim's sessions at `quic://mitm:4433`, dials the real
 // listener for each, and copies every stream both ways; it may clear the
@@ -24,9 +24,9 @@ import { StatusCode } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
-import { FakeQuicNetwork } from '../../../src/testing/fake-quic-provider.ts';
-import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
+import { MemoryQuicNetwork } from '../../../src/testing/memory-quic-provider.ts';
 import { node as harnessNode, onCleanup, tagOf } from '../../support/node/harness.ts';
+import { issueCredential, TestVerifier } from '../../support/node/seeded-identity.ts';
 import { bytes, expectCode, fast } from './harness.ts';
 
 const npc = Name.of('npc');
@@ -71,7 +71,7 @@ const answer: ChannelHandler = (incoming) => {
  * Relays every session dialled to `quic://mitm:4433` to [target], stream by stream, clearing the
  * EXPORTER flags of both HELLOs when [strip].
  */
-function mitm(network: FakeQuicNetwork, target: string, strip: boolean): void {
+function mitm(network: MemoryQuicNetwork, target: string, strip: boolean): void {
   const listener = network.listen(mitmEndpoint);
   onCleanup(() => listener.close());
   const connector = network.connector();
@@ -133,7 +133,7 @@ function mitm(network: FakeQuicNetwork, target: string, strip: boolean): void {
 
 /** The real listener at `quic://[host]:4433`: a node identified as `server-1`, admitting what the scoped policy admits. */
 async function target(
-  network: FakeQuicNetwork,
+  network: MemoryQuicNetwork,
   host: string,
   identityRules: QuicIdentityRules = QuicIdentityRules.listener,
 ): Promise<string> {
@@ -153,7 +153,7 @@ async function target(
 }
 
 /** The victim: a node identified as `npc-7` that expects to reach `server-1`. */
-function victim(network: FakeQuicNetwork, identityRules?: QuicIdentityRules): Switchboard {
+function victim(network: MemoryQuicNetwork, identityRules?: QuicIdentityRules): Switchboard {
   return node({
     bindings: [
       new QuicSwitchboardBinding(
@@ -171,7 +171,7 @@ function victim(network: FakeQuicNetwork, identityRules?: QuicIdentityRules): Sw
 describe('identity', () => {
   describe('a man in the middle', () => {
     test('relaying the HELLOs as they are: the exporters differ, the identification fails', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       const real = await target(network, 'real-1');
       mitm(network, real, false);
       const client = victim(network);
@@ -184,7 +184,7 @@ describe('identity', () => {
     });
 
     test('stripping the EXPORTER flags makes the identification fail, never succeed', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       const real = await target(network, 'real-2');
       mitm(network, real, true);
       const client = victim(network);
@@ -195,7 +195,7 @@ describe('identity', () => {
     });
 
     test('without the rules on either side, stripping the flags relays the identification: what the rules prevent', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       const real = await target(network, 'real-3', QuicIdentityRules.none);
       mitm(network, real, true);
       const client = victim(network, QuicIdentityRules.none);

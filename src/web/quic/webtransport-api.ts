@@ -6,10 +6,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 /**
  * What the web provider needs of the W3C WebTransport API, as structural types of its own (the
- * DOM library of TypeScript lacks several members, and a test injects fakes), the reading of the
- * errors the API rejects with, and the building of the `WebTransportError`s that carry a stream
- * error code to the peer. A port of `switchboard_quic`'s `web_interop.dart`. Every member a
- * browser may lack is optional here and feature-tested where it is used, never assumed.
+ * DOM library of TypeScript lacks several members, and a test injects an in-memory API), the
+ * reading of the errors the API rejects with, and the building of the `WebTransportError`s that
+ * carry a stream error code to the peer. A port of `switchboard_quic`'s `web_interop.dart`. Every
+ * member a browser may lack is optional here and feature-tested where it is used, never assumed.
  */
 
 /** A pinned certificate hash of the `WebTransport` options (W3C `WebTransportHash`). */
@@ -69,14 +69,14 @@ export interface WebTransportLike {
   readonly createSendGroup?: (() => unknown) | undefined;
 }
 
-/** The `WebTransport` constructor, or a fake of it. */
+/** The `WebTransport` constructor, or a stand-in for it (an in-memory one in the tests). */
 export type WebTransportConstructor = new (
   url: string,
   options: WebTransportInit,
 ) => WebTransportLike;
 
 /**
- * The `WebTransportError` constructor, or a fake of it: the specification's form
+ * The `WebTransportError` constructor, or a stand-in for it: the specification's form
  * `new WebTransportError(message, { streamErrorCode })` or Chromium's
  * `new WebTransportError({ message, streamErrorCode })`, whichever this one has.
  */

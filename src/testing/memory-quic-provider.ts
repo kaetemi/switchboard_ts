@@ -7,7 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 /**
  * An in-memory QUIC stream provider for the tests of the binding and of
  * the node's QUIC paths, a port of `switchboard_quic`'s
- * `test/fake_provider.dart`: sessions with bidirectional streams whose
+ * `test/memory_provider.dart`: sessions with bidirectional streams whose
  * directions are delivered independently, each in order, with a
  * configurable delay per stream (so streams overtake one another and the
  * control stream), stream and connection flow control (data stays with the
@@ -40,7 +40,7 @@ import { type Clock, systemClock, type TimerHandle } from '../core/util/clock.ts
 import { Deferred } from '../core/util/deferred.ts';
 
 /** What the delay of a stream direction is chosen by. */
-export interface FakeStreamInfo {
+export interface MemoryQuicStreamInfo {
   /** The stream's place among the session's streams, in the order they were opened (by either side), from 0. */
   readonly ordinal: number;
   /** Whether the initiator opened the stream. */
@@ -48,13 +48,13 @@ export interface FakeStreamInfo {
 }
 
 /** The delivery delay of a stream's bytes in milliseconds, per direction: [fromInitiator] is the direction the initiator writes. */
-export type FakeDelay = (stream: FakeStreamInfo, fromInitiator: boolean) => number;
+export type MemoryQuicDelay = (stream: MemoryQuicStreamInfo, fromInitiator: boolean) => number;
 
 /** No delay: everything is delivered on the next macrotask. */
-export const noDelay: FakeDelay = () => 0;
+export const noDelay: MemoryQuicDelay = () => 0;
 
 /** One end's configuration: what it grants its peer, and what it can do. */
-export interface FakeEndConfig {
+export interface MemoryQuicEndConfig {
   /** Whether this end can compute the exporter; default true. */
   readonly exporter: boolean;
   /** The receive window of each stream this end grants; default 64 KiB. */
@@ -67,8 +67,8 @@ export interface FakeEndConfig {
   readonly certificateHash: Uint8Array | undefined;
 }
 
-/** The defaults of {@link FakeEndConfig}. */
-export const defaultFakeEndConfig: FakeEndConfig = Object.freeze({
+/** The defaults of {@link MemoryQuicEndConfig}. */
+export const defaultMemoryQuicEndConfig: MemoryQuicEndConfig = Object.freeze({
   exporter: true,
   streamWindow: 64 * 1024,
   connectionWindow: 16 << 20,
@@ -77,25 +77,27 @@ export const defaultFakeEndConfig: FakeEndConfig = Object.freeze({
 });
 
 /** [config] completed with the defaults. */
-export function fakeEndConfig(config?: Partial<FakeEndConfig>): FakeEndConfig {
-  return config === undefined ? defaultFakeEndConfig : { ...defaultFakeEndConfig, ...config };
+export function memoryQuicEndConfig(config?: Partial<MemoryQuicEndConfig>): MemoryQuicEndConfig {
+  return config === undefined
+    ? defaultMemoryQuicEndConfig
+    : { ...defaultMemoryQuicEndConfig, ...config };
 }
 
 const sessionEnded = (): QuicError => new QuicError('sessionEnded', 'session ended');
 
 /** Listeners by endpoint, and the connectors that reach them. */
-export class FakeQuicNetwork {
+export class MemoryQuicNetwork {
   /** The delay of the stream directions of every session. */
-  delay: FakeDelay;
+  delay: MemoryQuicDelay;
   /** How long an application close takes to reach the peer, in milliseconds. */
   closeDelay: number;
   /** Time and timers. */
   readonly clock: Clock;
   /** Every session pair created, initiator first. */
-  readonly pairs: [FakeQuicSession, FakeQuicSession][] = [];
-  readonly #listeners = new Map<string, FakeQuicListener>();
+  readonly pairs: [MemoryQuicSession, MemoryQuicSession][] = [];
+  readonly #listeners = new Map<string, MemoryQuicListener>();
 
-  constructor(options: { delay?: FakeDelay; closeDelay?: number; clock?: Clock } = {}) {
+  constructor(options: { delay?: MemoryQuicDelay; closeDelay?: number; clock?: Clock } = {}) {
     this.delay = options.delay ?? noDelay;
     this.closeDelay = options.closeDelay ?? 0;
     this.clock = options.clock ?? systemClock;
@@ -108,9 +110,9 @@ export class FakeQuicNetwork {
   }
 
   /** A listener at [endpoint] whose sessions grant what [config] says. */
-  listen(endpoint: string, config?: Partial<FakeEndConfig>): FakeQuicListener {
-    const listener = new FakeQuicListener(this, endpoint, fakeEndConfig(config));
-    this.#listeners.set(FakeQuicNetwork.key(endpoint), listener);
+  listen(endpoint: string, config?: Partial<MemoryQuicEndConfig>): MemoryQuicListener {
+    const listener = new MemoryQuicListener(this, endpoint, memoryQuicEndConfig(config));
+    this.#listeners.set(MemoryQuicNetwork.key(endpoint), listener);
     return listener;
   }
 
@@ -120,23 +122,23 @@ export class FakeQuicNetwork {
    * with [webTransport].
    */
   connector(
-    options: { config?: Partial<FakeEndConfig>; webTransport?: boolean } = {},
-  ): FakeQuicConnector {
-    return new FakeQuicConnector(
+    options: { config?: Partial<MemoryQuicEndConfig>; webTransport?: boolean } = {},
+  ): MemoryQuicConnector {
+    return new MemoryQuicConnector(
       this,
-      fakeEndConfig(options.config),
+      memoryQuicEndConfig(options.config),
       options.webTransport ?? false,
     );
   }
 
   /** The listener at [endpoint], if any. */
-  listenerAt(endpoint: string): FakeQuicListener | undefined {
-    return this.#listeners.get(FakeQuicNetwork.key(endpoint));
+  listenerAt(endpoint: string): MemoryQuicListener | undefined {
+    return this.#listeners.get(MemoryQuicNetwork.key(endpoint));
   }
 
   /** @internal */
-  removeListener(listener: FakeQuicListener): void {
-    const key = FakeQuicNetwork.key(listener.endpoint);
+  removeListener(listener: MemoryQuicListener): void {
+    const key = MemoryQuicNetwork.key(listener.endpoint);
     if (this.#listeners.get(key) === listener) {
       this.#listeners.delete(key);
     }
@@ -150,17 +152,17 @@ export class FakeQuicNetwork {
   }
 }
 
-/** Dials the listeners of a {@link FakeQuicNetwork}. */
-export class FakeQuicConnector implements QuicConnector {
-  readonly network: FakeQuicNetwork;
-  readonly config: FakeEndConfig;
+/** Dials the listeners of a {@link MemoryQuicNetwork}. */
+export class MemoryQuicConnector implements QuicConnector {
+  readonly network: MemoryQuicNetwork;
+  readonly config: MemoryQuicEndConfig;
   readonly webTransport: boolean;
   /** The configurations the binding asked for, in order. */
   readonly configs: QuicClientConfig[] = [];
   /** While set, a connect waits for it before it reaches the listener (a handshake that takes its time). */
   connectGate: Promise<void> | undefined;
 
-  constructor(network: FakeQuicNetwork, config: FakeEndConfig, webTransport: boolean) {
+  constructor(network: MemoryQuicNetwork, config: MemoryQuicEndConfig, webTransport: boolean) {
     this.network = network;
     this.config = config;
     this.webTransport = webTransport;
@@ -181,7 +183,7 @@ export class FakeQuicConnector implements QuicConnector {
     await this.network.sleep(0);
     const scheme = endpoint.slice(0, Math.max(0, endpoint.indexOf(':'))).toLowerCase();
     if (scheme !== 'quic' && !(this.webTransport && scheme === 'https')) {
-      throw new QuicError('unsupportedScheme', `the fake provider does not dial ${scheme}`);
+      throw new QuicError('unsupportedScheme', `the in-memory provider does not dial ${scheme}`);
     }
     const listener = this.network.listenerAt(endpoint);
     if (listener === undefined || listener.isClosed) {
@@ -192,7 +194,7 @@ export class FakeQuicConnector implements QuicConnector {
     if (pins.length > 0 && (hash === undefined || !pins.some((h) => bytesEqual(h, hash)))) {
       throw new QuicError('certificateRejected', 'the certificate is not pinned');
     }
-    const [client, server] = FakeQuicSession.pair({
+    const [client, server] = MemoryQuicSession.pair({
       network: this.network,
       initiator: {
         ...this.config,
@@ -210,14 +212,14 @@ export class FakeQuicConnector implements QuicConnector {
 }
 
 /** Accepts the sessions dialled to its endpoint. */
-export class FakeQuicListener implements QuicListener {
-  readonly network: FakeQuicNetwork;
-  readonly config: FakeEndConfig;
+export class MemoryQuicListener implements QuicListener {
+  readonly network: MemoryQuicNetwork;
+  readonly config: MemoryQuicEndConfig;
   readonly endpoint: string;
   readonly #sessions = new AsyncQueue<QuicSession>();
   #closed = false;
 
-  constructor(network: FakeQuicNetwork, endpoint: string, config: FakeEndConfig) {
+  constructor(network: MemoryQuicNetwork, endpoint: string, config: MemoryQuicEndConfig) {
     this.network = network;
     this.endpoint = endpoint;
     this.config = config;
@@ -244,7 +246,7 @@ export class FakeQuicListener implements QuicListener {
 }
 
 // A deterministic generator for the session secrets (mulberry32), so that
-// runs are reproducible as the Dart fake's seeded Random makes them.
+// runs are reproducible as the Dart provider's seeded Random makes them.
 let seed = 1234;
 function nextRandomByte(): number {
   seed = (seed + 0x6d2b79f5) | 0;
@@ -254,15 +256,15 @@ function nextRandomByte(): number {
   return ((t ^ (t >>> 14)) >>> 0) & 0xff;
 }
 
-/** One end of a fake session. */
-export class FakeQuicSession implements QuicSession {
-  readonly network: FakeQuicNetwork;
+/** One end of an in-memory session. */
+export class MemoryQuicSession implements QuicSession {
+  readonly network: MemoryQuicNetwork;
   readonly isInitiator: boolean;
   /** What this end grants its peer. */
-  readonly config: FakeEndConfig;
+  readonly config: MemoryQuicEndConfig;
   readonly #secret: Uint8Array;
   readonly #certificateHash: Uint8Array | undefined;
-  #peer: FakeQuicSession | undefined;
+  #peer: MemoryQuicSession | undefined;
 
   readonly #incoming = new AsyncQueue<QuicStream>();
   readonly #unidirectional = new AsyncQueue<QuicReceiveStream>();
@@ -270,10 +272,10 @@ export class FakeQuicSession implements QuicSession {
   readonly #done = new Deferred<QuicSessionEnd>();
   readonly #streamWaiters: Deferred<void>[] = [];
   /** @internal Directions blocked on connection credit. */
-  readonly blocked = new Set<FakeDirection>();
+  readonly blocked = new Set<MemoryQuicDirection>();
 
   /** Streams of this end, opened by either side, in order. */
-  readonly streams: FakeQuicStream[] = [];
+  readonly streams: MemoryQuicStream[] = [];
   /** The ordinals of the streams the peer opened, in the order they became visible here. */
   readonly announced: number[] = [];
   /** Application closes this end made: [code, reason]. */
@@ -297,9 +299,9 @@ export class FakeQuicSession implements QuicSession {
   #ordinal = 0;
 
   private constructor(
-    network: FakeQuicNetwork,
+    network: MemoryQuicNetwork,
     isInitiator: boolean,
-    config: FakeEndConfig,
+    config: MemoryQuicEndConfig,
     secret: Uint8Array,
     certificateHash: Uint8Array | undefined,
   ) {
@@ -313,28 +315,28 @@ export class FakeQuicSession implements QuicSession {
   /** A connected pair: the initiator's end and the acceptor's. */
   static pair(
     options: {
-      network?: FakeQuicNetwork;
-      initiator?: Partial<FakeEndConfig>;
-      acceptor?: Partial<FakeEndConfig>;
+      network?: MemoryQuicNetwork;
+      initiator?: Partial<MemoryQuicEndConfig>;
+      acceptor?: Partial<MemoryQuicEndConfig>;
       certificateHash?: Uint8Array | undefined;
     } = {},
-  ): [FakeQuicSession, FakeQuicSession] {
-    const network = options.network ?? new FakeQuicNetwork();
+  ): [MemoryQuicSession, MemoryQuicSession] {
+    const network = options.network ?? new MemoryQuicNetwork();
     const secret = new Uint8Array(32);
     for (let i = 0; i < secret.length; i++) {
       secret[i] = nextRandomByte();
     }
-    const a = new FakeQuicSession(
+    const a = new MemoryQuicSession(
       network,
       true,
-      fakeEndConfig(options.initiator),
+      memoryQuicEndConfig(options.initiator),
       secret,
       options.certificateHash,
     );
-    const b = new FakeQuicSession(
+    const b = new MemoryQuicSession(
       network,
       false,
-      fakeEndConfig(options.acceptor),
+      memoryQuicEndConfig(options.acceptor),
       secret,
       undefined,
     );
@@ -345,8 +347,8 @@ export class FakeQuicSession implements QuicSession {
   }
 
   /** The other end. */
-  get peer(): FakeQuicSession {
-    return this.#peer as FakeQuicSession;
+  get peer(): MemoryQuicSession {
+    return this.#peer as MemoryQuicSession;
   }
 
   get ended(): boolean {
@@ -358,7 +360,7 @@ export class FakeQuicSession implements QuicSession {
   }
 
   get remote(): string {
-    return this.isInitiator ? 'fake acceptor' : 'fake initiator';
+    return this.isInitiator ? 'memory acceptor' : 'memory initiator';
   }
 
   get maxIncomingStreams(): number | undefined {
@@ -391,8 +393,8 @@ export class FakeQuicSession implements QuicSession {
   }
 
   /** Opens a unidirectional stream toward the peer; returns the peer's receive side. */
-  openUnidirectional(): FakeReceiveStream {
-    const stream = new FakeReceiveStream();
+  openUnidirectional(): MemoryQuicReceiveStream {
+    const stream = new MemoryQuicReceiveStream();
     this.peer.#unidirectional.push(stream);
     return stream;
   }
@@ -448,15 +450,15 @@ export class FakeQuicSession implements QuicSession {
       }
     }
     this.#openStreams++;
-    const info: FakeStreamInfo = {
+    const info: MemoryQuicStreamInfo = {
       ordinal: this.#nextOrdinal(),
       openedByInitiator: this.isInitiator,
     };
-    const shared = new FakeShared(this);
-    const local = new FakeQuicStream(this, info, true);
-    const remote = new FakeQuicStream(this.peer, info, false);
-    const out = new FakeDirection(this, this.peer, info, local, remote, shared);
-    const back = new FakeDirection(this.peer, this, info, remote, local, shared);
+    const shared = new Shared(this);
+    const local = new MemoryQuicStream(this, info, true);
+    const remote = new MemoryQuicStream(this.peer, info, false);
+    const out = new MemoryQuicDirection(this, this.peer, info, local, remote, shared);
+    const back = new MemoryQuicDirection(this.peer, this, info, remote, local, shared);
     local.attach(out, back);
     remote.attach(back, out);
     this.streams.push(local);
@@ -471,7 +473,7 @@ export class FakeQuicSession implements QuicSession {
   }
 
   /** @internal The peer's stream became visible here (its first bytes, FIN or reset arrived). */
-  announce(stream: FakeQuicStream): void {
+  announce(stream: MemoryQuicStream): void {
     if (stream.isAnnounced || this.ended) {
       return;
     }
@@ -537,16 +539,16 @@ export class FakeQuicSession implements QuicSession {
   }
 
   toString(): string {
-    return `FakeQuicSession(${this.isInitiator ? 'initiator' : 'acceptor'})`;
+    return `MemoryQuicSession(${this.isInitiator ? 'initiator' : 'acceptor'})`;
   }
 }
 
 /** What the two directions of a stream share: the opener's stream credit returns once both closed at their receivers. */
-class FakeShared {
-  readonly opener: FakeQuicSession;
+class Shared {
+  readonly opener: MemoryQuicSession;
   closed = 0;
 
-  constructor(opener: FakeQuicSession) {
+  constructor(opener: MemoryQuicSession) {
     this.opener = opener;
   }
 
@@ -563,13 +565,13 @@ interface QueuedWrite {
 }
 
 /** @internal One direction of a stream: what [from] writes and [to] reads. */
-export class FakeDirection {
-  readonly from: FakeQuicSession;
-  readonly to: FakeQuicSession;
-  readonly info: FakeStreamInfo;
-  readonly sender: FakeQuicStream;
-  readonly receiver: FakeQuicStream;
-  readonly shared: FakeShared;
+export class MemoryQuicDirection {
+  readonly from: MemoryQuicSession;
+  readonly to: MemoryQuicSession;
+  readonly info: MemoryQuicStreamInfo;
+  readonly sender: MemoryQuicStream;
+  readonly receiver: MemoryQuicStream;
+  readonly shared: Shared;
   readonly window: number;
 
   // Sender side: writes queued in order, the head sent as the windows allow.
@@ -604,12 +606,12 @@ export class FakeDirection {
   #timer: TimerHandle | undefined;
 
   constructor(
-    from: FakeQuicSession,
-    to: FakeQuicSession,
-    info: FakeStreamInfo,
-    sender: FakeQuicStream,
-    receiver: FakeQuicStream,
-    shared: FakeShared,
+    from: MemoryQuicSession,
+    to: MemoryQuicSession,
+    info: MemoryQuicStreamInfo,
+    sender: MemoryQuicStream,
+    receiver: MemoryQuicStream,
+    shared: Shared,
   ) {
     this.from = from;
     this.to = to;
@@ -992,15 +994,15 @@ export class FakeDirection {
   }
 }
 
-/** One end's view of a fake stream. */
-export class FakeQuicStream implements QuicStream {
-  readonly session: FakeQuicSession;
-  readonly info: FakeStreamInfo;
+/** One end's view of an in-memory stream. */
+export class MemoryQuicStream implements QuicStream {
+  readonly session: MemoryQuicSession;
+  readonly info: MemoryQuicStreamInfo;
   readonly locallyOpened: boolean;
   /** @internal */
   isAnnounced: boolean;
-  #out: FakeDirection | undefined;
-  #in: FakeDirection | undefined;
+  #out: MemoryQuicDirection | undefined;
+  #in: MemoryQuicDirection | undefined;
 
   /** The last priority set. */
   lastPriority = 0;
@@ -1013,7 +1015,7 @@ export class FakeQuicStream implements QuicStream {
   /** While set, finish fails with it. */
   finishFailure: unknown;
 
-  constructor(session: FakeQuicSession, info: FakeStreamInfo, locallyOpened: boolean) {
+  constructor(session: MemoryQuicSession, info: MemoryQuicStreamInfo, locallyOpened: boolean) {
     this.session = session;
     this.info = info;
     this.locallyOpened = locallyOpened;
@@ -1021,19 +1023,19 @@ export class FakeQuicStream implements QuicStream {
   }
 
   /** @internal */
-  attach(out: FakeDirection, inbound: FakeDirection): void {
+  attach(out: MemoryQuicDirection, inbound: MemoryQuicDirection): void {
     this.#out = out;
     this.#in = inbound;
   }
 
   /** @internal This end's sending direction. */
-  get out(): FakeDirection {
-    return this.#out as FakeDirection;
+  get out(): MemoryQuicDirection {
+    return this.#out as MemoryQuicDirection;
   }
 
   /** @internal This end's receiving direction. */
-  get inbound(): FakeDirection {
-    return this.#in as FakeDirection;
+  get inbound(): MemoryQuicDirection {
+    return this.#in as MemoryQuicDirection;
   }
 
   /** Whether this end's direction ended with FIN. */
@@ -1107,12 +1109,12 @@ export class FakeQuicStream implements QuicStream {
   }
 
   toString(): string {
-    return `FakeQuicStream(#${this.info.ordinal}, ${this.locallyOpened ? 'local' : 'remote'})`;
+    return `MemoryQuicStream(#${this.info.ordinal}, ${this.locallyOpened ? 'local' : 'remote'})`;
   }
 }
 
 /** A peer-created unidirectional receive direction. */
-export class FakeReceiveStream implements QuicReceiveStream {
+export class MemoryQuicReceiveStream implements QuicReceiveStream {
   /** Resolves with the code of the first stop. */
   readonly stopped = new Deferred<number>();
 

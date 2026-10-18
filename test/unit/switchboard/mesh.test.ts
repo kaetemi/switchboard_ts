@@ -12,7 +12,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // naming thread's `test/unit/naming/naming-identity.test.ts` leaves to the
 // node: MeshNode under a host that requires named IDENTs, a MeshNode
 // registering again under a replacement credential, the renewal of its
-// credential with fake time, and the CONNECT cases that need brokered
+// credential on virtual time, and the CONNECT cases that need brokered
 // connections and PeerSet), ported here with Dart's titles. The first
 // group checks what `mesh.dart` documents of `join`, `publish`,
 // `publishRelay`, `unpublish` and `leave`; the end-to-end meshes are in
@@ -69,7 +69,7 @@ const npc = Name.of('npc');
 const authoritySeed = Uint8Array.from({ length: 32 }, (_, i) => (11 * i) & 0xff);
 const meshKey = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
 
-/** Wall time, read when called: the fake Date of the tests on fake time. */
+/** Wall time, read when called: the replaced `Date.now` of the tests on virtual time. */
 const wall = (): number => Date.now();
 
 let authority: CredentialIssuer;
@@ -289,7 +289,7 @@ class Recorded extends SlotLifecycle {
  * at [origin] plus the clock's time: Dart's fake_async with
  * `package:clock`. Undone after each test.
  */
-class FakeWall extends ManualClock {
+class ManualWallClock extends ManualClock {
   readonly origin: number;
 
   constructor(origin: number) {
@@ -665,7 +665,7 @@ describe('a replacement credential', () => {
 describe('expiry and RENEW', () => {
   test('MeshNode renews at two thirds of the lifetime; a credential that is not renewed ends the session at its expiry', async () => {
     // A whole second, so that the issue times are exact.
-    const clock = new FakeWall(Date.UTC(2026, 9, 14, 12));
+    const clock = new ManualWallClock(Date.UTC(2026, 9, 14, 12));
     let revoked = false;
     const mesh = await Mesh.start({ clock, renewable: () => !revoked });
     const original = await issue('worker-a1', workerScopes, { lifetime: 3 * hour });

@@ -51,7 +51,7 @@ Every file of this thread ports its Dart file, over the toy mux and over the fra
 | `mesh.test.ts`, `test/integration/mesh.test.ts` and the other node-level integration files | `mesh_test.dart` and Dart's `test/integration/*` |
 | `test/unit/client/reconnecting-client.test.ts` | `reconnecting_client_test.dart` |
 
-**Left:** the acceptance interop (the Dart peer against a TS node and back, over TCP, WebSocket, QUIC and WebTransport) comes with the TS peer (`claude/ts-peer`); `SteppingClock` is merged into `ManualClock.elapseAsync` since the third round; the relay tests keep `test/support/node/fake-mesh.ts` beside the real naming service of the integration suites.
+**Left:** the acceptance interop (the Dart peer against a TS node and back, over TCP, WebSocket, QUIC and WebTransport) comes with the TS peer (`claude/ts-peer`); `SteppingClock` is merged into `ManualClock.elapseAsync` since the third round; the relay tests keep `test/support/node/table-mesh.ts` beside the real naming service of the integration suites.
 
 ## Deviations from Dart and known gaps
 
@@ -110,16 +110,16 @@ Every file of this thread ports its Dart file, over the toy mux and over the fra
 - **Test fixtures** in `test/support/node/`:
   - `harness.ts`: `node()`, `onCleanup`, `until`, `pump`, `rejectsWith`
   - `toy-mux.ts`: an in-memory `MuxConnection` without flow control
-  - `fake-identity.ts`
+  - `seeded-identity.ts`: real credentials from fixed seeds
   - `memory-table.ts`: per-test `mem://` registry; a leaked listener fails
     the test
   - time: `ManualClock` with `elapseAsync` (the `stepping-clock.ts` of
     this thread was folded into it in the third round)
   - `channels.ts`: `Pull`, `Frames`, `nextText`, `framesOf`, `pattern`
-  - `fake-mesh.ts`: `FakeMesh`/`MeshResolver`, a naming stand-in with
+  - `table-mesh.ts`: `TableMesh`/`MeshResolver`, a naming stand-in with
     `CONNECT` brokering that needs `broker` rights
 
-  The naming thread has its own fake Talk in `test/support/naming/`,
+  The naming thread has its own in-memory Talk in `test/support/naming/`,
   which overlaps with these. `gated-transport.ts`
   is the port of Dart's `GatedTransport` (a transport whose output
   readiness the test gates).

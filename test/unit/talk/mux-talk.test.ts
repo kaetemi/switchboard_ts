@@ -6,7 +6,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Port of the Dart `test/mux_talk_test.dart`: Talk over mux, the
 // integration point between the two layers. The Dart tests run over the
-// frame mux on the in-memory transport; these run over the fake mux pair,
+// frame mux on the in-memory transport; these run over the memory mux pair,
 // which carries CLOSE statuses and their confirmation as the frame mux
 // does, and is what the assertions on the mux side check.
 
@@ -14,24 +14,24 @@ import { expect, test } from 'vitest';
 import { hexBytes } from '../../../src/core/bytes.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
-import type { FakeMuxChannel, FakeMuxConnection } from '../../support/talk/fake-channel.ts';
-import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { bytes, serve } from '../../support/talk/helpers.ts';
+import type { MemoryMuxChannel, MemoryMuxConnection } from '../../support/talk/memory-mux.ts';
+import { memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 
 /** Hands every channel the peer of [connection] opens to [onChannel], until the connection closes. */
 async function acceptAll(
-  connection: FakeMuxConnection,
-  onChannel: (channel: FakeMuxChannel) => void,
+  connection: MemoryMuxConnection,
+  onChannel: (channel: MemoryMuxChannel) => void,
 ): Promise<void> {
   for await (const channel of connection.incoming) {
-    onChannel(channel as FakeMuxChannel);
+    onChannel(channel as MemoryMuxChannel);
   }
 }
 
 test('talk request over a mux channel, close status propagates', async () => {
-  const [client, server] = fakeMuxPair();
+  const [client, server] = memoryMuxPair();
   const serverChannels = acceptAll(server, (channel) => {
     const talk = new TalkChannel(channel);
     serve(talk, (message) => message.reply(bytes([...message.payload, 1]), { procedure: 'PONG' }));
@@ -50,14 +50,14 @@ test('talk request over a mux channel, close status propagates', async () => {
 });
 
 test('talk abort maps application code before mux close', async () => {
-  const [client, server] = fakeMuxPair();
+  const [client, server] = memoryMuxPair();
   const serverChannel = server.accept();
   const serverTalkDone = serverChannel.then((c) => new TalkChannel(c).done);
   const talk = new TalkChannel(client.open(empty));
   talk.abort(new Status(300, 'app'));
   const status = await serverTalkDone;
   expect(status.code).toBe(300);
-  // Added: the mux CLOSE carries no application code; the fake mux shows
+  // Added: the mux CLOSE carries no application code; the memory mux shows
   // the status it carried (the frame mux's bytes are not modelled).
   expect((await (await serverChannel).done).known).toBe(StatusCode.unknown);
   await client.close();
@@ -65,7 +65,7 @@ test('talk abort maps application code before mux close', async () => {
 });
 
 test('a talk protocol error closes only that channel', async () => {
-  const [client, server] = fakeMuxPair();
+  const [client, server] = memoryMuxPair();
   const serverTalks: TalkChannel[] = [];
   const serverChannels = acceptAll(server, (channel) => {
     const talk = new TalkChannel(channel);
@@ -89,7 +89,7 @@ test('a talk protocol error closes only that channel', async () => {
 });
 
 test('CONNECTION_LOST goes on the wire as UNAVAILABLE', async () => {
-  const [client, server] = fakeMuxPair();
+  const [client, server] = memoryMuxPair();
   const serverDone = server.accept().then((c) => c.done);
   const talk = new TalkChannel(client.open(empty));
   await talk.close(Status.of(StatusCode.connectionLost, 'upstream gone'));

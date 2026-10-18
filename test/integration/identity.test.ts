@@ -6,7 +6,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Identity between Node Switchboard nodes over real sockets, with real
 // credentials: the Ed25519 authority, the rogue key pair and the mesh's HMAC
-// issuer of `test/support/node/fake-identity.ts` (Dart's
+// issuer of `test/support/node/seeded-identity.ts` (Dart's
 // `identity_node_test.dart`'s), verified by a real `CredentialVerifier`,
 // holder keys from seeds.
 //
@@ -50,6 +50,7 @@ import {
   type SwitchboardOptions,
   selfSignedCertificate,
 } from '../../src/node/index.ts';
+import { rejectsWith, until } from '../support/node/harness.ts';
 import {
   authoritySeed,
   forged,
@@ -57,8 +58,7 @@ import {
   issueCredential,
   rogue,
   TestVerifier,
-} from '../support/node/fake-identity.ts';
-import { rejectsWith, until } from '../support/node/harness.ts';
+} from '../support/node/seeded-identity.ts';
 
 const availability = nativeQuicAvailability();
 if (!availability.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {

@@ -46,7 +46,6 @@ import type {
 } from '../../../src/core/talk/contract.ts';
 import { type Clock, systemClock, type TimerHandle } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import type { FrameFilter } from './fake-talk.ts';
 import {
   describe,
   type Harness,
@@ -58,6 +57,7 @@ import {
   talkPair,
   Watcher,
 } from './harness.ts';
+import type { FrameFilter } from './memory-talk.ts';
 
 export const kv = Name.of('kv');
 export const zone = Name.of('zone');

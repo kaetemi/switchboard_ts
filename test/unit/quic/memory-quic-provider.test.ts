@@ -10,10 +10,10 @@ import {
   QuicStreamStopped,
 } from '../../../src/core/quic/contract.ts';
 import {
-  FakeQuicNetwork,
-  FakeQuicSession,
-  type FakeQuicStream,
-} from '../../../src/testing/fake-quic-provider.ts';
+  MemoryQuicNetwork,
+  MemoryQuicSession,
+  type MemoryQuicStream,
+} from '../../../src/testing/memory-quic-provider.ts';
 
 const bytes = (...values: number[]) => Uint8Array.of(...values);
 
@@ -28,7 +28,7 @@ async function readAll(stream: QuicStream): Promise<number[]> {
   }
 }
 
-async function nextStream(session: FakeQuicSession): Promise<QuicStream> {
+async function nextStream(session: MemoryQuicSession): Promise<QuicStream> {
   const it = session.incomingStreams[Symbol.asyncIterator]();
   const next = await it.next();
   if (next.done) {
@@ -37,9 +37,9 @@ async function nextStream(session: FakeQuicSession): Promise<QuicStream> {
   return next.value;
 }
 
-describe('fake QUIC provider', () => {
+describe('in-memory QUIC provider', () => {
   test('a stream becomes visible to the peer with its first bytes, delivered in order to FIN', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     expect(b.announced).toEqual([]);
     await stream.write(bytes(1, 2, 3));
@@ -52,7 +52,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('read(max) returns at most max bytes and keeps the rest', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1, 2, 3, 4, 5));
     const remote = await nextStream(b);
@@ -62,7 +62,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('one read at a time', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1));
     const remote = await nextStream(b);
@@ -74,7 +74,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('a write waits for the stream window until the receiver reads', async () => {
-    const [a, b] = FakeQuicSession.pair({ acceptor: { streamWindow: 4 } });
+    const [a, b] = MemoryQuicSession.pair({ acceptor: { streamWindow: 4 } });
     const stream = await a.openStream();
     let written = false;
     const write = stream.write(bytes(1, 2, 3, 4, 5, 6)).then(() => {
@@ -89,7 +89,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('the connection window bounds all streams together', async () => {
-    const [a, b] = FakeQuicSession.pair({ acceptor: { connectionWindow: 6 } });
+    const [a, b] = MemoryQuicSession.pair({ acceptor: { connectionWindow: 6 } });
     const s1 = await a.openStream();
     const s2 = await a.openStream();
     await s1.write(bytes(1, 2, 3, 4));
@@ -105,7 +105,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('a reset reaches the reader, even one with no read pending, and drops the unread bytes', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1, 2));
     const remote = await nextStream(b);
@@ -118,8 +118,8 @@ describe('fake QUIC provider', () => {
   });
 
   test('a reset without a code arrives as undefined', async () => {
-    const [a, b] = FakeQuicSession.pair();
-    const stream = (await a.openStream()) as FakeQuicStream;
+    const [a, b] = MemoryQuicSession.pair();
+    const stream = (await a.openStream()) as MemoryQuicStream;
     await stream.write(bytes(1));
     const remote = await nextStream(b);
     stream.resetWithoutCode();
@@ -127,7 +127,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('STOP_SENDING fails the writes of the sender, resolves stopped with its code, and the stack resets with it', async () => {
-    const [a, b] = FakeQuicSession.pair({ acceptor: { streamWindow: 2 } });
+    const [a, b] = MemoryQuicSession.pair({ acceptor: { streamWindow: 2 } });
     const stream = await a.openStream();
     const write = stream.write(bytes(1, 2, 3, 4));
     const remote = await nextStream(b);
@@ -142,10 +142,10 @@ describe('fake QUIC provider', () => {
   });
 
   test('STOP_SENDING without a code rejects stopped, so it is never taken for an acknowledgement', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1));
-    const remote = (await nextStream(b)) as FakeQuicStream;
+    const remote = (await nextStream(b)) as MemoryQuicStream;
     remote.stopWithoutCode();
     const error = await stream.stopped.catch((e) => e);
     expect(error).toBeInstanceOf(QuicStreamStopped);
@@ -153,7 +153,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('a write after finish or reset fails; finish is idempotent; reset after FIN acknowledged is a no-op', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1));
     const f1 = stream.finish();
@@ -167,7 +167,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('the stream limit: an open waits until the peer released a stream (both directions ended)', async () => {
-    const [a, b] = FakeQuicSession.pair({ acceptor: { maxStreams: 1 } });
+    const [a, b] = MemoryQuicSession.pair({ acceptor: { maxStreams: 1 } });
     const first = await a.openStream();
     let opened = false;
     const second = a.openStream().then((s) => {
@@ -187,10 +187,10 @@ describe('fake QUIC provider', () => {
   });
 
   test('delays per stream let a later stream overtake an earlier one', async () => {
-    const network = new FakeQuicNetwork({
+    const network = new MemoryQuicNetwork({
       delay: (stream) => (stream.ordinal === 0 ? 30 : 0),
     });
-    const [a, b] = FakeQuicSession.pair({ network });
+    const [a, b] = MemoryQuicSession.pair({ network });
     const s0 = await a.openStream();
     const s1 = await a.openStream();
     await s0.write(bytes(0));
@@ -201,7 +201,7 @@ describe('fake QUIC provider', () => {
   });
 
   test('a session close reaches the peer as byPeer and fails what is pending', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const stream = await a.openStream();
     await stream.write(bytes(1));
     const remote = await nextStream(b);
@@ -219,14 +219,14 @@ describe('fake QUIC provider', () => {
   });
 
   test('a close reason is cut to 1024 bytes at a character boundary', async () => {
-    const [a] = FakeQuicSession.pair();
+    const [a] = MemoryQuicSession.pair();
     await a.close(0, 'é'.repeat(1000));
     const end = await a.done;
     expect(new TextEncoder().encode(end.reason).length).toBe(1024);
   });
 
   test('a lost session ends both sides as lost', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     a.lose('idle');
     expect((await a.done).lost).toBe(true);
     expect((await b.done).lost).toBe(true);
@@ -234,14 +234,14 @@ describe('fake QUIC provider', () => {
   });
 
   test('exporters: equal at both ends, undefined without one', async () => {
-    const [a, b] = FakeQuicSession.pair({ initiator: { exporter: false } });
+    const [a, b] = MemoryQuicSession.pair({ initiator: { exporter: false } });
     const empty = new Uint8Array(0);
     expect(await a.exportKeyingMaterial('x', empty, 32)).toBeUndefined();
     expect((await b.exportKeyingMaterial('x', empty, 32))?.length).toBe(32);
   });
 
   test('unidirectional streams and draining', async () => {
-    const [a, b] = FakeQuicSession.pair();
+    const [a, b] = MemoryQuicSession.pair();
     const uni = a.openUnidirectional();
     const it = b.incomingUnidirectionalStreams[Symbol.asyncIterator]();
     const next = await it.next();
@@ -255,7 +255,7 @@ describe('fake QUIC provider', () => {
     const config = { alpn: ['switchboard'] };
 
     test('dials a listener; the listener yields the other end', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       const listener = network.listen('quic://node.example:4433');
       const session = await network.connector().connect('quic://node.example:4433', config);
       const it = listener.sessions[Symbol.asyncIterator]();
@@ -267,7 +267,7 @@ describe('fake QUIC provider', () => {
     });
 
     test('refuses other schemes, unknown endpoints, unpinned certificates, negative durations', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       network.listen('quic://node.example:4433', { certificateHash: new Uint8Array(32).fill(1) });
       const connector = network.connector();
       const kind = (p: Promise<unknown>) => p.catch((e: QuicError) => e.kind);
@@ -295,14 +295,14 @@ describe('fake QUIC provider', () => {
     });
 
     test('the client configuration sets what the initiator grants', async () => {
-      const network = new FakeQuicNetwork();
+      const network = new MemoryQuicNetwork();
       network.listen('https://node.example:4433/sb');
       const connector = network.connector({ webTransport: true });
       const session = (await connector.connect('https://node.example:4433/sb', {
         ...config,
         maxStreamsBidi: 7,
         streamReceiveWindow: 1000,
-      })) as FakeQuicSession;
+      })) as MemoryQuicSession;
       expect(session.maxIncomingStreams).toBe(7);
       expect(session.config.streamWindow).toBe(1000);
       expect(connector.configs.length).toBe(1);

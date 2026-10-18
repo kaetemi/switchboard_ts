@@ -15,7 +15,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // '2 proxies', 'timeouts' and the item window tests over a chain, which
 // the Dart file runs over stream channel controllers, run again over the
 // frame mux. test/unit/talk/talk-forward.test.ts runs every group over
-// frame links and the fake mux pair. Not here: 'frame level',
+// frame links and the memory mux pair. Not here: 'frame level',
 // 'forwardMessage' and the raw item window tests, which drive frames by
 // hand on frame links and involve no mux.
 

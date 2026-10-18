@@ -59,46 +59,48 @@ type Queued =
       readonly bytes: Uint8Array;
       readonly done: Deferred<void> | undefined;
     }
-  | { readonly type: 'open'; readonly child: FakeMuxChannel }
+  | { readonly type: 'open'; readonly child: MemoryMuxChannel }
   | { readonly type: 'close'; readonly status: Status };
 
 const failedPrecondition = (reason: string): SwitchboardError =>
   SwitchboardError.of(StatusCode.failedPrecondition, reason);
 
-/** Options of {@link fakeMuxPair}. */
-export interface FakeMuxOptions {
+/** Options of {@link memoryMuxPair}. */
+export interface MemoryMuxOptions {
   /** Mux options of both connections (the clock, `initialWindow`, `closeConfirmTimeout`). */
   readonly mux?: Partial<MuxOptions>;
   /** Whether channels are ordered with each other (the frame mux); false: independent streams. Default true. */
   readonly ordered?: boolean;
-  /** Channels report `awaitingLimits` until {@link FakeMuxConnection.announceLimits} on the peer. */
+  /** Channels report `awaitingLimits` until {@link MemoryMuxConnection.announceLimits} on the peer. */
   readonly awaitLimits?: boolean;
 }
 
 /** A client (initiator) and a server connection joined in memory. */
-export function fakeMuxPair(options: FakeMuxOptions = {}): [FakeMuxConnection, FakeMuxConnection] {
+export function memoryMuxPair(
+  options: MemoryMuxOptions = {},
+): [MemoryMuxConnection, MemoryMuxConnection] {
   const ordered = options.ordered ?? true;
   const opts = muxOptions({ keepAliveInterval: undefined, ...options.mux });
-  const a = new FakeMuxConnection(true, opts, ordered, options.awaitLimits === true);
-  const b = new FakeMuxConnection(false, opts, ordered, options.awaitLimits === true);
+  const a = new MemoryMuxConnection(true, opts, ordered, options.awaitLimits === true);
+  const b = new MemoryMuxConnection(false, opts, ordered, options.awaitLimits === true);
   a._peer = b;
   b._peer = a;
   return [a, b];
 }
 
-/** One side of a {@link fakeMuxPair}. */
-export class FakeMuxConnection implements MuxConnection {
+/** One side of a {@link memoryMuxPair}. */
+export class MemoryMuxConnection implements MuxConnection {
   readonly isInitiator: boolean;
   readonly options: MuxOptions;
   readonly hasOrderedChannels: boolean;
   readonly remote: string;
-  _peer!: FakeMuxConnection;
+  _peer!: MemoryMuxConnection;
 
-  readonly #channels = new Map<number, FakeMuxChannel>();
+  readonly #channels = new Map<number, MemoryMuxChannel>();
   #nextId: number;
   readonly #filters: ((channel: MuxChannel) => boolean)[] = [];
   readonly #admitters: ((openPayload: Uint8Array) => boolean)[] = [];
-  readonly #incoming: FakeMuxChannel[] = [];
+  readonly #incoming: MemoryMuxChannel[] = [];
   #incomingWaiter: Deferred<IteratorResult<MuxChannel>> | undefined;
   #incomingCancelled = false;
   #open = true;
@@ -122,7 +124,7 @@ export class FakeMuxConnection implements MuxConnection {
     this.isInitiator = isInitiator;
     this.options = options;
     this.hasOrderedChannels = ordered;
-    this.remote = isInitiator ? 'fake server' : 'fake client';
+    this.remote = isInitiator ? 'memory server' : 'memory client';
     this.#nextId = isInitiator ? 2 : 1;
     this.#awaitingLimits = awaitLimits;
     if (!awaitLimits) {
@@ -158,12 +160,12 @@ export class FakeMuxConnection implements MuxConnection {
   }
 
   /** The next channel the peer opened that no filter adopted. */
-  async accept(): Promise<FakeMuxChannel> {
+  async accept(): Promise<MemoryMuxChannel> {
     const result = await this.incoming[Symbol.asyncIterator]().next();
     if (result.done === true) {
       throw new Error('no more incoming channels');
     }
-    return result.value as FakeMuxChannel;
+    return result.value as MemoryMuxChannel;
   }
 
   adoptIncoming(filter: (channel: MuxChannel) => boolean): () => void {
@@ -186,7 +188,7 @@ export class FakeMuxConnection implements MuxConnection {
     };
   }
 
-  open(openPayload: Uint8Array): FakeMuxChannel {
+  open(openPayload: Uint8Array): MemoryMuxChannel {
     if (!this.#open || this.#peerGoingAway) {
       throw failedPrecondition('connection closed or going away');
     }
@@ -197,10 +199,10 @@ export class FakeMuxConnection implements MuxConnection {
   }
 
   /** A locally opened channel, its OPEN not sent yet. */
-  _create(openPayload: Uint8Array): FakeMuxChannel {
+  _create(openPayload: Uint8Array): MemoryMuxChannel {
     const id = this.#nextId;
     this.#nextId += 2;
-    const channel = new FakeMuxChannel(this, id, true, openPayload.slice(), this.#awaitingLimits);
+    const channel = new MemoryMuxChannel(this, id, true, openPayload.slice(), this.#awaitingLimits);
     this.#channels.set(id, channel);
     return channel;
   }
@@ -263,7 +265,7 @@ export class FakeMuxConnection implements MuxConnection {
   }
 
   identify(): Promise<void> {
-    return Promise.reject(SwitchboardError.of(StatusCode.unimplemented, 'fake mux'));
+    return Promise.reject(SwitchboardError.of(StatusCode.unimplemented, 'memory mux'));
   }
 
   readonly peerIdentity: PeerIdentity | undefined = undefined;
@@ -373,7 +375,7 @@ export class FakeMuxConnection implements MuxConnection {
   }
 
   #onOpen(id: number, payload: Uint8Array): void {
-    const channel = new FakeMuxChannel(this, id, false, payload, false);
+    const channel = new MemoryMuxChannel(this, id, false, payload, false);
     channel._openWritten = true;
     this.#channels.set(id, channel);
     if (this.#goAwaySent && !this.#admitters.some((admit) => admit(payload))) {
@@ -399,7 +401,7 @@ export class FakeMuxConnection implements MuxConnection {
   }
 
   /** A channel is mutually closed: its id is free. */
-  _released(channel: FakeMuxChannel): void {
+  _released(channel: MemoryMuxChannel): void {
     if (this.#channels.get(channel.id) === channel) {
       this.#channels.delete(channel.id);
     }
@@ -425,9 +427,9 @@ export class FakeMuxConnection implements MuxConnection {
   }
 }
 
-/** One channel of a {@link FakeMuxConnection}. */
-export class FakeMuxChannel implements MuxChannel {
-  readonly connection: FakeMuxConnection;
+/** One channel of a {@link MemoryMuxConnection}. */
+export class MemoryMuxChannel implements MuxChannel {
+  readonly connection: MemoryMuxConnection;
   readonly id: number;
   readonly isLocallyOpened: boolean;
   readonly openPayload: Uint8Array;
@@ -466,7 +468,7 @@ export class FakeMuxChannel implements MuxChannel {
   readonly closedWith: Status[] = [];
 
   constructor(
-    connection: FakeMuxConnection,
+    connection: MemoryMuxConnection,
     id: number,
     locallyOpened: boolean,
     openPayload: Uint8Array,
@@ -713,7 +715,7 @@ export class FakeMuxChannel implements MuxChannel {
     const cost = costOf(bytes.length);
     this.#receiveWindow -= cost;
     if (this.#receiveWindow < 0) {
-      throw new Error(`fake mux: DATA beyond the window of channel ${this.id}`);
+      throw new Error(`memory mux: DATA beyond the window of channel ${this.id}`);
     }
     if (this.#discarding) {
       this.#consume(cost);
@@ -912,16 +914,16 @@ export class FakeMuxChannel implements MuxChannel {
   }
 
   toString(): string {
-    return `FakeMuxChannel(${this.id})`;
+    return `MemoryMuxChannel(${this.id})`;
   }
 }
 
 /** Opens a channel from [client] and takes it at [server]: both ends. */
 export async function channelPair(
-  client: FakeMuxConnection,
-  server: FakeMuxConnection,
+  client: MemoryMuxConnection,
+  server: MemoryMuxConnection,
   openPayload: Uint8Array = new Uint8Array(0),
-): Promise<[FakeMuxChannel, FakeMuxChannel]> {
+): Promise<[MemoryMuxChannel, MemoryMuxChannel]> {
   const local = client.open(openPayload);
   const remote = await server.accept();
   return [local, remote];

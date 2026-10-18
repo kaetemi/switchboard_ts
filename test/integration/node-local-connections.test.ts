@@ -33,8 +33,8 @@ import { proxyHandler } from '../../src/core/switchboard/proxy.ts';
 import { StaticResolver } from '../../src/core/switchboard/resolver.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
 import type { Switchboard, SwitchboardOptions } from '../../src/node/switchboard.ts';
-import { hmacAuthority, issueCredential, TestVerifier } from '../support/node/fake-identity.ts';
 import { bytes, rejectsWith, tagged, tagOf, until } from '../support/node/harness.ts';
+import { hmacAuthority, issueCredential, TestVerifier } from '../support/node/seeded-identity.ts';
 import { node, onCleanup, within } from './node-support.ts';
 
 const svc = Name.of('svc');

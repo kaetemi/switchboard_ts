@@ -6,7 +6,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Port of the Dart `test/talk_credit_test.dart`: Talk returns the credit
 // of a frame when the application has taken what it carried (wiki "Mux",
-// "Flow control"; "Talk", the delivery point). Runs over the fake mux pair,
+// "Flow control"; "Talk", the delivery point). Runs over the memory mux pair,
 // which charges and returns credit as the frame mux does.
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -17,12 +17,6 @@ import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
-import {
-  type FakeMuxChannel,
-  type FakeMuxConnection,
-  fakeMuxPair,
-  costOf as muxCost,
-} from '../../support/talk/fake-channel.ts';
 import { frameLink } from '../../support/talk/frame-link.ts';
 import {
   Collector,
@@ -31,6 +25,12 @@ import {
   serve,
   uncaughtErrors,
 } from '../../support/talk/helpers.ts';
+import {
+  type MemoryMuxChannel,
+  type MemoryMuxConnection,
+  memoryMuxPair,
+  costOf as muxCost,
+} from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 const defaultInitialWindow = defaultMuxOptions.initialWindow;
@@ -38,14 +38,14 @@ const defaultInitialWindow = defaultMuxOptions.initialWindow;
 /** Lets the mux and Talk deliver what is in flight. */
 const settle = (): Promise<void> => flush(20);
 
-let client: FakeMuxConnection;
-let server: FakeMuxConnection;
+let client: MemoryMuxConnection;
+let server: MemoryMuxConnection;
 
 /**
  * A client and a server Talk channel over one mux connection, with both
  * raw mux channels for inspection.
  */
-async function talkPair(): Promise<[TalkChannel, TalkChannel, FakeMuxChannel, FakeMuxChannel]> {
+async function talkPair(): Promise<[TalkChannel, TalkChannel, MemoryMuxChannel, MemoryMuxChannel]> {
   const raw = client.open(empty);
   const talk = new TalkChannel(raw);
   const serverRaw = await server.accept();
@@ -53,7 +53,7 @@ async function talkPair(): Promise<[TalkChannel, TalkChannel, FakeMuxChannel, Fa
 }
 
 beforeEach(() => {
-  [client, server] = fakeMuxPair();
+  [client, server] = memoryMuxPair();
 });
 
 afterEach(async () => {
@@ -220,7 +220,7 @@ test('stream items are flow controlled by the items subscription', async () => {
 
 test('items nobody listens to stall the channel until their request ends, not longer', async () => {
   const clock = new ManualClock();
-  [client, server] = fakeMuxPair({ mux: { clock } });
+  [client, server] = memoryMuxPair({ mux: { clock } });
   const raw = client.open(empty);
   const talk = new TalkChannel(raw, { requestTimeout: 200 });
   const serverTalk = new TalkChannel(await server.accept());

@@ -313,7 +313,7 @@ describe('the WebSocket capabilities', () => {
   });
 
   test('options are validated', () => {
-    const fake = {
+    const socket = {
       readyState: 1,
       protocol: '',
       bufferedAmount: 0,
@@ -321,9 +321,9 @@ describe('the WebSocket capabilities', () => {
       send() {},
       close() {},
     };
-    expect(() => new WebSocketTransport(fake, { maxFrameSize: -1 })).toThrow(RangeError);
-    expect(() => new WebSocketTransport(fake, { closeTimeout: -1 })).toThrow(RangeError);
-    expect(() => new WebSocketTransport(fake, { outputHighWaterMark: 1.5 })).toThrow(RangeError);
+    expect(() => new WebSocketTransport(socket, { maxFrameSize: -1 })).toThrow(RangeError);
+    expect(() => new WebSocketTransport(socket, { closeTimeout: -1 })).toThrow(RangeError);
+    expect(() => new WebSocketTransport(socket, { outputHighWaterMark: 1.5 })).toThrow(RangeError);
   });
 });
 

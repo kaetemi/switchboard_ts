@@ -34,7 +34,7 @@ import { onCleanup } from './harness.ts';
  * `requireCredential`, `CONNECT` needs a requester whose credential grants
  * `broker` for the type.
  */
-export class FakeMesh {
+export class TableMesh {
   /** The policy of the connections an instance dials for `CONNECT`, as `MeshNode` has. */
   brokeredPolicy: ChannelPolicy = ChannelPolicies.scoped();
 
@@ -136,14 +136,14 @@ export class FakeMesh {
   }
 }
 
-/** A {@link FakeMesh} resolver: the mesh's table, and `CONNECT` as its {@link requester}. */
+/** A {@link TableMesh} resolver: the mesh's table, and `CONNECT` as its {@link requester}. */
 export class MeshResolver extends StaticResolver implements BrokeringResolver {
   /** The node whose credential `CONNECT` is asked with. */
   requester: Switchboard | undefined;
 
-  readonly #mesh: FakeMesh;
+  readonly #mesh: TableMesh;
 
-  constructor(mesh: FakeMesh) {
+  constructor(mesh: TableMesh) {
     super();
     this.#mesh = mesh;
   }

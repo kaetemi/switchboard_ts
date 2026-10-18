@@ -63,7 +63,7 @@ Branch suggestion: `claude/sb-ts-talk`. Dart: `lib/src/talk/*` (8 100 lines).
 **Deliverables, in order**
 
 1. `talk-frame.ts` with every wiki and Dart vector (the frame codec is independent of the mux). **Done** (#1).
-2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a fake `MuxChannel` pair under `test/support/talk/fake-channel.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too. **Done** (#4, #11).
+2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a memory `MuxChannel` pair under `test/support/talk/memory-mux.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too. **Done** (#4, #11).
 3. Bulk transfers: `talk-bulk.ts`, `talk-bulk-transfer.ts`, the `_bulk` filter, `streamBulk`, budgets and timeouts. **Done** (#11).
 4. `talk-forward.ts`, the forwarding tests. **Done** (#11), and the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`, `test/integration/talk-*.test.ts`).
 
@@ -102,7 +102,7 @@ Branch suggestion: `claude/sb-ts-naming`. Dart: `lib/src/naming/*` (9 100 lines)
 **Deliverables, in order**
 
 1. `naming-protocol.ts` with vectors; `slot-key.ts`, `slot-table.ts`. **Done** (#3).
-2. `NamingClient` and `NamingResolver` over a `TalkChannel` (thread 2 step 2; until then the fake channel fixture). **Done** (#13; `renew()` on `claude/identity`; the suites over real Talk on `claude/slot-routing`).
+2. `NamingClient` and `NamingResolver` over a `TalkChannel` (thread 2 step 2; until then the memory channel fixture). **Done** (#13; `renew()` on `claude/identity`; the suites over real Talk on `claude/slot-routing`).
 3. `NamingService` with leases, watches, CONNECT brokering. **Done** (#13).
 4. Slot spaces: client and service halves, `SlotGate`, `SlotChannel`, reopen on MOVED, migration (ASSIGN, DRAIN, FORWARD, RESUME). **Done** (#13, `claude/slot-routing`: `SlotGate`, `SlotLifecycle`, `SlotGates` in `src/core/naming/slot-gate.ts`, `slot_gate_test.dart`, `slot_gate_credential_test.dart`, `slot_routing_test.dart`). The integration port of `test/integration/sharding/*` (the whole Dart sharding suite) is done on `claude/sharding`.
 
@@ -118,18 +118,18 @@ Branch suggestion: `claude/sb-ts-quic`. Dart: `switchboard_quic/lib/src/binding/
 - `src/web/quic/webtransport-provider.ts` (`webTransport()` returning a `QuicConnector` provider; `quicConnector(url, provider, init)` in `quic-dial.ts` gives a client its `ConnectionConnector`, and `webTransportConnector(url, init)` the same over `webTransport()`), `src/web/quic/index.ts`.
 - `src/node/quic/native-provider.ts` (`nativeQuic()`, lazy `createRequire` load of the addon, `selfSignedCertificate`), `src/node/quic/index.ts`.
 - `native/`: the N-API crate (`napi-rs`), `Cargo.toml`, `build.rs` as needed, `package.json` scripts for `napi build`, the per-platform package manifests under `native/npm/<target>/`, `native/README.md` (how to build locally, supported targets, how `sbq` is reused). Reuse `switchboard_quic/native/sbq` as a vendored copy under `native/sbq-vendor/` (the user's decision: duplicate now, possibly a shared shim repository later, so the copy must stay separable): `tool/sync-sbq.mjs` copies it from a `switchboard_quic` checkout at the commit recorded in `native/sbq-vendor.commit` (outside the copy, so the copy stays byte-identical to upstream apart from the crate-type line), adding `"rlib"` to the crate types, and a CI check verifies the copy equals upstream except for that line. The exported JS surface of the addon is yours; keep it minimal (sessions, streams, events through a thread-safe function) and keep all protocol logic in TypeScript.
-- `src/testing/fake-quic-provider.ts` (the in-memory provider: independent stream delivery with configurable delays, flow control, a stream limit, resets, an exporter) and its export from `src/testing/index.ts`.
-- Tests: `test/vectors/quic-records.test.ts`, `test/unit/quic/**` (ports of the `switchboard_quic` binding tests over the fake provider), `test/integration/quic-native.test.ts` (loopback over the addon, skipped with a message when the addon is not built), `test/browser/webtransport.test.ts` (Chromium via Playwright against a native listener; `playwright` as a dev dependency, Chromium from `PLAYWRIGHT_BROWSERS_PATH`), the `native` and `browser` CI jobs in `.github/workflows/ci.yml` (add jobs; do not edit the existing ones).
+- `src/testing/memory-quic-provider.ts` (the in-memory provider: independent stream delivery with configurable delays, flow control, a stream limit, resets, an exporter) and its export from `src/testing/index.ts`.
+- Tests: `test/vectors/quic-records.test.ts`, `test/unit/quic/**` (ports of the `switchboard_quic` binding tests over the in-memory provider), `test/integration/quic-native.test.ts` (loopback over the addon, skipped with a message when the addon is not built), `test/browser/webtransport.test.ts` (Chromium via Playwright against a native listener; `playwright` as a dev dependency, Chromium from `PLAYWRIGHT_BROWSERS_PATH`), the `native` and `browser` CI jobs in `.github/workflows/ci.yml` (add jobs; do not edit the existing ones).
 
 **Deliverables, in order**
 
-1. `records.ts`, `hello.ts`, vectors; the fake provider. **Done** (#2).
-2. The binding over the fake provider: `QuicBindingConnection`, `QuicBindingChannel`, control stream, HELLO, GOAWAY and drain holds, exporter-bound identity, the Dart binding test ports. **Done** (#8).
+1. `records.ts`, `hello.ts`, vectors; the in-memory provider. **Done** (#2).
+2. The binding over the in-memory provider: `QuicBindingConnection`, `QuicBindingChannel`, control stream, HELLO, GOAWAY and drain holds, exporter-bound identity, the Dart binding test ports. **Done** (#8).
 3. The native provider and addon for Linux x64 (CI), then macOS and Windows targets; `connectQuic` and `listenQuic`; the loopback integration test; the `native` CI job building the addon with cargo and running the integration test. **Done** (#8, #15; node-level native tests on `claude/quic-identity`). CI builds Linux x64; the other targets are built by the release workflow.
 4. The WebTransport provider and the browser test; the `browser` CI job. **Done** (`claude/webtransport`: 34 browser tests in Chromium 141, the `browser` job, the man-in-the-middle group).
 5. Prebuilt packaging: the per-target optional dependencies and a `release` workflow building them (a draft is enough; publishing is the user's call). **Done** (`claude/quic-identity`: `native/npm/<target>/`, `optionalDependencies`, `.github/workflows/release.yml`). Musl prebuilds are open.
 
-**Acceptance:** every `switchboard_quic` test has a TS counterpart over the fake provider or a documented reason; a TS node over the native provider interoperates with the Dart peer over raw QUIC and WebTransport in both directions; Chromium reaches a TS WebTransport listener.
+**Acceptance:** every `switchboard_quic` test has a TS counterpart over the in-memory provider or a documented reason; a TS node over the native provider interoperates with the Dart peer over raw QUIC and WebTransport in both directions; Chromium reaches a TS WebTransport listener.
 
 ## Thread 6: Dart interop test harness (existing thread)
 

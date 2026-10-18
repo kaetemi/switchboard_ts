@@ -1,4 +1,4 @@
-// QuicBindingConnection and QuicBindingChannel over the fake provider, a
+// QuicBindingConnection and QuicBindingChannel over the in-memory provider, a
 // port of `switchboard_quic`'s `test/binding_test.dart`: channel ids,
 // records, the close handshake (CLOSE records, resets, STOP_SENDING, the
 // confirmation timeout), flow control, priorities, openAfter, GOAWAY and
@@ -36,10 +36,10 @@ import {
 import { Status, StatusCode } from '../../../src/core/status.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import {
-  FakeQuicNetwork,
-  FakeQuicSession,
-  type FakeQuicStream,
-} from '../../../src/testing/fake-quic-provider.ts';
+  MemoryQuicNetwork,
+  MemoryQuicSession,
+  type MemoryQuicStream,
+} from '../../../src/testing/memory-quic-provider.ts';
 import {
   bindingAndRaw,
   bytes,
@@ -534,7 +534,7 @@ describe('priorities', () => {
 
 describe('openAfter', () => {
   test('the child stream opens once what the parent was given before was taken, and may reach the peer first', async () => {
-    const network = new FakeQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 80 : 0) });
+    const network = new MemoryQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 80 : 0) });
     const [a, b] = await connectionPair({ network });
     const atB = collect(b);
     const parent = a.open(bytes('parent'));
@@ -694,7 +694,7 @@ describe('GOAWAY and the end of the connection', () => {
   });
 
   test("close waits for the FIN of a channel still waiting for the peer's close", async () => {
-    const network = new FakeQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 60 : 0) });
+    const network = new MemoryQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 60 : 0) });
     const [a, b] = await connectionPair({ network });
     const arriving = nextChannel(b);
     const channel = a.open(empty);
@@ -708,7 +708,7 @@ describe('GOAWAY and the end of the connection', () => {
   });
 
   test('close waits for the CLOSE records this side wrote to be acknowledged', async () => {
-    const network = new FakeQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 60 : 0) });
+    const network = new MemoryQuicNetwork({ delay: (info) => (info.ordinal === 1 ? 60 : 0) });
     const [a, b] = await connectionPair({ network });
     const arriving = nextChannel(b);
     const channel = a.open(empty);
@@ -754,7 +754,7 @@ describe('keep-alive and the control stream', () => {
   test("over WebTransport, a control stream reset without a code (the peer's WT_SESSION_GONE) waits for the session's end, which ends the connection as the close says", async () => {
     const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
     await until(() => connection.peerHello !== undefined);
-    (raw.control as FakeQuicStream).resetWithoutCode();
+    (raw.control as MemoryQuicStream).resetWithoutCode();
     await settle(100);
     expect(connection.isOpen).toBe(true);
     await within(raw.session.close(StatusCode.unavailable, 'upgrade'));
@@ -771,7 +771,7 @@ describe('keep-alive and the control stream', () => {
     const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
     await until(() => connection.peerHello !== undefined);
     const start = Date.now();
-    (raw.control as FakeQuicStream).stopWithoutCode();
+    (raw.control as MemoryQuicStream).stopWithoutCode();
     expectStatus(await within(connection.done, 10_000), StatusCode.protocolError);
     expect(Date.now() - start).toBeGreaterThanOrEqual(
       QuicBindingConnection.webTransportSessionGoneGrace - 50,
@@ -916,7 +916,7 @@ describe('identity', () => {
   const credentialOf = (identity: string) => credentialFor(identity, holder.publicKey);
 
   /** The exporter of [session]. */
-  async function exporterOf(session: FakeQuicSession): Promise<Uint8Array> {
+  async function exporterOf(session: MemoryQuicSession): Promise<Uint8Array> {
     return (await session.exportKeyingMaterial(
       rawQuicExporterLabel,
       new Uint8Array(0),
@@ -942,7 +942,7 @@ describe('identity', () => {
 
   test("the exporter: RFC 9266's label on raw QUIC, the application label over WebTransport", async () => {
     for (const webTransport of [false, true]) {
-      const [a, b] = FakeQuicSession.pair();
+      const [a, b] = MemoryQuicSession.pair();
       const starting = QuicBindingConnection.start(b, {
         options: fast,
         isWebTransport: webTransport,
@@ -1152,7 +1152,7 @@ describe('identity', () => {
   });
 
   test("an initiator awaiting the acceptor's identity without a verifier could never use the connection: it closes at once", async () => {
-    const [a] = FakeQuicSession.pair();
+    const [a] = MemoryQuicSession.pair();
     const connection = await QuicBindingConnection.start(a, {
       options: fast,
       quicOptions: { identity: new QuicIdentityRules({ awaitPeerIdentity: true }) },

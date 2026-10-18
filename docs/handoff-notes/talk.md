@@ -30,7 +30,7 @@ The tests are 15 files and 328 tests in `test/unit/talk/`. Every test name in th
 
 The test fixtures are in `test/support/talk/`:
 
-* `fake-channel.ts`: `fakeMuxPair()`, an in-memory `MuxConnection` pair with real credit semantics. Keep it.
+* `memory-mux.ts`: `memoryMuxPair()`, an in-memory `MuxConnection` pair with real credit semantics. Keep it.
 * `frame-mux-peers.ts`: Talk over the real frame mux: `frameMuxPair()` (two `FrameMuxConnection`s on the memory pair, bulk routing installed, closed after the test; a `WireLog` of what both sides write; a transport that queues frames ahead), `FrameMuxPeers` (the frame-mux `Peers`), `RawMuxPeer`/`rawMuxPair()` (a mux whose peer hands it raw frames all at once).
 * `frame-link.ts`: `Pair`, `RawPeer`, `FrameEnd`.
 * `helpers.ts`: `Queue`, `Collector`, `serve`, `flush`, the status assertions, and the helpers the files used to copy (`toList`, `first`, `rejection`, `within`, `sleep`, `expectBytes`, `expectSame`, `expectRemote`, `rejectsRemote`, `rawOf`, `only`, `last`).
@@ -39,7 +39,7 @@ The test fixtures are in `test/support/talk/`:
 * `timer-clock.ts`: `TimerClock`, a `ManualClock` that tells its pending delays.
 * `bulk-peers.ts`: `Peers`, sources, `until`, `PulledSource`.
 
-`FakeClock` is gone: the tests use `ManualClock.elapseAsync` (and `flushAsync`, `settle`, `nextAt`) from `src/testing/manual-clock.ts`. The node's `SteppingClock` and the naming tests' `TestClock` can merge into it the same way (their owners' call).
+The Talk tests' own clock is gone: they use `ManualClock.elapseAsync` (and `flushAsync`, `settle`, `nextAt`) from `src/testing/manual-clock.ts`. The node's `SteppingClock` and the naming tests' `TestClock` can merge into it the same way (their owners' call).
 
 ## Integration tests (`test/integration/talk-*.test.ts`)
 
@@ -47,7 +47,7 @@ The test fixtures are in `test/support/talk/`:
 * `talk-frame-mux-credit.test.ts` (16): `talk_credit_test` over the frame mux.
 * `talk-frame-mux-bulk.test.ts` (41) and `talk-frame-mux-bulk-rules.test.ts` (30): all of `talk_bulk_test` over the frame mux, the adapted tests as in Dart (LIMITS, the GOAWAY drain, the receive mark), 'over memory' run again with transport latency (the 'over TCP' adaptation), and the bulk admission at the bound.
 * `talk-frame-mux-forward.test.ts` (53): forwarding chains over frame mux pairs, 'bulk payloads' and 'forwarding credit' (with the real `SlotChannel`).
-* `talk-quic.test.ts` (17, one `test.fails`): Talk over `QuicBindingConnection` on the fake provider: unordered channels, bulk streams overtaking or lagging their references and their parent, lingering with drain holds, `_bulk` continuations after GOAWAY.
+* `talk-quic.test.ts` (17, one `test.fails`): Talk over `QuicBindingConnection` on the in-memory provider: unordered channels, bulk streams overtaking or lagging their references and their parent, lingering with drain holds, `_bulk` continuations after GOAWAY.
 
 * `talk-tcp.test.ts` (9): the 'over TCP' group of `talk_bulk_test` over the frame mux on loopback TCP (`connectTcp`, `listenTcp`), `mux_talk_test` over TCP, and a stalled reader holding its channel at the window.
 
@@ -85,7 +85,7 @@ Over the QUIC binding, which reads a channel's stream only as far as what it del
 ## Remaining
 
 1. **The interop thread's Talk scenarios** (request, stream, abort, bulk over 32752 bytes, forward) come with the TS peer (`claude/ts-peer`, in flight). Talk itself is ready for them; the node's Talk seam (`src/core/switchboard/talk-layer.ts`) is wired to `TalkChannel` since `claude/node-talk`.
-2. **Fixture follow-ups (optional):** the fake mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
+2. **Fixture follow-ups (optional):** the memory mux does not model a GOAWAY drain, a per-side LIMITS or `maxSubframeLength`, or the receive high-water mark; the frame-mux integration tests cover those.
 
 ## Conventions this thread followed
 

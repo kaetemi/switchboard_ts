@@ -7,7 +7,7 @@ _Kept by the lead (design and integration) thread. Integration branch: `claude/s
 | PR | Thread | What | Merged head |
 | --- | --- | --- | --- |
 | #1 | Talk | Talk frame codec, bulk reference and `_bulk` open payload, 101 vector tests | 04362ea |
-| #2 | QUIC | records, record reader, HELLO, exporter helpers, fake QUIC provider, 77 tests | e7c04da |
+| #2 | QUIC | records, record reader, HELLO, exporter helpers, in-memory QUIC provider, 77 tests | e7c04da |
 | #3 | Naming | `_ns` and sharding codecs, slot keys, slot tables, endpoint check with a Dart oracle fixture | 47fb444 |
 | #4 | Talk | contract: item windows, `creditTimeout`, `MuxChannelCarrier`, `TalkMessage.frame` | f378d19 |
 | #5 | Core | stream framing codec and transforms, stream transport over `ByteInput`/`ByteOutput`, memory pair, endpoints, `MemoryEndpoints` | f0e7263 |

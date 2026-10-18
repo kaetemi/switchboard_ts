@@ -38,7 +38,7 @@ Information for the lead and the other threads, not instructions.
   (`followBulkTarget`, Dart `BulkRoutes.follow`); the `onReplaced` option
   is gone.
 - The naming tests run over real `TalkChannel`s
-  (`test/support/naming/talk-link.ts`); the fake pair stays for the four
+  (`test/support/naming/talk-link.ts`); the memory pair stays for the four
   `naming.test.ts` cases that need synchronous delivery.
   `naming-bulk.test.ts` runs over nodes and checks `isBulk` again.
 - The node-side identity cases run over real nodes in

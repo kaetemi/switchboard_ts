@@ -7,7 +7,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Shared helpers for the naming service, client and resolver tests: the
 // port of the Dart `naming_harness.dart`. Links are real Talk channels over
 // an in-memory frame link (`talk-link.ts`), except where a test asks for
-// synchronous delivery, which only the fake pair (`fake-talk.ts`) has.
+// synchronous delivery, which only the memory pair (`memory-talk.ts`) has.
 
 import { expect } from 'vitest';
 import { utf8Decode } from '../../../src/core/bytes.ts';
@@ -31,12 +31,12 @@ import type { TalkChannel, TalkMessage, TalkOptions } from '../../../src/core/ta
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
-  type FakeFrame,
-  type FakeTalkChannel,
-  type FakeTalkPairOptions,
   type FrameFilter,
-  fakeTalkPair,
-} from './fake-talk.ts';
+  type LinkFrame,
+  type MemoryTalkChannel,
+  type MemoryTalkPairOptions,
+  memoryTalkPair,
+} from './memory-talk.ts';
 import { type LinkedTalkChannel, talkLink } from './talk-link.ts';
 
 export const ms10 = 10;
@@ -136,19 +136,19 @@ export async function isSettled(promise: Promise<unknown>): Promise<boolean> {
 
 /**
  * One side of a test link: a real Talk channel over an in-memory frame link,
- * or, for synchronous delivery, the fake pair's. Both record the frames
+ * or, for synchronous delivery, the memory pair's. Both record the frames
  * they send (`sent`), take a filter of them (`drop`) and write raw frames
  * (`write`).
  */
-export type LinkChannel = LinkedTalkChannel | FakeTalkChannel;
+export type LinkChannel = LinkedTalkChannel | MemoryTalkChannel;
 
 /**
  * Two linked Talk channels: real ones over an in-memory frame link, or the
- * fake pair's with `sync` (synchronous delivery, which only the fake has).
+ * memory pair's with `sync` (synchronous delivery, which only that pair has).
  */
-export function talkPair(options: FakeTalkPairOptions = {}): [LinkChannel, LinkChannel] {
+export function talkPair(options: MemoryTalkPairOptions = {}): [LinkChannel, LinkChannel] {
   if (options.sync === true) {
-    return fakeTalkPair(options);
+    return memoryTalkPair(options);
   }
   return talkLink(options);
 }
@@ -294,7 +294,7 @@ export class LossyConnector {
 }
 
 /** True for the final response to a request (not a stream item, extend or abort). */
-export function isFinalResponse(frame: FakeFrame): boolean {
+export function isFinalResponse(frame: LinkFrame): boolean {
   return frame.kind === 'message' && frame.responseId !== 0 && !frame.item;
 }
 

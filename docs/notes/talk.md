@@ -10,7 +10,7 @@ lead and the other threads, not instructions.
   TalkMessage.frame): merged.
 - Deliverable 2 (channel, message, request, stream, with bulk plumbing):
   implemented on `claude/switchboard-ts-talk-u0a6uj`; Dart test ports in
-  progress over a fake mux pair, PR to follow.
+  progress over a memory mux pair, PR to follow.
 - Deliverable 3 (bulk tests) and 4 (`forwardMessage` in
   `talk-forward.ts`, ported; tests in progress): same branch.
 
@@ -82,14 +82,14 @@ connection. `BulkRoutes` is not exported from the barrel; import from
 
 ## Test fixtures other threads may reuse
 
-- `test/support/talk/fake-channel.ts`: `fakeMuxPair()`, an in-memory
+- `test/support/talk/memory-mux.ts`: `memoryMuxPair()`, an in-memory
   `MuxConnection` pair implementing `mux/contract.ts` (cost = length + 16,
   credit batched at half the window, manual credit, grant, CLOSE confirmed
   by the peer, `openAfter` ordering, bulk chunking, adoptIncoming and
   admitAfterGoAway, `ordered: false` with held channels for reordering).
 - `ManualClock.elapseAsync(ms)` (with `flushAsync`, `settle`, `nextAt`)
   in `src/testing/manual-clock.ts` flushes promise jobs between timers
-  (the `fake_async` model); it replaced the Talk tests' `FakeClock`. The
+  (the `fake_async` model); it replaced the Talk tests' own clock. The
   node's `SteppingClock` and the naming tests' `TestClock` can merge into
   it.
 - `test/support/talk/frame-mux-peers.ts`: Talk over the real frame mux
