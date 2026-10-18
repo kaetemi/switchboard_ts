@@ -2422,6 +2422,8 @@ export class Switchboard implements AsyncDisposable {
               : record;
           return new Route(selected, connection);
         } catch (e) {
+          // An abort ends the open with its reason, whatever that is.
+          checkAborted(options.signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }
@@ -2441,6 +2443,7 @@ export class Switchboard implements AsyncDisposable {
             );
             return new Route(record, via.connection, config.type);
           } catch (e) {
+            checkAborted(options.signal);
             if (this.#closing || !(e instanceof SwitchboardError)) {
               throw e;
             }
@@ -2460,6 +2463,7 @@ export class Switchboard implements AsyncDisposable {
           );
           return new Route(record, connection);
         } catch (e) {
+          checkAborted(options.signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }
@@ -2548,6 +2552,7 @@ export class Switchboard implements AsyncDisposable {
         try {
           return { record, connection: await this.connect(endpoint, { record, signal }) };
         } catch (e) {
+          checkAborted(signal);
           if (this.#closing || !(e instanceof SwitchboardError)) {
             throw e;
           }
