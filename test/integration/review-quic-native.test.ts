@@ -6,11 +6,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // Review finding (native provider, docs/notes/review-quic.md): a write copies what the stack has
 // not taken yet so that the caller may reuse its buffer at once (`Stream.write` in
-// src/node/quic/native-provider.ts), but the copy is `w.bytes.slice(w.offset)`, and a Node
-// Buffer's `slice` is a view on the same memory: a Buffer reused while the write waits for credit
-// goes out changed. The case is `test.fails` until the copy is real (for example
-// `Uint8Array.prototype.slice.call(w.bytes, w.offset)`); the test of the same name in
-// quic-native.test.ts writes a Uint8Array, which `slice` does copy.
+// src/node/quic/native-provider.ts). The copy was `w.bytes.slice(w.offset)`, and a Node Buffer's
+// `slice` is a view on the same memory, so a Buffer reused while the write waited for credit went
+// out changed; it is `Uint8Array.prototype.slice.call(w.bytes, w.offset)` now. The test of the
+// same name in quic-native.test.ts writes a Uint8Array, which `slice` always copied.
 //
 // Without the addon the file is skipped, as the other native files are; with
 // SWITCHBOARD_NATIVE=required a missing addon fails it instead.
@@ -33,7 +32,7 @@ if (!availability.available && process.env['SWITCHBOARD_NATIVE'] === 'required')
 describe.skipIf(!availability.available)(
   `review: the native provider's write copies (${availability.available ? availability.path : availability.reason})`,
   () => {
-    test.fails('a Node Buffer written while the stream window is full may be reused at once, as a Uint8Array may', async () => {
+    test('a Node Buffer written while the stream window is full may be reused at once, as a Uint8Array may', async () => {
       const provider = nativeQuic();
       const certificate = selfSignedCertificate('127.0.0.1');
       const listener = await provider.listen('127.0.0.1', 0, {
