@@ -19,6 +19,7 @@ import {
   nativeQuicAvailability,
   QuicBindingConnection,
   type Resolver,
+  SlotChannel,
   Status,
   StatusCode,
   Switchboard,
@@ -124,7 +125,9 @@ export class Client {
     const h = this.#ctx.handles;
     if ((namingOps as readonly string[]).includes(op)) {
       return this.#naming.command(op, cmd, (channel) =>
-        this.#adoptTalk(channel, this.#ctx.trackConnection(channel.connection)),
+        channel instanceof SlotChannel
+          ? this.#adoptTalk(channel)
+          : this.#adoptTalk(channel, this.#ctx.trackConnection(channel.connection)),
       );
     }
     switch (op) {
@@ -250,10 +253,15 @@ export class Client {
     return this.#adoptTalk(ch, connection);
   }
 
-  /** [ch] as a Talk channel handle on [connection]'s, its messages reported and its requests refused. */
-  #adoptTalk(ch: MuxChannel, connection: string): Json {
+  /**
+   * [ch] as a Talk channel handle on [connection]'s, its messages reported
+   * and its requests refused; a slot channel has no one connection, and
+   * its handle is reported as `slotChannel`.
+   */
+  #adoptTalk(ch: MuxChannel | SlotChannel, connection?: string): Json {
     const ctx = this.#ctx;
-    const channel = ctx.trackChannel(ch, false);
+    const channel =
+      ch instanceof SlotChannel ? ctx.trackSlotChannel(ch, false) : ctx.trackChannel(ch, false);
     const talk = new TalkChannel(ch, ctx.config.talk);
     const handle = ctx.handles.add('t', talk);
     void (async () => {
@@ -274,7 +282,9 @@ export class Client {
         // A channel abort from the far side ends the messages.
       }
     })();
-    return { talk: handle, channel, connection };
+    return ch instanceof SlotChannel
+      ? { talk: handle, slotChannel: channel }
+      : { talk: handle, channel, connection };
   }
 
   #talkStream(cmd: Json): Json {

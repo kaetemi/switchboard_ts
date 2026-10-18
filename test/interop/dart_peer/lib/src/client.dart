@@ -92,10 +92,13 @@ class Client {
   Future<Object?> command(String op, Map<String, Object?> cmd) async {
     final h = ctx.handles;
     if (NamingCommands.ops.contains(op)) {
-      return _naming.command(op, cmd, (channel) async {
-        final node = channel.connection;
-        return _adoptTalk(channel, ctx.trackConnection(node));
-      });
+      return _naming.command(
+        op,
+        cmd,
+        (channel) async => channel is MuxChannel
+            ? _adoptTalk(channel, ctx.trackConnection(channel.connection))
+            : _adoptTalk(channel),
+      );
     }
     switch (op) {
       case 'connect':
@@ -305,12 +308,24 @@ class Client {
     return _adoptTalk(ch, connection);
   }
 
-  /// [ch] as a Talk channel handle on [connection]'s, its messages reported
-  /// and its requests refused.
-  Map<String, Object?> _adoptTalk(MuxChannel ch, String connection) {
+  /// [ch] (a [MuxChannel] or a [SlotChannel]) as a Talk channel handle on
+  /// [connection]'s, its messages reported and its requests refused; a slot
+  /// channel has no one connection, and its handle is reported as
+  /// `slotChannel`.
+  Map<String, Object?> _adoptTalk(Object ch, [String? connection]) {
     final h = ctx.handles;
-    final channel = ctx.trackChannel(ch, listen: false);
-    final talk = TalkChannel(ch, options: ctx.config.talk);
+    final options = ctx.config.talk;
+    final (channel, talk) = switch (ch) {
+      final SlotChannel c => (
+        ctx.trackSlotChannel(c, listen: false),
+        TalkChannel(c, options: options),
+      ),
+      final MuxChannel c => (
+        ctx.trackChannel(c, listen: false),
+        TalkChannel(c, options: options),
+      ),
+      _ => throw ArgumentError.value(ch, 'ch', 'not a channel'),
+    };
     final handle = h.add('t', talk);
     talk.messages.listen((m) async {
       ctx.out.event('talk.message', {
@@ -322,7 +337,9 @@ class Client {
         await m.replyAbort(Status.of(StatusCode.unimplemented));
       }
     }, onError: (Object _) {});
-    return {'talk': handle, 'channel': channel, 'connection': connection};
+    return ch is SlotChannel
+        ? {'talk': handle, 'slotChannel': channel}
+        : {'talk': handle, 'channel': channel, 'connection': connection};
   }
 
   Map<String, Object?> _talkStream(Map<String, Object?> cmd) {

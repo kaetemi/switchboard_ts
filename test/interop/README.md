@@ -16,8 +16,9 @@ test/interop/
   matrix.ts           pairings × transports, skip reasons, describeCells()
   chain.ts            chains of three or more peers, every role in either language, describeChains()
   scenarios/          the scenarios: basics, talk, talk-wire, bulk, close and GOAWAY, mux limits,
-                      protocol errors, forward, identity, naming and sharding, mesh (proxy, relay,
-                      forwarding and naming chains)
+                      protocol errors, forward, identity, naming, sharding (managed and lazy
+                      spaces, refused hand-overs, the MOVED retry of slot-routed opens), mesh
+                      (proxy, relay, forwarding and naming chains)
   oracle.test.ts      the wiki vectors against the Dart codecs; the TS codecs against Dart, fuzzed
   probe/              raw byte conformance: hand-built frames against each server's listeners
 ```
@@ -113,7 +114,7 @@ Byte strings are hex, upper case, space separated (`"01 02 FF"`; spaces are opti
 | `talk` | Dart defaults | `requestTimeoutMs`, `replyTimeoutMs`, `bulkThreshold`, `maxInlinePayload`, `reassemblyBudget`, `bulkIdleTimeoutMs`, `creditTimeoutMs` |
 | `services` | `echo`, `raw`, `sink` at instance 1 | `[{"type": "echo", "behaviour": "echo", "instance": 1}]`; `forward` takes a `target` |
 | `identity` | none | what the peer presents and verifies (below) |
-| `naming` | none | `{assignmentHoldMs}` (default 0): serve a naming service as `_ns` instance 1, listed in its own table at the peer's endpoints |
+| `naming` | none | `{assignmentHoldMs, holdingSettleMs, handoverTimeoutMs, assignBackoffMs, assignBackoffMaxMs, holderGraceMs, resumeAttempts}` (the hold default 0, the others the library's defaults): serve a naming service as `_ns` instance 1, listed in its own table at the peer's endpoints |
 | `proxy` | none | `{endpoint, types, revealOwners}`: `proxyHandler` for each of `types` (default `echo`), forwarding to their instance 1 at `endpoint` |
 | `relay` | none | `{endpoint, types}`: a `RelayService` at `_relay` (`allowEndpoints`, no identity required) relaying `types` (default `echo`) to their instance 1 at `endpoint` |
 
@@ -125,7 +126,7 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 
 | Op | Arguments | Value |
 | --- | --- | --- |
-| `naming.open` | `endpoint`, `watch` (default true) | `{naming}`: a started naming client of the naming service at `endpoint`; its table's changes are `naming.event {naming, up, type, instance, endpoints, metadata}`, and the slot requests it gets (all accepted at once, `ASSIGN` answered holding) `naming.slot {naming, request, type, slot, epoch, to}` |
+| `naming.open` | `endpoint`, `watch` (default true) | `{naming}`: a started naming client of the naming service at `endpoint`; its table's changes are `naming.event {naming, up, type, instance, endpoints, metadata}`, its mirrored slot tables' changes `naming.table {naming, type, slot, state, owner, to, holder, epoch}` (the new entry, the state by name), and the slot requests its handler gets `naming.slot {naming, request, type, slot, epoch, to, holder}` (`request` is `assign`, `drain`, `forward`, `resume` or `revoke`; `holder` is the `ASSIGN`'s, null otherwise), answered as `naming.slotAnswers` set |
 | `naming.synced` | `naming` | `null` once the table first synced |
 | `naming.register` | `naming`, `type`, `instance`, `endpoints` (default the peer's own), `metadata` | `{instance}` |
 | `naming.unregister` | `naming`, `type`, `instance` | `null` |
@@ -133,9 +134,18 @@ The listening node and the client node both dial `quic://` and `https://` endpoi
 | `naming.claim` | `naming`, `type`, `slot`, `holding` | `{epoch}` |
 | `naming.release` | `naming`, `type`, `slot`, `keepStorage` | `null` |
 | `naming.locate` | `naming`, `type`, `slot` | `{state, owner, epoch}`, the state by name |
-| `naming.migrate` | `naming`, `type`, `slot`, `to` (0: the allocator chooses) | `{phases}`: the hand-over's phases by name, once it is done |
+| `naming.migrate` | `naming`, `type`, `slot`, `to` (0: the allocator chooses) | `{phases}`: the hand-over's phases by name, once it is done; each phase is also `naming.phase {naming, type, slot, phase}` as it comes, so a rolled-back hand-over's phases are there when the command fails |
+| `naming.declareHolding` | `naming`, `type`, `slots` | `{discard}`: the slots the `HOLDING` response lists as no longer held |
+| `naming.slotAnswers` | `naming`, `assign`, `drain`, `forward`, `resume` | `null`: how the handler answers from now on, each absent one unchanged. `assign`: `holding` (the default), `notHolding`; the others: `ok` (the default); any: `wait` (held until `naming.slotRelease` or until the request is cancelled) or `{code, reason}` (refused with that status) |
+| `naming.slotRelease` | `naming`, `request`, `type`, `slot`, `answer` (default `holding` or `ok`) | `null`: answers the request held with `wait` |
+| `naming.slotOwner` | `naming`, `type`, `slot`, `refresh` | `{owner}`: `resolveSlotOwner` of the client's node |
+| `naming.slotChannel` | `naming`, `type`, `slot`, `payload` | `{slotChannel}`: `openChannelToSlot` of the client's node; its subframes and end are `channel.data` and `channel.closed` under that handle, across a `MOVED` retry |
+| `naming.slotTalk` | `naming`, `type`, `slot`, `payload` | `{talk, slotChannel}`: a Talk channel over `openChannelToSlot`, as `naming.channel` reports one |
 | `naming.channel` | `naming`, `address` (`type`, `instance`, `shard`, `payload`) | `{talk, channel, connection}`: a Talk channel opened through the resolver, as `talk.open` reports it |
 | `naming.close` | `naming` | `null` |
+| `slot.send` | `slotChannel`, `hex` | `null`: one subframe |
+| `slot.close` | `slotChannel`, `code`, `reason` or `statusHex` | `null` |
+| `slot.state` | `slotChannel` | `{retried}`: whether a `MOVED` was retried |
 
 `chain.ts` runs scenarios of three or more peers (`describeChains`): every role played by either implementation, eight cells per transport for three roles, started from the backend to the client.
 

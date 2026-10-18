@@ -56,8 +56,19 @@ export interface PeerConfig {
   services?: readonly ServiceConfig[];
   /** What the peer presents and verifies; default nothing. */
   identity?: IdentityConfig;
-  /** Serve a naming service as `_ns` instance 1; `assignmentHoldMs` defaults to 0. */
-  naming?: { assignmentHoldMs?: number };
+  /**
+   * Serve a naming service as `_ns` instance 1; `assignmentHoldMs` defaults
+   * to 0, the others to the library's defaults.
+   */
+  naming?: {
+    assignmentHoldMs?: number;
+    holdingSettleMs?: number;
+    handoverTimeoutMs?: number;
+    assignBackoffMs?: number;
+    assignBackoffMaxMs?: number;
+    holderGraceMs?: number;
+    resumeAttempts?: number;
+  };
   /** Proxy [types] (default `echo`) to their instance 1 at [endpoint]. */
   proxy?: { endpoint: string; types?: readonly string[]; revealOwners?: boolean };
   /** Relay `_relay` channels for [types] (default `echo`) to their instance 1 at [endpoint]. */

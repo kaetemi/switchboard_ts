@@ -13,6 +13,7 @@ import type {
   MuxChannel,
   MuxConnection,
   PeerIdentity,
+  SlotChannel,
   Switchboard,
   TalkChannel,
   TalkStream,
@@ -28,6 +29,8 @@ export interface HandleKinds extends Record<string, object> {
   c: MuxConnection;
   /** Raw channels. */
   ch: MuxChannel;
+  /** Channels to a shard slot's owner, with their `MOVED` retry. */
+  sc: SlotChannel;
   /** Talk channels. */
   t: TalkChannel;
   /** Stream requests. */
@@ -129,15 +132,32 @@ export class PeerContext {
   trackChannel(channel: MuxChannel, listen = true, announce?: (handle: string) => void): string {
     const handle = this.handles.add('ch', channel);
     announce?.(handle);
+    this.#report(channel, handle, listen);
+    return handle;
+  }
+
+  /**
+   * Registers the slot channel [channel] and reports it as
+   * {@link trackChannel} does a channel, under its own handle: its
+   * subframes and end are `channel.data` and `channel.closed` across a
+   * replacement.
+   */
+  trackSlotChannel(channel: SlotChannel, listen = true): string {
+    const handle = this.handles.add('sc', channel);
+    this.#report(channel, handle, listen);
+    return handle;
+  }
+
+  /** Reports [channel]'s end, and with [listen] its subframes first, under [handle]. */
+  #report(channel: MuxChannel | SlotChannel, handle: string, listen: boolean): void {
     const read = listen ? this.#reportData(channel, handle) : Promise.resolve();
     void Promise.all([channel.done, read]).then(([s]) =>
       this.out.event('channel.closed', { channel: handle, ...statusJson(s) }),
     );
-    return handle;
   }
 
   /** Reads [channel] and reports each subframe as `channel.data`, until its readable ends. */
-  async #reportData(channel: MuxChannel, handle: string): Promise<void> {
+  async #reportData(channel: MuxChannel | SlotChannel, handle: string): Promise<void> {
     try {
       for await (const subframe of channel.readable) {
         this.out.event('channel.data', { channel: handle, hex: hex(subframe) });
@@ -169,6 +189,9 @@ export class PeerContext {
             break;
           case 'ch':
             await within((object as MuxChannel).close(), closeTimeoutMs);
+            break;
+          case 'sc':
+            await within((object as SlotChannel).close(), closeTimeoutMs);
             break;
           case 'c':
             await within((object as MuxConnection).close(), closeTimeoutMs);
