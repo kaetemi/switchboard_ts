@@ -19,7 +19,9 @@ test/interop/
                       protocol errors, forward, identity, naming and sharding, mesh (proxy, relay,
                       forwarding and naming chains)
   oracle.test.ts      the wiki vectors against the Dart codecs; the TS codecs against Dart, fuzzed
-  probe/              raw byte conformance: hand-built frames against each server's listeners
+  probe/              raw byte conformance: hand-built mux frames against each server's TCP and
+                      WebSocket listeners (conformance), hand-built QUIC binding records against
+                      its raw QUIC and WebTransport listeners and dialler (quic)
 ```
 
 ## Running
@@ -244,6 +246,15 @@ Connections report `connection.goAway {connection, code, reason, body}` when the
 | `exporter` | for a WebTransport session id (8 bytes, big endian): `context`, the TLS exporter context of its exporter-bound `IDENT`, and the labels `webTransportLabel`, `rawQuicLabel`, `identLabel` (no `reencoded`) |
 
 The kinds without a note also answer `reencoded`. The oracle test compares the Dart peer's answers with the TS peer's oracle (`ts_peer/oracle.ts`, the same JSON from the TS codecs) on the wiki vectors and on random and mutated inputs. One difference is documented rather than compared: Dart parses an endpoint as a `Uri` and sends its normalised text (scheme and host lower-cased, characters escaped), where TS carries endpoints as written and refuses what a URI cannot hold (`endpointProblem` in `src/core/naming/naming-protocol.ts`); for such an input the test checks that what Dart sends instead decodes alike in TS.
+
+## QUIC probe
+
+`probe/quic.test.ts` is the conformance probe's counterpart for the QUIC binding (scenario 24 of `docs/notes/interop.md`). `probe/quic.ts` opens raw QUIC connections (ALPN `switchboard`) and WebTransport sessions (offering `switchboard`, the certificate pinned to READY's `certificateSha256`) through the native provider directly, and writes and reads the records by hand, so nothing of `src/core/quic` is involved; `ProbeListener` listens with a certificate of its own for the peers to dial with `connect`. Every case runs against the Dart peer and the TS peer, over both transports:
+
+- **The probe dials.** The server's `HELLO`, first on the control stream, byte for byte; the probe's `HELLO` (late, or with a further field) accepted; the wiki's negative control and record vectors and the state-dependent errors (a second `HELLO` or channel-0 OPEN, a control message before `HELLO`, CLOSE, FIN, a reset or `STOP_SENDING` on the control stream, the wrong parity, an open id again, FIN before, inside or without a CLOSE record) closing the session `PROTOCOL_ERROR`, a header over the record limit `FRAME_TOO_LARGE`; Talk on an echo channel record by record, a channel before the control stream, a reply inline up to the probe's record limit and on a `_bulk` stream beyond it; CLOSE records both ways (the wiki's vectors, `MOVED`'s fields), a rejection (CLOSE `NOT_FOUND`, FIN, `STOP_SENDING`), resets both ways (a code above 255 reads `UNKNOWN`), `STOP_SENDING` as an early close, the confirmation timeout's `STOP_SENDING` and reset; `GOAWAY` both ways, application closes as `GOAWAY` with their status, `WT_DRAIN_SESSION`; a peer taking two channels (its `HELLO`, `RESOURCE_EXHAUSTED` with `STOP_SENDING`), the control stream timeout and the keep-alive `PING`.
+- **The peer dials the probe.** The client's control stream (OPEN of channel 0, `HELLO`), its OPEN, DATA and CLOSE records byte for byte, the probe's rejection and reset as the client reports them, `PING`, `GOAWAY`, the probe's application close and `WT_DRAIN_SESSION` read as `GOAWAY`, and `connection.drain` reaching the probe.
+
+Session close codes are compared through the server peer's `quicCode` oracle (raw QUIC: the status as the error code; WebTransport: the code read back from its HTTP/3 form). The probe needs the native addon whatever the server: without it the file skips with the reason, and `SWITCHBOARD_NATIVE=required` fails instead. A case an implementation fails against the spec is skipped in its cell with the reason in the name. Run it alone with `npx vitest run --project interop test/interop/probe/quic.test.ts` and the variables above.
 
 ## Test vectors
 

@@ -600,9 +600,20 @@ for (const server of servers) {
                   const { records, end } = await ch.drain();
                   expect(records.map((r) => r.hex)).toEqual([hexString(expected)]);
                   expect(end).toEqual({ kind: 'fin', partial: '' });
-                  await confirmClose(ch);
+                  const code = closeCode(records[0] as ReceivedRecord) ?? StatusCode.ok;
+                  await confirmClose(ch, code);
+                  // A failure close MAY come with STOP_SENDING, with its own
+                  // status (both implementations send it); an OK close whose
+                  // incoming data is still delivered does not.
+                  expect(
+                    code === StatusCode.ok
+                      ? [{ kind: 'acked' }]
+                      : [{ kind: 'stop', code }, { kind: 'acked' }],
+                  ).toContainEqual(await ch.stopped());
                   await closing;
-                  await peerOf().events.waitFor({ event: 'channel.closed', channel });
+                  expect(
+                    await peerOf().events.waitFor({ event: 'channel.closed', channel }),
+                  ).toMatchObject({ code });
                 }
               });
 
@@ -860,6 +871,17 @@ for (const server of servers) {
           test(`${transport}: a session without a control stream in time is closed PROTOCOL_ERROR`, async () => {
             const s = await connect(peerOf(), transport);
             await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.protocolError));
+          });
+
+          test(`${transport}: a probe that answers no PING is closed DEADLINE_EXCEEDED`, async () => {
+            const s = await connect(peerOf(), transport);
+            const c = await s.openControl();
+            expect((await c.record()).type).toBe(control.hello);
+            // Keep-alive is local policy; the code is the reference's.
+            await expectClosedBy(
+              s,
+              await wireCode(peerOf(), transport, StatusCode.deadlineExceeded),
+            );
           });
 
           test(`${transport}: the keep-alive PING comes on the control stream, and answered keeps the session`, async () => {
