@@ -589,7 +589,8 @@ export class FrameMuxConnection implements MuxConnection {
         throw new RangeError('holderKey is not the holder key the credential names');
       }
     }
-    const intent = options.intent === undefined ? empty : options.intent.slice();
+    // Copied with the constructor: a Buffer's slice() is a view.
+    const intent = options.intent === undefined ? empty : new Uint8Array(options.intent);
     const receiver = options.receiver;
     const receiverBytes = receiver === undefined ? empty : utf8Encode(receiver);
     const credentialBytes = credential.encode();
@@ -773,7 +774,9 @@ export class FrameMuxConnection implements MuxConnection {
         `OPEN of ${size} bytes exceeds the peer limit of ${peerMaxFrame}`,
       );
     }
-    const payload = openPayload.slice();
+    // Copied with the constructor: a Buffer's slice() is a view, which the
+    // caller could change under the channel.
+    const payload = new Uint8Array(openPayload);
     const link = new MuxChannelLink(this.#host, this, {
       id,
       isLocallyOpened: true,
@@ -886,7 +889,7 @@ export class FrameMuxConnection implements MuxConnection {
         );
     }
     const pending: PendingPing = {
-      payload: message.payload.slice(),
+      payload: new Uint8Array(message.payload),
       sent: this.#clock.now(),
       result,
     };
@@ -1111,7 +1114,7 @@ export class FrameMuxConnection implements MuxConnection {
       // frames that waited for it are going out: this one follows them.
       // send has handed the payload over: the caller may reuse it now.
       link.preOpen.push([
-        new MuxFrame(frame.command, frame.channelId, frame.payload.slice()),
+        new MuxFrame(frame.command, frame.channelId, new Uint8Array(frame.payload)),
         opens,
       ]);
       return;

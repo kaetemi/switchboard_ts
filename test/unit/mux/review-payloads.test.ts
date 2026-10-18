@@ -14,11 +14,22 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // before anything is sent, as the channel's `writable` already did, and so
 // do the QUIC binding's `open()`, `openAfter()` and `send()`. A Node
 // `Buffer` is a `Uint8Array` and is taken.
+//
+// A Buffer the caller reuses (found by the QUIC review in the frame mux):
+// the frame mux copied the caller's bytes it keeps (the OPEN payload, the
+// `identify` intent, a PING payload awaiting its PONG, DATA held behind an
+// `openAfter` OPEN) with `slice()`, which on a Node `Buffer` is a view
+// sharing its memory, so changing the Buffer after the call changed the
+// library's copy. They are copied with the `Uint8Array` constructor now.
 
 import { describe, expect, test } from 'vitest';
+import { hexBytes, hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { MuxCommand, MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
+import { MuxIdent } from '../../../src/core/mux/mux-protocol.ts';
+import { stubCredential } from '../../support/identity/stub-verifier.ts';
 import { bytes, connectionPair, firstChunk, nextChannel, text } from '../quic/harness.ts';
-import { empty, rawPair } from './support.ts';
+import { creditHex, empty, rawPair, rejection, settleRaw, tracked } from './support.ts';
 
 const hi = 'hi' as unknown as Uint8Array;
 
@@ -65,5 +76,53 @@ describe('review: a string given as bytes', () => {
     const accepted = await nextChannel(server);
     expect(text(accepted.openPayload)).toBe('x');
     expect(text(await firstChunk(accepted))).toBe('hi');
+  });
+});
+
+describe('review: a Buffer the caller changes after the call', () => {
+  test('changes none of the bytes the frame mux keeps', async () => {
+    const [mux, raw] = rawPair();
+    // The OPEN payload.
+    const openPayload = Buffer.from('ab');
+    const parent = mux.open(openPayload);
+    openPayload.fill(0);
+    expect(hexString(parent.openPayload)).toBe('61 62');
+    expect(await raw.nextHex()).toBe('12 02 00 61 62');
+    // A PING payload, which its PONG must match.
+    const pingPayload = Buffer.from([1]);
+    const pong = tracked(mux.ping(pingPayload));
+    pingPayload[0] = 9;
+    expect(await raw.nextHex()).toBe('02 00 00 01 01');
+    raw.send('02 00 00 02 01');
+    await settleRaw(raw);
+    expect(pong.settled).toBe(true);
+    // DATA held behind an OPEN that waits behind its parent's frames: the
+    // parent's third subframe waits for credit, the child's OPEN behind it.
+    for (let i = 0; i < 3; i++) {
+      void parent.send(new Uint8Array(parent.maxSubframeLength));
+    }
+    const child = parent.openAfter(empty);
+    const subframe = Buffer.from('cd');
+    await child.send(subframe);
+    subframe.fill(0);
+    raw.send(creditHex(parent.id, 65536));
+    for (;;) {
+      const frame = await raw.next();
+      if (frame.channelId === child.id && frame.command === MuxCommand.data) {
+        expect(hexString(frame.payload)).toBe('63 64');
+        break;
+      }
+    }
+    // The intent of identify, sent once the peer's NONCE arrived.
+    const intent = Buffer.from('ef');
+    const credential = stubCredential({ identity: 'n', bytes: hexBytes('01') });
+    const identifying = mux.identify(credential, { intent });
+    intent.fill(0);
+    await raw.nextControl(MuxControlType.nonce);
+    raw.sendBytes(MuxControlMessage.nonce(new Uint8Array(32).fill(7)).toFrame().encode());
+    const ident = MuxIdent.decode((await raw.nextControl(MuxControlType.ident)).payload);
+    expect(hexString(ident.intent)).toBe('65 66');
+    await mux.close();
+    await rejection(identifying);
   });
 });
