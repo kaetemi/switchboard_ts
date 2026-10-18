@@ -1,0 +1,59 @@
+# Review: the transports and the frame mux
+
+Scope: `src/core/transport/**`, `src/node/transport/**`, `src/core/mux/**`, the `src/core/util/**` pieces they use, against the Dart `transport/*.dart` and `mux/*.dart`, `dart-design.md` (Transports, Mux, Binding seam, Resource limits) and design sections 5, 6.2, 6.3, 7 and 12. Each finding has a test in `test/unit/mux/review-*.test.ts` or `test/unit/transport/review-*.test.ts`, written as `test.fails`: the body fails against the current sources, deterministically (10 runs, identical assertion failures), and each was checked to pass against a prototype fix (not committed). When a fix lands its test passes, `test.fails` reports that, and the `.fails` goes. No source was changed.
+
+## Findings, most severe first
+
+### 1. `ping()` hands out promises that are not pre-caught
+- **Severity:** wrong behaviour; a dropped one is an unhandled rejection, which ends a Node process under the default `--unhandled-rejections=throw`.
+- **Defect:** `src/core/mux/frame-mux-connection.ts:862` (connection closed) and `:868` (signal already aborted) return a plain `Promise.reject(...)`.
+- **Path:** an application heartbeat, `setInterval(() => void connection.ping(), 5000)`, ticks once after the connection ended; or a ping is started with a signal that has aborted. The QUIC binding's `ping` (`src/core/quic/quic-binding-connection.ts:1405`) rejects through a `Deferred`, so code that is safe over QUIC crashes over TCP or WebSocket.
+- **Test:** `test/unit/mux/review-promises.test.ts`: "a ping dropped on a closed connection is not an unhandled rejection", "a ping dropped with an aborted signal is not an unhandled rejection".
+- **Fix:** reject through a `Deferred`, as the QUIC binding does (or attach `.catch(() => {})` before returning).
+- **Dart:** the same (`Future.error`, uncaught if dropped). Design section 7 and `docs/wiki/Channels-and-Talk.md` ("Every promise the library hands out is pre-caught") rule for the TS port.
+
+### 2. `send()`, `open()` and `openAfter()` put zero bytes on the wire for a string
+- **Severity:** wire or data loss, for callers outside the types (JavaScript, a cast).
+- **Defect:** `src/core/mux/frame-mux-channel.ts:703` (`send`) and `:799` (`openAfter`), `src/core/mux/frame-mux-connection.ts:738` and `:773` (`open`, `openPayload.slice()`); `MuxFrame.encode` (`src/core/mux/mux-frame.ts:184`) copies with `Uint8Array#set`, which turns every character into 0.
+- **Path:** a JavaScript consumer writes `channel.send('hello')`, as design section 5 suggests ("everywhere Dart takes `Uint8List`, TS takes `PayloadLike`"; Talk does). The peer receives five zero bytes and nothing fails. The channel's `writable` refuses such a chunk with a `TypeError` (`frame-mux-channel.ts:477`); `send` does not.
+- **Test:** `test/unit/mux/review-payloads.test.ts`: "send() refuses it or sends its UTF-8, never zeros", and the same for `open()` and `openAfter()`. Either a `TypeError` or the UTF-8 bytes passes.
+- **Fix:** throw a `TypeError` for anything but a `Uint8Array` in `send`, `open`, `openAfter` (and `ping`); or take `PayloadLike` through `toPayload` (a contract change, the lead's call).
+- **Dart:** cannot happen (static types).
+
+### 3. Closed channels nobody reads keep the connection's receive pause on for good
+- **Severity:** hang. The connection stops reading its transport, every channel on it stalls, and keep-alive stops probing (the silence counts as local).
+- **Defect:** the subframes queued on a channel whose peer CLOSE has arrived stay in the count that decides the pause (`frame-mux-channel.ts:1166`, released only by a read at `:1235` or a cancel at `:1177`; `frame-mux-connection.ts:1812`).
+- **Path:** an application takes channels from `incoming` without reading them (it only writes to them, or awaits `done`). The peer sends a few bytes on each and closes. Once such closed channels hold half of `receiveHighWaterMarkBytes`, the next pause a live channel causes never ends, even after the live channel was read. Nothing more can arrive on a closed channel, so pausing cannot help; only reading those channels releases the bytes. With pull delivery (design section 12, item 1), an unread channel is ordinary.
+- **Test:** `test/unit/mux/review-receive-pause.test.ts`: "closed channels nobody reads do not keep the connection paused".
+- **Fix:** keep the bytes in `bufferedBytes`, which the ported `mux_limits` tests assert, but leave them out of the pause decision once the peer's CLOSE has arrived, as manual-credit held bytes are. A prototype doing this passed the whole mux suite.
+- **Dart:** the same accounting, for a stream nobody listens to. The wiki's resource-limits text (quoted in `dart-design.md`, "Resource limits") counts "what all channels buffer for their listeners", so the fix needs a wiki amendment. The wiki's own reason for leaving manual credit out ("pausing the connection cannot release it but would stall every other channel") applies to closed channels too. The wiki already caps held OPEN payloads at half the mark for the same reason.
+
+### 4. The WebSocket transport's writable never settles when the WebSocket ends on its own
+- **Severity:** hang (`writer.closed`) and wrong behaviour.
+- **Defect:** `src/core/transport/websocket-transport.ts:282` keeps no controller for its `WritableStream`. `#onClose` (`:466`) and `abort()` (`:353`) settle `closed` and `opened` but leave the writable as it is.
+- **Path:** the peer closes, the connection fails, or the transport is aborted. `writable.getWriter().closed` then stays pending for ever, and later writes resolve while their frames are dropped. This affects the client (global `WebSocket` and `ws`) and the `ws` server alike. The mux is not affected, since it ends on the readable.
+- **Test:** `test/unit/transport/review-websocket.test.ts`: "the peer closing errors the writable", "abort errors the writable".
+- **Fix:** keep the controller and error it with `CONNECTION_LOST` (or the failure) from `#onClose` and `abort()`, unless the writable itself was closed or aborted, as `StreamTransport#onOutputFinished` (`stream-transport.ts:752`) and the memory pair do. A prototype passed `websocket.test.ts` and `ws-server.test.ts`.
+- **Dart:** differs. The sink completes `done` when the WebSocket closes (`web_socket_transport.dart`: `_onDone` → `closeWebSocket` → `_sink.complete()`). Design section 12, item 11 ("A transport's writable errors once its output has ended on its own") is not met here.
+
+### 5. The `ws` adapter polls `bufferedAmount` on the global `setTimeout`
+- **Severity:** ergonomics; clock misuse.
+- **Defect:** `src/node/transport/ws-common.ts:121` (a 10 ms poll in `check`). `WsConnectionOptions` takes no clock.
+- **Path:** `outputReady` and the input throttle of a `WebSocketTransport` over `ws` (both `acceptWebSocket` and `connectWsWebSocket`) progress on real time, whatever `clock` they are given. When no send callback arrives, the mux's scheduler then waits on wall time under a `ManualClock`. Design section 5: every timer comes from the injected `Clock`.
+- **Test:** `review-websocket.test.ts`: "the wait for bufferedAmount to drop runs on the transport clock". It passes the clock to `wsConnection` as a fix would.
+- **Fix:** add `clock` to `WsConnectionOptions`, arm the poll with it, and pass the options' clock from `acceptWebSocket` and `connectWsWebSocket`.
+- **Dart:** not applicable. Its server frames the socket itself, and its client offers no output readiness.
+
+## Unverified suspicions
+- **Custom transports with late write promises.** A `FrameTransport` an application brings may resolve each write only when the network takes it. Beyond 1024 writes in flight, frames that are never held (PONGs to a peer that PINGs without reading, CREDIT, CLOSE) then queue without bound in the mux's backlog, out of sight of the transport's input throttle. Dart queues them in the transport, where its high-water mark stops the input. The library's own transports complete writes synchronously, so I could not reproduce this with them.
+- **Mid-connection LIMITS and `whenWritable`.** A LIMITS that lowers the peer's frame limit can make a channel writable without waking its `whenWritable` waiters (Dart is the same). I believe the next CREDIT always comes, so this is not a lasting hang.
+- **Listener queues.** Transports a `TcpListener` or `WebSocketListener` accepted but nobody took are never closed after `listener.close()`, and they pile up after a `break` (the queue is re-iterable and has no `onCancel`). This is documented, but it is a leak if nobody iterates the queue again.
+
+## Fine, but surprised me
+- **The 1024-write cap reorders DATA.** On transports without output readiness (the memory pair, the W3C WebSocket), DATA past the cap waits in the scheduler. Cross-channel order then differs from send order and `heldOutputBytes` is nonzero, where Dart writes in send order. Per-channel order and the placement of `openAfter` are kept. Design section 6.3's "queueing the rest itself in order" holds only for what the backlog takes.
+- **`#heldFrames` is dead code** (`frame-mux-connection.ts`): the read loop never reads while an IDENT is being verified, so it is always empty. Frames wait in the transport instead, which is the intent.
+- **The lazy `writable` delays the first write.** The first `write` reaches `send()` a microtask late, because the stream starts asynchronously, so `writer.write(x); channel.close()` loses `x` (`FAILED_PRECONDITION`, writable errored). `writer.close()` is the safe call. This is noted only in the message of commit aa808af.
+- **Stopping `incoming` also refuses `_bulk` channels** (`UNAVAILABLE`), because the cancel check comes before the `adoptIncoming` filters. This matches Dart, where bulk channels arrive on `incoming`.
+- **`sleep()` uses the global timer.** It is exported from `src/core/util` and uses the global `setTimeout`; nothing in the library uses it.
+- **A lenient reset test.** `tcp.test.ts`, "a connection reset fails the input", also accepts an orderly end.
+- **No timers or listeners left after close.** Nothing stays armed after a close. I checked this with throwaway probes for the mux (`ManualClock.pendingCount` 0 after close: keep-alive, the LIMITS wait, close confirmation, the GOAWAY grace, `identify` and `ping` with a signal), and by reading for the transports (the stream transport's close and linger timers, the WebSocket close timer and the ping interval). Signal listeners are removed. Peer input never throws across an await. The LIMITS wait, the pending-rejection table, the bulk zipper and the TCP end, linger and destroy sequence match Dart.
