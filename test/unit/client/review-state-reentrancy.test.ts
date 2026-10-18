@@ -4,17 +4,15 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Review finding (node and clients layer): `ReconnectingClient` emits
-// `on('state')` synchronously inside its transitions (Dart's `states` is an
-// asynchronous broadcast stream, and design section 12 lists synchronous
-// events for `PeerSet` only). `#onConnection` reports `connected` before it
-// resolves `connected`, so a listener that stops the client, or forces a
-// reconnect, when it sees `connected` leaves `connected` resolved with the
-// connection it just left; the next connection never resolves it, and
-// `await client.connected` hands out a connection that was sent GOAWAY.
-//
-// Marked `test.fails`: it passes while the defect is present. The fix
-// removes `.fails`.
+// Review finding (node and clients layer), fixed: `ReconnectingClient`
+// emits `on('state')` synchronously inside its transitions (Dart's `states`
+// is an asynchronous broadcast stream; design section 12, item 17).
+// `#onConnection` reported `connected` before it resolved `connected`, so a
+// listener that stopped the client, or forced a reconnect, when it saw
+// `connected` left `connected` resolved with the connection it had just
+// left, and `await client.connected` handed out a connection that was sent
+// GOAWAY. The client now resolves `connected` before the event, so the
+// listener's stop or reconnect replaces the promise.
 
 import { expect, test } from 'vitest';
 import { ClientPhase, ReconnectingClient } from '../../../src/core/client/index.ts';
@@ -49,7 +47,7 @@ function clientOf(clock: ManualClock, connect: TransportConnector): Reconnecting
   });
 }
 
-test.fails('stop() from a connected listener, then start(): connected is the new connection', async () => {
+test('stop() from a connected listener, then start(): connected is the new connection', async () => {
   const clock = new ManualClock();
   const { connect } = endpoint(clock);
   const client = clientOf(clock, connect);
@@ -74,11 +72,11 @@ test.fails('stop() from a connected listener, then start(): connected is the new
   const closed = client.close();
   await clock.elapseAsync(500);
   await closed;
-  // Fails: `connected` still holds the connection the listener stopped.
+  // `connected` is the new connection, not the one the listener stopped.
   expect(connected).toBe(current);
 });
 
-test.fails('reconnectNow({ force }) from a connected listener: connected is the replacement', async () => {
+test('reconnectNow({ force }) from a connected listener: connected is the replacement', async () => {
   const clock = new ManualClock();
   const { connect } = endpoint(clock);
   const client = clientOf(clock, connect);
@@ -99,6 +97,6 @@ test.fails('reconnectNow({ force }) from a connected listener: connected is the 
   const closed = client.close();
   await clock.elapseAsync(500);
   await closed;
-  // Fails: `connected` resolved with the connection the client left.
+  // `connected` is the replacement, not the connection the client left.
   expect(connected).toBe(current);
 });
