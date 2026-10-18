@@ -25,7 +25,7 @@ import type {
   ReconnectIncomingEvent,
   ReconnectStateEvent,
 } from '../protocol.ts';
-import { hex } from './support.ts';
+import { hex, pattern, sha256 } from './support.ts';
 
 /** The first retry's delay; no jitter, so that every delay is exact. */
 const initialBackoffMs = 100;
@@ -720,5 +720,48 @@ describeCells('reconnecting client', {}, (peers) => {
       hex: '07',
     });
     expect(peers.client.events.filter({ event: 'reconnect.incoming', reconnect })).toHaveLength(2);
+  });
+
+  test('opens carry the default payload where their address has none, after a reconnect too', async () => {
+    const credential = tag();
+    const reconnect = await openClient(peers, { defaultPayload: credential });
+    const persistent = await persistentRaw(peers, reconnect, '');
+    const far = await accepted(peers, credential);
+    expect(far).toMatchObject({ type: 'raw', instance: 0 });
+    // An address with a payload of its own keeps it.
+    const own = tag();
+    await peers.client.rpc('reconnect.channel', {
+      reconnect,
+      address: { type: 'raw', payload: own },
+    });
+    await accepted(peers, own);
+    await peers.server.rpc('connection.close', { connection: far.connection });
+    await opened(peers, persistent, 2);
+    const again = await accepted(peers, credential, 2);
+    expect(again.connection).not.toBe(far.connection);
+  });
+
+  test('bulk payloads both ways on its Talk channels', async () => {
+    const reconnect = await openClient(peers);
+    const { talk } = await echoTalk(peers, reconnect);
+    const n = 200_000;
+    // The server's bulk channel goes to the Talk channel it belongs to.
+    expect(
+      await peers.client.rpc<MessageInfo>('talk.request', {
+        talk,
+        procedure: 'BIG',
+        text: String(n),
+        digest: true,
+      }),
+    ).toEqual({ procedure: '', bulk: true, size: n, sha256: sha256(pattern(n)) });
+    const up = 100_000;
+    const reply = await peers.client.rpc<MessageInfo>('talk.request', {
+      talk,
+      procedure: 'SIZE',
+      bulkPattern: { length: up },
+    });
+    expect(reply.payload).toBe(hex(`${up} ${sha256(pattern(up))}`));
+    // Not delivered as a channel the server pushed.
+    expect(peers.client.events.filter({ event: 'reconnect.incoming', reconnect })).toEqual([]);
   });
 });
