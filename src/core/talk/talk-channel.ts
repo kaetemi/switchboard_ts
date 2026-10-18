@@ -151,6 +151,9 @@ export interface StartRequestInit {
 const closedChannel = (): SwitchboardError =>
   SwitchboardError.of(StatusCode.failedPrecondition, 'channel closed');
 
+/** The smallest frame that carries a BULK reference: the flags, a response id and the reference (14 bytes). */
+const minBulkFrameLength = 1 + 3 + TalkBulkReference.encodedLength;
+
 /**
  * Talk message chains over one channel: plain messages, requests,
  * responses, stream responses, aborts, timeout extension, item windows and
@@ -1814,13 +1817,19 @@ export class TalkChannel implements TalkChannelContract {
     // them as they arrive): buffered in the mux channel, or delivered
     // toward the reader and not read (a step behind the mux, two through a
     // slot channel). The references among them claim bulk channels ahead
-    // of this one. Beyond the bound, the count waits for them.
+    // of this one. Beyond the bound, the count waits for them; where this
+    // channel reads on, those beyond it hold no more than the reassembly
+    // budget together.
     const max = this.options.maxUnclaimedBulk;
-    if (this.#bulkUnclaimed.size >= max + this.#unreadReferences()) {
-      this.#refuseUnclaimed(b, number);
-      return;
-    }
     if (this.#bulkUnclaimed.size >= max) {
+      if (
+        this.#bulkUnclaimed.size >= max + this.#unreadReferences() ||
+        (!this.#orderedBulk &&
+          this.#unclaimedExtraHold() + streamHold(b, undefined) > this.options.reassemblyBudget)
+      ) {
+        this.#refuseUnclaimed(b, number);
+        return;
+      }
       this.#unclaimedRecount = true;
     }
     this.#bulkUnclaimed.set(number, b);
@@ -1860,7 +1869,8 @@ export class TalkChannel implements TalkChannelContract {
    * parent is read a frame at a time, so their references are usually
    * there, unread; a bulk channel beyond `maxUnclaimedBulk` is refused once
    * the frames that could carry its reference were read, or could not be.
-   * Each costs at least what a message frame of a bare reference does.
+   * Each costs at least what the smallest BULK frame does
+   * ({@link minBulkFrameLength}).
    */
   #unreadReferences(): number {
     const mux = this.#mux;
@@ -1872,7 +1882,32 @@ export class TalkChannel implements TalkChannelContract {
     if (room !== undefined && room > this.#readHeld) {
       unread += room - this.#readHeld;
     }
-    return unread > 0 ? Math.floor(unread / mux.sendCost(TalkBulkReference.encodedLength + 1)) : 0;
+    return unread > 0 ? Math.floor(unread / mux.sendCost(minBulkFrameLength)) : 0;
+  }
+
+  /**
+   * What the bulk channels waiting unclaimed beyond the first
+   * `maxUnclaimedBulk` may hold together (each what arrived, and its
+   * window while open: {@link streamHold}). Where this channel reads on
+   * ({@link #readOn}), those are admitted on an allowance that counts
+   * frames which may never come ({@link #unreadReferences}: a parent that
+   * sends nothing still has a window to read on), so what they hold
+   * together is bounded by `reassemblyBudget`, as what the payloads
+   * waiting for the budget hold is ({@link #attachBulk}); with no budget
+   * (0), nothing that may hold a byte is admitted beyond the bound, as in
+   * Dart. What an unclaimed channel may hold never grows (nothing consumes
+   * it or grants it more), so the bound holds once checked at admission.
+   */
+  #unclaimedExtraHold(): number {
+    const max = this.options.maxUnclaimedBulk;
+    let index = 0;
+    let hold = 0;
+    for (const b of this.#bulkUnclaimed.values()) {
+      if (index++ >= max) {
+        hold += streamHold(b, undefined);
+      }
+    }
+    return hold;
   }
 
   /**

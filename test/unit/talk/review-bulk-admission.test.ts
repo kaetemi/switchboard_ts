@@ -8,18 +8,21 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // (the QUIC binding), the allowance `#unreadReferences` adds to
 // `maxUnclaimedBulk` counts the frames Talk "may still read on"
 // (`#readOnRoom`: a whole `initialWindow` while nothing was read on) as if
-// they were frames that had arrived. With a parent that sends nothing, a
-// peer keeps 16 + initialWindow / sendCost(11) unreferenced bulk channels
+// they were frames that had arrived. With a parent that sent nothing, a
+// peer kept 16 + initialWindow / sendCost(11) unreferenced bulk channels
 // open per Talk channel (2443 over the memory mux, 4385 over the binding,
 // whose overhead is 4 bytes), each holding up to its window, where Dart and
-// the frame mux refuse the 17th RESOURCE_EXHAUSTED at once. Design section
-// 13, item 6, "Bounds", says such a peer "is refused once the parent's
-// unread frames can no longer carry them"; with no frame at all on the
-// parent, nothing is refused. The tests are `test.fails` while the defect
-// is there: the fix flips them to `test`.
+// the frame mux refuse the 17th RESOURCE_EXHAUSTED at once. The bound now:
+// the allowance counts references at the smallest BULK frame (14 bytes),
+// and beyond `maxUnclaimedBulk` the unreferenced channels admitted on it
+// hold no more than `reassemblyBudget` together (design section 12, item
+// 14, and section 13, item 6): an idle parent admits at most 16 plus the
+// budget's worth of windows (16 + 256 at the defaults), and the bursts of
+// `talk-quic.test.ts` and `quic-node-native.test.ts` still go through.
+// Ordered channels do not read on: 16, as in Dart.
 
 import { expect, test } from 'vitest';
-import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { defaultMuxOptions, type MuxChannel } from '../../../src/core/mux/contract.ts';
 import type { QuicStream } from '../../../src/core/quic/contract.ts';
 import { RecordReader } from '../../../src/core/quic/record-reader.ts';
 import {
@@ -31,6 +34,7 @@ import {
   quicDefaultRecordLimit,
 } from '../../../src/core/quic/records.ts';
 import { StatusCode } from '../../../src/core/status.ts';
+import { defaultTalkOptions, type TalkOptions } from '../../../src/core/talk/contract.ts';
 import { TalkBulkOpen } from '../../../src/core/talk/talk-bulk.ts';
 import { installBulkRouting } from '../../../src/core/talk/talk-bulk-routes.ts';
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
@@ -41,52 +45,80 @@ import { bindingAndRaw, concat, nextChannel } from '../quic/harness.ts';
 
 const empty = new Uint8Array(0);
 
-/** How many of 40 unreferenced bulk channels, opened for an idle parent, are refused RESOURCE_EXHAUSTED: 24 under the bound of 16. */
+/** Unreferenced bulk channels opened for an idle parent. */
 const opened = 40;
-const refusedUnderTheBound = opened - 16;
 
-for (const ordered of [true, false]) {
-  const run = ordered ? test : test.fails;
-  run(
-    `bulk channels beyond maxUnclaimedBulk for an idle parent are refused, ${
-      ordered ? 'ordered channels (control)' : 'unordered channels'
-    }`,
-    async () => {
-      const [client, server] = memoryMuxPair({ ordered });
-      installBulkRouting(client);
-      installBulkRouting(server);
-      const raw = client.open(empty);
-      const talk = new TalkChannel(await server.accept());
-      void talk.serve(() => {});
-      await flush();
-      const bulks: MuxChannel[] = [];
-      for (let n = 1; n <= opened; n++) {
-        const bulk = raw.openAfter(bulkOpen(raw, n));
-        bulk.priority = 'bulk';
-        // Each holds what its window lets the peer send: 30 KB here.
-        void bulk.send(new Uint8Array(30_000)).catch(() => {});
-        bulks.push(bulk);
-      }
-      await flush(20);
-      const refused: number[] = [];
-      for (const bulk of bulks) {
-        if (bulk.state === 'closed' && (await bulk.done).code === StatusCode.resourceExhausted) {
-          refused.push(bulk.id);
-        }
-      }
-      await client.close();
-      await server.close();
-      expect(refused).toHaveLength(refusedUnderTheBound);
-    },
-  );
+/** A reassembly budget of 8 windows: 8 unreferenced channels beyond the 16, where Talk reads on. */
+const budget = 8 * defaultMuxOptions.initialWindow;
+
+/** How many of the 40 are refused RESOURCE_EXHAUSTED: 24 under Dart's bound of 16, 16 where the budget admits 8 more. */
+const refusedOrdered = opened - 16;
+const refusedReadingOn = opened - 16 - 8;
+
+/** Opens [count] unreferenced bulk channels for an idle Talk channel with [options] over the memory mux; the ids of those refused RESOURCE_EXHAUSTED. */
+async function refusedOverMemory(
+  ordered: boolean,
+  count: number,
+  options: Partial<TalkOptions>,
+): Promise<number[]> {
+  const [client, server] = memoryMuxPair({ ordered });
+  installBulkRouting(client);
+  installBulkRouting(server);
+  const raw = client.open(empty);
+  const talk = new TalkChannel(await server.accept(), options);
+  void talk.serve(() => {});
+  await flush();
+  const bulks: MuxChannel[] = [];
+  for (let n = 1; n <= count; n++) {
+    const bulk = raw.openAfter(bulkOpen(raw, n));
+    bulk.priority = 'bulk';
+    // What arrived counts with what its window still lets the peer send.
+    void bulk.send(new Uint8Array(30_000)).catch(() => {});
+    bulks.push(bulk);
+  }
+  await flush(20);
+  const refused: number[] = [];
+  for (const bulk of bulks) {
+    if (bulk.state === 'closed' && (await bulk.done).code === StatusCode.resourceExhausted) {
+      refused.push(bulk.id);
+    }
+  }
+  await client.close();
+  await server.close();
+  return refused;
 }
 
-test.fails('over the QUIC binding, bulk streams beyond maxUnclaimedBulk for an idle parent are refused', async () => {
+test('bulk channels beyond maxUnclaimedBulk for an idle parent are refused, ordered channels (16)', async () => {
+  expect(await refusedOverMemory(true, opened, { reassemblyBudget: budget })).toHaveLength(
+    refusedOrdered,
+  );
+});
+
+test('bulk channels beyond maxUnclaimedBulk for an idle parent are refused, unordered channels (16 and the budget)', async () => {
+  expect(await refusedOverMemory(false, opened, { reassemblyBudget: budget })).toHaveLength(
+    refusedReadingOn,
+  );
+});
+
+test('with the default options an idle parent holds at most 16 unreferenced bulk channels and the budget, unordered channels', async () => {
+  // 16 + 16 MiB / 64 KiB, where 2443 were admitted before the bound.
+  const beyond = Math.floor(defaultTalkOptions.reassemblyBudget / defaultMuxOptions.initialWindow);
+  const admitted = defaultTalkOptions.maxUnclaimedBulk + beyond;
+  expect(await refusedOverMemory(false, admitted + 20, {})).toHaveLength(20);
+});
+
+test('with no reassembly budget an idle parent holds 16 unreferenced bulk channels, as in Dart, unordered channels', async () => {
+  expect(await refusedOverMemory(false, opened, { reassemblyBudget: 0 })).toHaveLength(
+    refusedOrdered,
+  );
+});
+
+test('over the QUIC binding, bulk streams beyond maxUnclaimedBulk and the budget for an idle parent are refused', async () => {
   const [connection, peer] = await bindingAndRaw();
   installBulkRouting(connection);
   const arrived = nextChannel(connection);
   await peer.openRaw(encodeOpenRecord(2, empty));
-  const talk = new TalkChannel(await arrived);
+  const talk = new TalkChannel(await arrived, { reassemblyBudget: budget });
   void talk.serve(() => {});
   const streams: QuicStream[] = [];
   for (let n = 1; n <= opened; n++) {
@@ -115,5 +147,5 @@ test.fails('over the QUIC binding, bulk streams beyond maxUnclaimedBulk for an i
       decodeCloseBody(record.body).code === StatusCode.resourceExhausted,
   );
   await connection.close();
-  expect(refused).toHaveLength(refusedUnderTheBound);
+  expect(refused).toHaveLength(refusedReadingOn);
 });
