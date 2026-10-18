@@ -61,10 +61,41 @@ describe('MemoryTransport', () => {
     await b.writable.close();
     expect(await aDone).toEqual([]);
     expect(await bDone).toEqual([]);
-    // The other side silently drops after the pair closed.
+    // Dart's other sink drops silently and completes `done`. Here the other
+    // writable is errored, so that its `closed` settles (design section 12,
+    // item 11): later frames are refused rather than dropped.
     const wa = a.writable.getWriter();
-    await wa.write(hexBytes('02 02 00'));
-    await wa.close();
+    expectCode(await rejection(wa.closed), StatusCode.connectionLost);
+    expectCode(await rejection(wa.write(hexBytes('02 02 00'))), StatusCode.connectionLost);
+    await rejection(wa.close());
+  });
+
+  test('the other side learns of the close after the frames in flight', async () => {
+    const clock = new ManualClock();
+    const [a, b] = memoryTransportPair({ delay: 5, clock });
+    const qa = a.readable.getReader();
+    const qb = b.readable.getReader();
+    const wa = a.writable.getWriter();
+    const wb = b.writable.getWriter();
+    let bClosed: unknown;
+    wb.closed.catch((error: unknown) => {
+      bClosed = error;
+    });
+    await wa.write(hexBytes('01'));
+    const closing = wa.close();
+    // The pair is closing: what b writes now is dropped, its writable still
+    // open while the frame and the close are on their way to it.
+    await wb.write(hexBytes('02'));
+    clock.advance(4);
+    await pump();
+    expect(bClosed).toBeUndefined();
+    clock.advance(1);
+    expect(await next(qb)).toBe('01');
+    expect(await next(qb)).toBe('done');
+    expectCode(await rejection(wb.closed), StatusCode.connectionLost);
+    expect(bClosed).toBeDefined();
+    await closing;
+    expect(await next(qa)).toBe('done');
   });
 
   test('delay keeps order and delivers the close last', async () => {
@@ -134,9 +165,11 @@ describe('MemoryTransport', () => {
     expect(errors).toHaveLength(1);
     expectCode(errors[0], StatusCode.frameTooLarge);
     expect(await next(qa)).toBe('02 00 00 03 23 00');
-    // Closed on b's behalf once its reader had the error.
+    // Closed on b's behalf once its reader had the error: b's writable is
+    // errored with that error, a's with the close.
     expect(await next(qa)).toBe('done');
-    await wb.close();
+    expectCode(await rejection(wb.closed), StatusCode.frameTooLarge);
+    expectCode(await rejection(wa.closed), StatusCode.connectionLost);
   });
 
   test('a failed side that nobody reads closes the pair at once', async () => {
