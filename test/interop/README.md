@@ -34,7 +34,7 @@ node tool/dart-peer.mjs build           # build only
 node tool/dart-peer.mjs driver          # the Dart driver's scenarios against the TS peer
 ```
 
-The TS peer runs on the Node that runs the tests (22.18 or later: type stripping runs `ts_peer/main.ts` as it is). Its raw QUIC and WebTransport listeners and dialers need the native QUIC addon (`npm run build:native`, or `SWITCHBOARD_QUIC_ADDON=<path>`); without it the TS cells over those two transports skip with the reason, and `SWITCHBOARD_NATIVE=required` (CI) fails instead.
+The TS peer runs on the Node that runs the tests (22.18 or later: type stripping runs `ts_peer/main.ts` as it is). Its raw QUIC and WebTransport listeners and dialers need the native QUIC addon (`npm run build:native`, or `SWITCHBOARD_QUIC_ADDON=<path>`); without it the TS cells over those two transports skip with the reason, and `SWITCHBOARD_NATIVE=required` (CI) fails instead. `SWITCHBOARD_TS_PEER_RUNTIME=<executable>` runs the peer on another runtime, started as `<executable> ts_peer/main.ts` (`bun` works; a runtime that needs a subcommand and flags, such as Deno, is not covered). The matrix decides whether the QUIC cells skip from the addon's availability in the Node that runs the tests, so with another runtime the addon must load there too, or those cells fail instead of skipping.
 
 The Dart peer needs a Dart SDK (3.13 or later; CI uses 3.13.5), a Rust toolchain (switchboard_quic's build hook compiles its QUIC library with cargo, a minute or two the first time), and checkouts of the two Dart repositories. They are found as follows:
 
@@ -56,6 +56,7 @@ Without a peer the interop files skip, and the run prints one line saying why. E
 | `SWITCHBOARD_FUZZ_SEED`, `SWITCHBOARD_FUZZ_COUNT` | the oracle's random inputs (the seed is in the test names) |
 | `SWITCHBOARD_QUIC_ADDON=<path>` | the native QUIC addon the TS peer and the matrix load |
 | `SWITCHBOARD_NATIVE=required` | a missing native QUIC addon fails the run instead of skipping the TS QUIC cells (CI) |
+| `SWITCHBOARD_TS_PEER_RUNTIME=<executable>` | runs the TS peer with another runtime than the Node running the tests, such as `bun` |
 
 ## Writing a scenario
 

@@ -5,7 +5,7 @@
 | Runtime | Import | Transports | QUIC and WebTransport | Tested |
 | --- | --- | --- | --- | --- |
 | Node.js 22, 24, 26 | `@kaetemi/switchboard/node` | TCP, WebSocket client and server, in-memory | native provider | CI: unit and integration |
-| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider | CI: unit; TCP, WebSocket and QUIC by hand |
+| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider | CI: unit, and the interop matrix with the TS peer on Bun; TCP, WebSocket and QUIC by hand |
 | Deno 2.x | `@kaetemi/switchboard/node` | same, through `node:` compatibility | native provider | CI (Deno 2.9): unit and integration; the built package's TCP, WebSocket, QUIC and WebTransport round trips |
 | Browsers | `@kaetemi/switchboard/web` | WebSocket | WebTransport API | CI: Chromium 156 and Firefox 157 |
 | Edge runtimes | `@kaetemi/switchboard` with your own transport | WebSocket where offered | none | not a target |
