@@ -4,72 +4,66 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// REVIEW FINDING (docs/notes/review-mux.md, finding 2). `FrameMuxChannel.send()`,
-// `openAfter()` and `FrameMuxConnection.open()` take any value with a
+// Review finding 2 (docs/notes/review-mux.md). `FrameMuxChannel.send()`,
+// `openAfter()` and `FrameMuxConnection.open()` took any value with a
 // `length` at run time: a string passed by an untyped caller (JavaScript,
-// or a cast) is copied into the frame with `Uint8Array#set`, which turns
-// every character into 0, so the peer receives as many zero bytes as the
-// string has characters, and nothing fails. Design section 5 says strings
-// are UTF-8 payloads wherever Dart takes a `Uint8List`; the channel's
-// `writable` refuses a chunk that is not bytes with a TypeError. Either is
-// acceptable here: a TypeError before anything is sent, or the UTF-8 bytes
-// on the wire. Zeros are not.
-//
-// The tests are `test.fails`: their bodies fail against the current sources.
-// Once the defect is fixed they pass, `test.fails` reports that, and the
-// `.fails` goes.
+// or a cast) was copied into the frame with `Uint8Array#set`, which turns
+// every character into 0, so the peer received as many zero bytes as the
+// string has characters, and nothing failed. The contract types them
+// `Uint8Array`, so a string is the caller's misuse: they throw a TypeError
+// before anything is sent, as the channel's `writable` already did, and so
+// do the QUIC binding's `open()`, `openAfter()` and `send()`. A Node
+// `Buffer` is a `Uint8Array` and is taken.
 
 import { describe, expect, test } from 'vitest';
-import { hexString } from '../../../src/core/bytes.ts';
 import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import { bytes, connectionPair, firstChunk, nextChannel, text } from '../quic/harness.ts';
 import { empty, rawPair } from './support.ts';
 
-/** What [call] does with a string: `TypeError`, or the hex of the frame it sends. */
-async function outcomeOf(call: () => unknown, next: () => Promise<string>): Promise<string> {
-  try {
-    call();
-  } catch (error) {
-    return error instanceof TypeError ? 'TypeError' : `threw ${String(error)}`;
-  }
-  return next();
-}
+const hi = 'hi' as unknown as Uint8Array;
 
 describe('review: a string given as bytes', () => {
-  test.fails('send() refuses it or sends its UTF-8, never zeros', async () => {
+  test('send() refuses it with a TypeError and sends nothing', async () => {
     const [mux, raw] = rawPair();
     const channel = mux.open(empty);
     expect(await raw.nextHex()).toBe('12 02 00');
-    const sent = await outcomeOf(
-      () => channel.send('hi' as unknown as Uint8Array),
-      () => raw.nextHex(),
-    );
-    expect(['TypeError', '02 02 00 68 69']).toContain(sent);
+    expect(() => channel.send(hi)).toThrow(TypeError);
+    // Nothing went out for it: the next frame is the next send's.
+    void channel.send(Buffer.from('hi'));
+    expect(await raw.nextHex()).toBe('02 02 00 68 69');
     await mux.close();
   });
 
-  test.fails('open() refuses it or opens with its UTF-8, never zeros', async () => {
+  test('open() refuses it with a TypeError and opens nothing', async () => {
     const [mux, raw] = rawPair();
-    const opened = await outcomeOf(
-      () => mux.open('hi' as unknown as Uint8Array),
-      () => raw.nextHex(),
-    );
-    expect(['TypeError', '12 02 00 68 69']).toContain(opened);
+    expect(() => mux.open(hi)).toThrow(TypeError);
+    expect(mux.openChannelCount).toBe(0);
+    // The id was not taken either.
+    mux.open(Buffer.from('hi'));
+    expect(await raw.nextHex()).toBe('12 02 00 68 69');
     await mux.close();
   });
 
-  test.fails('openAfter() refuses it or opens with its UTF-8, never zeros', async () => {
+  test('openAfter() refuses it with a TypeError and opens nothing', async () => {
     const [mux, raw] = rawPair();
     const parent: MuxChannel = mux.open(empty);
     expect(await raw.nextHex()).toBe('12 02 00');
-    let child: MuxChannel | undefined;
-    const opened = await outcomeOf(
-      () => {
-        child = parent.openAfter('hi' as unknown as Uint8Array);
-      },
-      () => raw.nextHex(),
-    );
-    expect(['TypeError', '12 04 00 68 69']).toContain(opened);
-    expect(child === undefined || hexString(child.openPayload) === '68 69').toBe(true);
+    expect(() => parent.openAfter(hi)).toThrow(TypeError);
+    expect(mux.openChannelCount).toBe(1);
+    parent.openAfter(Buffer.from('hi'));
+    expect(await raw.nextHex()).toBe('12 04 00 68 69');
     await mux.close();
+  });
+
+  test('the QUIC binding refuses it in open(), openAfter() and send() alike', async () => {
+    const [client, server] = await connectionPair();
+    expect(() => client.open(hi)).toThrow(TypeError);
+    const channel = client.open(bytes('x'));
+    expect(() => channel.send(hi)).toThrow(TypeError);
+    expect(() => channel.openAfter(hi)).toThrow(TypeError);
+    void channel.send(bytes('hi'));
+    const accepted = await nextChannel(server);
+    expect(text(accepted.openPayload)).toBe('x');
+    expect(text(await firstChunk(accepted))).toBe('hi');
   });
 });

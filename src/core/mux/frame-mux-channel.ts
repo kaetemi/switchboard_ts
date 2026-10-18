@@ -23,7 +23,7 @@ import type {
   MuxPriority,
 } from './contract.ts';
 import { MuxControlMessage, MuxCredit, MuxFrame, MuxLimits } from './mux-frame.ts';
-import { checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
+import { checkMuxBytes, checkMuxStatus, fitStatus, readSubframes } from './mux-protocol.ts';
 
 /**
  * What a channel needs of its connection; the connection implements it
@@ -699,8 +699,10 @@ export class FrameMuxChannel implements MuxChannel {
    * @throws {SwitchboardError} FAILED_PRECONDITION if `!canSend`,
    *   FRAME_TOO_LARGE above {@link maxSubframeLength} on an ordinary
    *   channel (on a bulk one: when the peer leaves no room for a byte).
+   * @throws {TypeError} if [subframe] is not a `Uint8Array`.
    */
   send(subframe: Uint8Array): Promise<void> {
+    checkMuxBytes(subframe, `a subframe of channel ${this.id}`);
     if (!this.canSend) {
       throw this.#cannotSend();
     }
@@ -795,8 +797,10 @@ export class FrameMuxChannel implements MuxChannel {
    *
    * @throws {SwitchboardError} like `MuxConnection.open` (except after a
    *   GOAWAY), and FAILED_PRECONDITION when `!canSend`.
+   * @throws {TypeError} if [openPayload] is not a `Uint8Array`.
    */
   openAfter(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     if (!this.canSend) {
       throw this.#cannotSend();
     }

@@ -17,6 +17,7 @@ import {
 } from '../mux/contract.ts';
 import { MuxControlMessage, MuxControlType, MuxFrame } from '../mux/mux-frame.ts';
 import {
+  checkMuxBytes,
   checkMuxStatus,
   MuxIdent,
   maxControlPayloadLength,
@@ -1322,6 +1323,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   // Opening -------------------------------------------------------------------
 
   open(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     const entry = this.#openLocal(openPayload, false);
     entry.control.beginOpen().catch((error: unknown) => {
       this.#log('error', `${this}: opening channel ${entry.channel.id}`, error);

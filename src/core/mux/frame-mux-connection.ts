@@ -37,6 +37,7 @@ import {
   MuxLimits,
 } from './mux-frame.ts';
 import {
+  checkMuxBytes,
   checkMuxStatus,
   decodeStatusPayload,
   fitStatus,
@@ -734,8 +735,10 @@ export class FrameMuxConnection implements MuxConnection {
    *   if no channel id is free or the peer's channel limit is reached;
    *   FRAME_TOO_LARGE if the OPEN frame would exceed the peer's frame
    *   limit.
+   * @throws {TypeError} if [openPayload] is not a `Uint8Array`.
    */
   open(openPayload: Uint8Array): MuxChannel {
+    checkMuxBytes(openPayload, 'the OPEN payload');
     return this.#openLink(openPayload, true).channel;
   }
 

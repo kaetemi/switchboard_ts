@@ -232,7 +232,7 @@ These are the rules every layer follows. They are what "natively convenient" mea
 | Concern | Rule |
 | --- | --- |
 | Bytes | `Uint8Array` in and out. Node `Buffer` is accepted (it is a `Uint8Array`) and normalised at the transport boundary. Decoders return views, framing copies out of its buffer, OPEN payloads are copied, `send()` copies on hand-over, as in Dart. |
-| Payloads | Everywhere Dart takes `Uint8List`, TS takes `PayloadLike = Uint8Array \| string \| undefined`: a string is UTF-8 encoded, `undefined` is empty. Received payloads come with `text()`, `json()` and `bytes()` helpers. |
+| Payloads | Everywhere Dart takes `Uint8List` from an application (Talk and the layers above it), TS takes `PayloadLike = Uint8Array \| string \| undefined`: a string is UTF-8 encoded, `undefined` is empty. The channel contract below them (`send`, `open`, `openAfter`, a channel's `writable`) takes `Uint8Array` only and throws a `TypeError` for anything else, in both bindings. Received payloads come with `text()`, `json()` and `bytes()` helpers. |
 | Integers | `number` everywhere. Channel ids are u48 and exceed 2^32, so no bitwise operators on ids, windows or byte counts; `ByteReader.u48` and `ByteWriter.u48` split as `lo + hi * 2**32`. No `bigint`. |
 | Names | `Name` with a `key` string (the 8 code units) for `Map` keys and `equals()`. Every API that names a service, procedure or scope accepts `NameLike = Name \| string`. |
 | Durations | milliseconds as `number`. `undefined` disables where Dart used `null`; `0` means "none" or "forever" exactly where Dart's `Duration.zero` did, documented per option. |

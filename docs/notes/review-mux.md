@@ -20,6 +20,7 @@ Scope: `src/core/transport/**`, `src/node/transport/**`, `src/core/mux/**`, the 
 - **Test:** `test/unit/mux/review-payloads.test.ts`: "send() refuses it or sends its UTF-8, never zeros", and the same for `open()` and `openAfter()`. Either a `TypeError` or the UTF-8 bytes passes.
 - **Fix:** throw a `TypeError` for anything but a `Uint8Array` in `send`, `open`, `openAfter` (and `ping`); or take `PayloadLike` through `toPayload` (a contract change, the lead's call).
 - **Dart:** cannot happen (static types).
+- **Resolved:** `send`, `open` and `openAfter` throw a `TypeError` for anything but a `Uint8Array` before anything is sent, in the frame mux and the QUIC binding (`checkMuxBytes` in `mux-protocol.ts`); the contract stays `Uint8Array`, and design section 5 says so. `ping` still takes its payload unchecked.
 
 ### 3. Closed channels nobody reads keep the connection's receive pause on for good
 - **Severity:** hang. The connection stops reading its transport, every channel on it stalls, and keep-alive stops probing (the silence counts as local).
