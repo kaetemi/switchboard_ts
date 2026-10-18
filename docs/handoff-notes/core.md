@@ -53,7 +53,7 @@ The lead accepted the first three choices below as written and recorded them, wi
 - **Address decoding in the mux is gone.**
   - `admitAfterGoAway` predicates replace Dart's `_continuesOpenChannel`. With no predicate installed, nothing is admitted after GOAWAY, not even `_bulk` continuations.
   - `adoptIncoming` filters run on the OPEN. Adopted channels never count toward the undelivered backlog.
-- **The transport is read by a loop** that checks the pause flags (receive high-water mark, IDENT verification) before each `read()`. `#heldFrames` is kept for parity but stays empty in practice.
+- **The transport is read by a loop** that checks the pause flags (receive high-water mark, IDENT verification) before each `read()`. The frames after an IDENT wait in the transport while it is verified (the `#heldFrames` queue kept for parity stayed empty and was removed after the review of the frame mux).
 - **Writes are not awaited**, matching Dart's `sink.add`.
   - A failed write only marks the output gone; the end of the input drives shutdown.
   - Shutdown calls `reader.cancel()` and `writer.close()`, bounded by `keepAliveTimeout` on the clock, then `transport.abort?.()`.

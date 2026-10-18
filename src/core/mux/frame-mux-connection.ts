@@ -201,10 +201,9 @@ export class FrameMuxConnection implements MuxConnection {
   #peerIdentity: PeerIdentity | undefined;
   readonly #peerIdentified = new Deferred<PeerIdentity>();
   #identityEvent: Deferred<void> | undefined;
-  // Frames that arrived while an IDENT was verified; handled after it, in
-  // order, so that they see its outcome. The read loop does not read while
-  // verifying, so this holds only what a verification leaves behind.
-  readonly #heldFrames = new Fifo<Uint8Array>();
+  // Whether an IDENT is being verified: the read loop does not read
+  // meanwhile, so the frames after it wait in the transport and see its
+  // outcome.
   #verifyingIdent = false;
   // The peer's GOAWAY status as sent, for identify().
   #peerGoAwayReceived: Status | undefined;
@@ -1236,11 +1235,6 @@ export class FrameMuxConnection implements MuxConnection {
     }
     this.#receivedBytes += bytes.length;
     this.#noteReceive();
-    if (this.#verifyingIdent) {
-      // Waits for the IDENT like the rest.
-      this.#heldFrames.push(bytes);
-      return;
-    }
     this.#processFrame(bytes);
   }
 
@@ -1580,8 +1574,8 @@ export class FrameMuxConnection implements MuxConnection {
   /**
    * Verifies [ident], sent by the peer with [senderNonce] (the peer's) and
    * [receiverNonce] (this side's); then sets the identity or ends the
-   * connection with GOAWAY UNAUTHENTICATED, and handles the frames held
-   * meanwhile. Never rejects. An IDENT naming another receiver is refused
+   * connection with GOAWAY UNAUTHENTICATED, and lets the read loop take the
+   * frames that waited in the transport meanwhile. Never rejects. An IDENT naming another receiver is refused
    * before anything is awaited.
    */
   async #verifyIdent(
@@ -1617,12 +1611,10 @@ export class FrameMuxConnection implements MuxConnection {
     }
     this.#verifyingIdent = false;
     if (this.#closing) {
-      this.#heldFrames.clear();
       return;
     }
     if (identity === undefined) {
       this.#log('info', `${this}: IDENT refused: ${failure}`);
-      this.#heldFrames.clear();
       this.#fail(unauthenticated);
       return;
     }
@@ -1630,9 +1622,6 @@ export class FrameMuxConnection implements MuxConnection {
     this.#peerIdentity = identity;
     this.#peerIdentified.resolve(identity);
     this.#signalIdentity();
-    while (this.#heldFrames.length > 0 && !this.#verifyingIdent && !this.#closing) {
-      this.#processFrame(this.#heldFrames.shift() as Uint8Array);
-    }
     this.#resumeReading();
   }
 
@@ -2014,7 +2003,6 @@ export class FrameMuxConnection implements MuxConnection {
     for (const pending of pings) {
       pending.result.reject(new SwitchboardError(status));
     }
-    this.#heldFrames.clear();
     const nonceWaiter = this.#peerNonceWaiter;
     this.#peerNonceWaiter = undefined;
     nonceWaiter?.reject(new SwitchboardError(status));
