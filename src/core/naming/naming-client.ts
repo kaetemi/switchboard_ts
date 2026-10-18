@@ -10,6 +10,7 @@ import { Credential } from '../identity/credential.ts';
 import { type Name, type NameLike, toName } from '../name.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
 import type { ServiceEvent, ServiceRecord } from '../switchboard/contract.ts';
+import { abortable, checkAborted } from '../switchboard/waits.ts';
 import type { TalkChannel, TalkMessage, TalkRequest } from '../talk/contract.ts';
 import { type Clock, systemClock, type TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
@@ -103,6 +104,13 @@ export interface RegisterOptions {
   readonly onAssigned?: (instance: number) => void;
   /** Published with the record (copied; at most {@link maxMetadataLength} bytes); default empty. */
   readonly metadata?: Uint8Array;
+  /**
+   * Withdraws the registration while it has not been answered, as
+   * {@link NamingClient.unregister} does (a record the naming service makes
+   * all the same is removed when its answer arrives), and rejects the call
+   * with the signal's reason; once registered, aborting it has no effect.
+   */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /** What {@link NamingClient.defineSlots} takes beside the type. */
@@ -117,6 +125,12 @@ export interface DefineSlotsOptions {
   readonly shared?: boolean;
   /** This instance's share weight; 0 takes no slots; default 1. */
   readonly capacity?: number;
+  /**
+   * Stops the wait: the call rejects with the signal's reason. The
+   * definition stays remembered and is sent as without it (it supersedes
+   * the earlier one at once, and the naming service may have it already).
+   */
+  readonly signal?: AbortSignal | undefined;
 }
 
 /** The events of a {@link NamingClient}. */
@@ -211,6 +225,8 @@ export class NamingClient implements AsyncDisposable {
   #delayTimer: TimerHandle | undefined;
   #delay: Deferred<void> | undefined;
   #failedConnects = 0;
+  /** The events of the step running now, delivered once it is done; undefined between steps. */
+  #held: (() => void)[] | undefined;
 
   /**
    * Creates a client. Nothing happens until {@link start}.
@@ -244,7 +260,7 @@ export class NamingClient implements AsyncDisposable {
       closed: () => this.#closed,
       registeredOn: (session, type) => this.#registeredOn(session, type),
       registers: (type) => this.#registers(type),
-      emitSlotEvent: (event) => this.#emitter.emit('slotEvent', event),
+      emitSlotEvent: (event) => this.#deliver('slotEvent', event),
       client: this,
     });
   }
@@ -287,6 +303,11 @@ export class NamingClient implements AsyncDisposable {
    * only, when it disappears, including records found missing when a new
    * snapshot arrives after a reconnect), `slotEvent` for every change of the
    * mirrored slot tables. Returns the function that removes it.
+   *
+   * Listeners are called synchronously, once the step that made the change
+   * is done (the table and the slot tables updated, {@link isSynced} set
+   * after a snapshot), so they see what a Dart listener sees (design
+   * section 12, item 16).
    */
   on<K extends 'event' | 'slotEvent'>(
     event: K,
@@ -443,7 +464,8 @@ export class NamingClient implements AsyncDisposable {
    * forgotten; with `INVALID_ARGUMENT` for an empty type,
    * `FAILED_PRECONDITION` after {@link close}, `CANCELLED` on
    * {@link close}; {@link RangeError} for a count or capacity outside `u32`,
-   * or a count of 0.
+   * or a count of 0; with the reason of `signal` once it aborts (see
+   * {@link DefineSlotsOptions.signal}).
    */
   defineSlots(type: NameLike, options: DefineSlotsOptions): Promise<void> {
     try {
@@ -458,7 +480,11 @@ export class NamingClient implements AsyncDisposable {
         lazy: options.lazy ?? false,
         shared: options.shared ?? false,
       });
-      return this.#slots.defineSlots(new SlotsRequest(space, { capacity }));
+      checkAborted(options.signal);
+      return abortable(
+        this.#slots.defineSlots(new SlotsRequest(space, { capacity })),
+        options.signal,
+      );
     } catch (error) {
       return Promise.reject(error);
     }
@@ -479,16 +505,23 @@ export class NamingClient implements AsyncDisposable {
    * Rejects with the naming service's {@link SwitchboardError} (`NOT_FOUND`
    * without a slot space, `FAILED_PRECONDITION` without a registration of
    * [type] on the channel); those slots are then forgotten. Rejects with
-   * `CANCELLED` on {@link close}.
+   * `CANCELLED` on {@link close}. `signal` stops the wait (the call rejects
+   * with its reason); the declaration stays remembered and is sent as
+   * without it.
    */
-  declareHolding(type: NameLike, slots: readonly number[]): Promise<number[]> {
+  declareHolding(
+    type: NameLike,
+    slots: readonly number[],
+    options: { signal?: AbortSignal | undefined } = {},
+  ): Promise<number[]> {
     try {
       const name = toName(type);
       this.#checkSlotType(name);
       for (const slot of slots) {
         checkInterval(slot, 0, maxU32, 'slot');
       }
-      return this.#slots.declareHolding(name, [...slots]);
+      checkAborted(options.signal);
+      return abortable(this.#slots.declareHolding(name, [...slots]), options.signal);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -506,10 +539,20 @@ export class NamingClient implements AsyncDisposable {
    * `UNAVAILABLE` if the `ASSIGN` failed. Rejects with `UNAVAILABLE` while
    * disconnected, or if the channel is lost while the call waits for the
    * channel's request limit.
+   *
+   * `signal` cancels the call, which rejects with its reason: one waiting
+   * for the channel's request limit is not sent, one sent is cancelled (the
+   * naming service stops waiting for it). A claim cancelled once sent may
+   * take effect all the same: its `ASSIGN` reaches {@link slotHandler} like
+   * any other.
    */
-  claim(type: NameLike, slot: number, options: { holding?: boolean } = {}): Promise<number> {
-    return this.#slotCall(type, slot, (name) =>
-      this.#slots.claim(name, slot, options.holding ?? false),
+  claim(
+    type: NameLike,
+    slot: number,
+    options: { holding?: boolean; signal?: AbortSignal | undefined } = {},
+  ): Promise<number> {
+    return this.#slotCall(type, slot, options.signal, (name) =>
+      this.#slots.claim(name, slot, options.holding ?? false, options.signal),
     );
   }
 
@@ -521,10 +564,19 @@ export class NamingClient implements AsyncDisposable {
    * `FAILED_PRECONDITION` while it migrates, and `UNAVAILABLE` while
    * disconnected (or if the channel is lost while the call waits for the
    * channel's request limit).
+   *
+   * `signal` withdraws the call while it waits for the channel's request
+   * limit (nothing is sent, the slot stays this instance's) and rejects it
+   * with its reason. A `RELEASE` already sent runs to its answer, so that
+   * this client and the naming service agree on who serves the slot.
    */
-  release(type: NameLike, slot: number, options: { keepStorage?: boolean } = {}): Promise<void> {
-    return this.#slotCall(type, slot, (name) =>
-      this.#slots.release(name, slot, options.keepStorage ?? false),
+  release(
+    type: NameLike,
+    slot: number,
+    options: { keepStorage?: boolean; signal?: AbortSignal | undefined } = {},
+  ): Promise<void> {
+    return this.#slotCall(type, slot, options.signal, (name) =>
+      this.#slots.release(name, slot, options.keepStorage ?? false, options.signal),
     );
   }
 
@@ -536,9 +588,18 @@ export class NamingClient implements AsyncDisposable {
    * Rejects with `NOT_FOUND` without such a space or slot, `UNAVAILABLE` if
    * the assignment failed, while disconnected, or if the channel is lost
    * while the call waits for the channel's request limit.
+   *
+   * `signal` cancels the call as for {@link claim}; the assignment of a free
+   * slot it started may go on.
    */
-  locate(type: NameLike, slot: number): Promise<LocateResponse> {
-    return this.#slotCall(type, slot, (name) => this.#slots.locate(name, slot));
+  locate(
+    type: NameLike,
+    slot: number,
+    options: { signal?: AbortSignal | undefined } = {},
+  ): Promise<LocateResponse> {
+    return this.#slotCall(type, slot, options.signal, (name) =>
+      this.#slots.locate(name, slot, options.signal),
+    );
   }
 
   /**
@@ -570,11 +631,17 @@ export class NamingClient implements AsyncDisposable {
     }
   }
 
-  #slotCall<T>(type: NameLike, slot: number, call: (type: Name) => Promise<T>): Promise<T> {
+  #slotCall<T>(
+    type: NameLike,
+    slot: number,
+    signal: AbortSignal | undefined,
+    call: (type: Name) => Promise<T>,
+  ): Promise<T> {
     try {
       const name = toName(type);
       this.#checkSlotType(name);
       checkInterval(slot, 0, maxU32, 'slot');
+      checkAborted(signal);
       return call(name);
     } catch (error) {
       return Promise.reject(error);
@@ -827,7 +894,9 @@ export class NamingClient implements AsyncDisposable {
    * not remembered. Rejects with {@link RangeError} for more than 255
    * endpoints, metadata longer than {@link maxMetadataLength}, or an instance
    * outside the `u48` range, and with {@link TypeError} for an endpoint
-   * {@link checkEndpoint} refuses.
+   * {@link checkEndpoint} refuses. Rejects with the reason of `signal` when
+   * it aborts before the registration is answered, which withdraws it (see
+   * {@link RegisterOptions.signal}).
    */
   register(
     type: NameLike,
@@ -863,6 +932,7 @@ export class NamingClient implements AsyncDisposable {
           `metadata of ${metadata.length} bytes, more than ${maxMetadataLength}`,
         );
       }
+      checkAborted(options.signal);
     } catch (error) {
       return Promise.reject(error);
     }
@@ -883,6 +953,20 @@ export class NamingClient implements AsyncDisposable {
       }
     }
     this.#entries.add(entry);
+    const signal = options.signal;
+    if (signal !== undefined) {
+      const withdraw = (): void => {
+        if (!entry.completer.isSettled) {
+          // As unregister: a REGISTER in flight removes the record it made
+          // when its answer arrives.
+          this.#entries.delete(entry);
+          entry.completer.reject(signal.reason);
+        }
+      };
+      signal.addEventListener('abort', withdraw, { once: true });
+      const remove = (): void => signal.removeEventListener('abort', withdraw);
+      entry.completer.promise.then(remove, remove);
+    }
     const session = this.#session;
     if (session?.alive) {
       void this.#registerOn(session, entry);
@@ -1444,6 +1528,10 @@ export class NamingClient implements AsyncDisposable {
 
   /** A one-way message from the naming service: an event of the subscription. Events before the `WATCH` reply belong to the snapshot. */
   #onEvent(session: ClientSession, event: TalkMessage): void {
+    this.#step(() => this.#applyEvent(session, event));
+  }
+
+  #applyEvent(session: ClientSession, event: TalkMessage): void {
     if (!session.alive) {
       return;
     }
@@ -1474,6 +1562,10 @@ export class NamingClient implements AsyncDisposable {
 
   /** The `WATCH` reply: the snapshot is complete. Records, spaces and slots it did not mention are gone. */
   #onSynced(session: ClientSession): void {
+    this.#step(() => this.#applySynced(session));
+  }
+
+  #applySynced(session: ClientSession): void {
     if (!session.alive || !session.syncing) {
       return;
     }
@@ -1510,7 +1602,40 @@ export class NamingClient implements AsyncDisposable {
 
   #emit(event: ServiceEvent): void {
     if (!this.#closed) {
-      this.#emitter.emit('event', event);
+      this.#deliver('event', event);
+    }
+  }
+
+  /**
+   * Runs [run] as one step: the events it emits reach the listeners once it
+   * is done, in order, so that a listener sees the state the step left, as
+   * a Dart listener (called by its broadcast stream after the step) does.
+   * Events emitted while they are delivered follow them.
+   */
+  #step(run: () => void): void {
+    if (this.#held !== undefined) {
+      run();
+      return;
+    }
+    const held: (() => void)[] = [];
+    this.#held = held;
+    try {
+      run();
+    } finally {
+      for (let i = 0; i < held.length; i++) {
+        held[i]?.();
+      }
+      this.#held = undefined;
+    }
+  }
+
+  /** Emits [value] as [name], once the step running now is done. */
+  #deliver<K extends keyof NamingClientEvents>(name: K, value: NamingClientEvents[K]): void {
+    const held = this.#held;
+    if (held === undefined) {
+      this.#emitter.emit(name, value);
+    } else {
+      held.push(() => this.#emitter.emit(name, value));
     }
   }
 }

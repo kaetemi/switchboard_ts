@@ -5,6 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { defaultMuxOptions, type MuxChannel, type MuxChannelCarrier } from '../mux/contract.ts';
+import { readSubframes } from '../mux/mux-protocol.ts';
 import type { Name } from '../name.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
 import { followBulkTarget } from '../talk/talk-bulk-routes.ts';
@@ -77,7 +78,7 @@ interface Held {
  * have taken effect, and only the application knows whether it can be
  * repeated.
  */
-export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
+export class SlotChannel implements MuxChannelCarrier, AsyncIterable<Uint8Array>, AsyncDisposable {
   /** The sharded type. */
   readonly type: Name;
   /** The slot this channel is addressed to. */
@@ -97,6 +98,8 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   #readerOf: MuxChannel | undefined;
   /** The first channel once rejected: nothing more is read from it. */
   #abandoned: MuxChannel | undefined;
+  /** Whether {@link readable} was cancelled: what arrives on the current channel and a replacement is discarded. */
+  #readCancelled = false;
   #readable: ReadableStream<Uint8Array> | undefined;
   #writable: WritableStream<Uint8Array> | undefined;
   readonly #done = new Deferred<Status>();
@@ -165,17 +168,24 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   /**
    * Incoming DATA subframes of the current channel; one reader, buffered
    * (by the mux channel) until read. Ends when the final channel ends; read
-   * {@link done} for the reason.
+   * {@link done} for the reason. Cancelling it, before the first read or
+   * after, cancels the current channel's readable and a replacement's:
+   * what arrives is discarded and its credit returned, and the channel
+   * stays open (design section 12, item 10).
    */
   get readable(): ReadableStream<Uint8Array> {
     this.#readable ??= new ReadableStream<Uint8Array>(
       {
         pull: (controller) => this.#pull(controller),
         cancel: (reason) => {
+          this.#readCancelled = true;
           const reader = this.#reader;
           this.#reader = undefined;
           this.#readerOf = undefined;
-          return reader?.cancel(reason);
+          if (reader !== undefined) {
+            return reader.cancel(reason);
+          }
+          return cancelReadable(this.#current, reason);
         },
       },
       { highWaterMark: 0 },
@@ -184,28 +194,29 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   }
 
   /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`, as on `MuxChannel` (design section 12, item 12): each step
+   * takes delivery of one, across a replacement; stopping early (`break`,
+   * an exception) cancels the readable, which discards what arrives from
+   * then on and leaves the channel open. Locks {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
+  }
+
+  /**
    * Outgoing subframes, as `MuxChannel.writable`: a `write` is a
-   * {@link send} once {@link canSend} (dropped otherwise; a subframe the
-   * channel refuses for its size fails the write); `close()` is
+   * {@link send}, so a write once the channel can no longer send rejects
+   * and errors the writable (`FAILED_PRECONDITION`), as does a held
+   * subframe dropped because the channel ended first, and a subframe the
+   * channel refuses for its size (design section 12, item 8); `close()` is
    * `close(OK)`; `abort(reason)` closes with the status of a
    * `SwitchboardError` (an application code becomes `UNKNOWN`), else
    * `INTERNAL`.
    */
   get writable(): WritableStream<Uint8Array> {
     this.#writable ??= new WritableStream<Uint8Array>({
-      write: async (subframe) => {
-        if (!this.canSend) {
-          return;
-        }
-        try {
-          await this.send(subframe);
-        } catch (error) {
-          if (!(error instanceof SwitchboardError) || !error.is(StatusCode.failedPrecondition)) {
-            throw error;
-          }
-          // Closed while waiting: dropped, as a write after the end is.
-        }
-      },
+      write: (subframe) => this.send(subframe),
       close: () => this.close(),
       abort: (reason: unknown) => {
         let status =
@@ -424,6 +435,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
   /** Reads the next subframe of the current channel into [controller], across a replacement. */
   async #pull(controller: ReadableStreamDefaultController<Uint8Array>): Promise<void> {
     for (;;) {
+      if (this.#readCancelled) {
+        return;
+      }
       const channel = this.#current;
       if (this.#reopening || this.#abandoned === channel) {
         // Nothing to read until the replacement takes over, or ever.
@@ -445,6 +459,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
       } catch (error) {
         if (channel !== this.#current) continue;
         controller.error(error);
+        return;
+      }
+      if (this.#readCancelled) {
         return;
       }
       if (channel !== this.#current) {
@@ -534,6 +551,9 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
     // (to the Talk layer or the pipe over this slot channel).
     followBulkTarget(this.#current, next);
     this.#current = next;
+    if (this.#readCancelled) {
+      void cancelReadable(next);
+    }
     this.#settle();
     this.#watch(next);
     const requested = this.#closeRequested;
@@ -568,4 +588,13 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
       `${this.#retried ? ', retried' : ''})`
     );
   }
+}
+
+/** Cancels [channel]'s readable unless something reads it already; never rejects. */
+function cancelReadable(channel: MuxChannel, reason?: unknown): Promise<void> {
+  const readable = channel.readable;
+  if (readable.locked) {
+    return Promise.resolve();
+  }
+  return readable.cancel(reason).catch(() => {});
 }

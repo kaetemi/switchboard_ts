@@ -1501,8 +1501,15 @@ export class SlotGate implements SlotHandler {
 
   // Claims and release ------------------------------------------------------
 
-  /** Takes the free [slot] (`CLAIM`, see `NamingClient.claim`) and resolves with its epoch; the slot is loaded through `ASSIGN` before this resolves. */
-  claim(slot: number, options: { holding?: boolean } = {}): Promise<number> {
+  /**
+   * Takes the free [slot] (`CLAIM`, see `NamingClient.claim`) and resolves
+   * with its epoch; the slot is loaded through `ASSIGN` before this
+   * resolves. `signal` cancels the claim as `NamingClient.claim` says.
+   */
+  claim(
+    slot: number,
+    options: { holding?: boolean; signal?: AbortSignal | undefined } = {},
+  ): Promise<number> {
     return this.client.claim(this.type, slot, options);
   }
 
@@ -1510,9 +1517,14 @@ export class SlotGate implements SlotHandler {
    * Gives up [slot] (`RELEASE`, see `NamingClient.release`), then stops
    * serving it here: its queue is refused with `MOVED`, its tracked
    * channels are closed with `RELOCATED` ({@link relocatedStatus}), and
-   * `SlotLifecycle.unload` runs.
+   * `SlotLifecycle.unload` runs. `signal` withdraws the `RELEASE` while it
+   * has not been sent, as `NamingClient.release` says; the slot is then
+   * still served here.
    */
-  async release(slot: number, options: { keepStorage?: boolean } = {}): Promise<void> {
+  async release(
+    slot: number,
+    options: { keepStorage?: boolean; signal?: AbortSignal | undefined } = {},
+  ): Promise<void> {
     await this.client.release(this.type, slot, options);
     await this.#stop(slot);
   }
