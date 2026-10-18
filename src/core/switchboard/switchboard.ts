@@ -1040,9 +1040,11 @@ export class Switchboard implements AsyncDisposable {
    * listener's endpoint with {@link addListeningEndpoint}. Hand it over as
    * soon as it is established: the node reads `incoming` itself.
    *
-   * @throws {TypeError} if this node owns [connection] already. Rejects
-   * with FAILED_PRECONDITION once {@link close} has started; the connection
-   * is then adopted all the same and sent GOAWAY at once.
+   * @throws {TypeError} if this node owns [connection] already, and a
+   * plain `Error` if something else reads its `incoming` (the bindings
+   * refuse a second consumer); neither adopts it. Rejects with
+   * FAILED_PRECONDITION once {@link close} has started; the connection is
+   * then adopted all the same and sent GOAWAY at once.
    */
   async adopt(
     connection: MuxConnection,
@@ -1082,10 +1084,13 @@ export class Switchboard implements AsyncDisposable {
     if (this.#adopted.has(connection)) {
       throw new TypeError('the connection is adopted by this node already');
     }
+    // Taken before anything changes, as Dart listens first: the bindings
+    // throw a plain Error when `incoming` has a consumer already.
+    const incoming = this.#closing ? undefined : connection.incoming[Symbol.asyncIterator]();
     this.#adopted.add(connection);
     installBulkRouting(connection);
-    if (!this.#closing) {
-      void this.#dispatchAll(connection);
+    if (incoming !== undefined) {
+      void this.#dispatchAll(connection, incoming);
     }
     connection.localIdentity = this.#credential?.identity;
     if (remote !== undefined) {
@@ -1116,9 +1121,12 @@ export class Switchboard implements AsyncDisposable {
     return connection;
   }
 
-  async #dispatchAll(connection: MuxConnection): Promise<void> {
+  async #dispatchAll(
+    connection: MuxConnection,
+    incoming: AsyncIterator<MuxChannel>,
+  ): Promise<void> {
     try {
-      for await (const channel of connection.incoming) {
+      for await (const channel of { [Symbol.asyncIterator]: () => incoming }) {
         this.#dispatch(connection, channel);
       }
     } catch (e) {
