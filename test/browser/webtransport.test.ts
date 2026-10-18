@@ -1,5 +1,6 @@
 // The web provider and the binding over it in a browser: Playwright's
-// headless Chromium against the native WebTransport listeners of
+// headless Chromium or Firefox (the project's browser, see
+// `vitest.config.ts`) against the native WebTransport listeners of
 // `web-server.ts` (a port of `tool/web_server.dart`) in this process, the
 // page served by Vite from the sources. Ports of `switchboard_quic`'s
 // `test/web_provider_test.dart` (the provider against the contract: the
@@ -14,19 +15,32 @@
 // Switchboard node's listener, with `test/web_harness.dart` as the guide
 // (`page/page.ts`). Each test's body runs in the page (see `harness.ts`).
 //
-// Chromium 141 has none of `protocol`, `draining`, `exportKeyingMaterial`,
-// `getStats`, `createSendGroup` or `sendOrder`, and sends no
-// `WT-Available-Protocols`: where Dart expects what Chrome 149 has, the
-// tests check what the session's capabilities say.
+// Browsers differ in the optional members of the W3C API (`protocol`,
+// `draining`, `exportKeyingMaterial`, `getStats`, `createSendGroup`,
+// `sendOrder`): where Dart expects what Chrome 149 has, the tests check
+// what the session's capabilities say, and the first test logs them. Where a
+// browser's version has a member the tests need to reach a path (the
+// `protocols` negotiation from Chromium 143 and Firefox 155, the exporter
+// from Firefox 155), they also check that the session has it, so that the
+// path is not skipped unnoticed.
 //
-// Without the native addon, Playwright or its Chromium the file skips with
-// the reason; with SWITCHBOARD_BROWSER=required (CI) it fails instead.
-import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { type BrowserTests, browserAvailability, startBrowserTests } from './harness.ts';
+// Without the native addon, Playwright or the project's browser the file
+// skips with the reason; with SWITCHBOARD_BROWSER=required (CI) it fails
+// instead.
+import { afterAll, afterEach, beforeAll, describe, expect, inject, test } from 'vitest';
+import type { WebTransportCapabilities } from '../../src/web/quic/webtransport-provider.ts';
+import {
+  type BrowserTests,
+  browserAvailability,
+  browserTitles,
+  startBrowserTests,
+} from './harness.ts';
 
 const requiredVariable = 'SWITCHBOARD_BROWSER';
 
-const availability = browserAvailability();
+const browserName = inject('browserName');
+const title = browserTitles[browserName];
+const availability = browserAvailability(browserName);
 if (!availability.available && process.env[requiredVariable] === 'required') {
   throw new Error(`${requiredVariable}=required, but ${availability.reason}`);
 }
@@ -39,13 +53,38 @@ const run: BrowserTests['run'] = (body, arg) => {
   return browser.run(body, arg);
 };
 
+/**
+ * The first version of each browser with a capability the tests need to reach a path: the
+ * `protocols` negotiation (`WT-Available-Protocols`, `wt.protocol`) and `exportKeyingMaterial`.
+ */
+const firstVersionWith: {
+  readonly [name in typeof browserName]: Partial<Record<keyof WebTransportCapabilities, number>>;
+} = {
+  chromium: { protocol: 143 },
+  firefox: { protocol: 155, exportKeyingMaterial: 155 },
+};
+
+/** The capabilities the browser's version must have, which the session reports in [seen]. */
+function expectCapabilitiesOfVersion(seen: WebTransportCapabilities): void {
+  if (browser === undefined) throw new Error('the browser did not start');
+  const major = Number.parseInt(browser.browserVersion, 10);
+  for (const [capability, version] of Object.entries(firstVersionWith[browserName])) {
+    if (major >= version) {
+      expect(
+        seen[capability as keyof WebTransportCapabilities],
+        `${capability} in ${title} ${major}`,
+      ).toBe(true);
+    }
+  }
+}
+
 describe.skipIf(!availability.available)(
-  `WebTransport in Chromium${availability.available ? '' : ` (skipped: ${availability.reason})`}`,
+  `WebTransport in ${title}${availability.available ? '' : ` (skipped: ${availability.reason})`}`,
   () => {
     beforeAll(async () => {
       if (!availability.available) return;
-      browser = await startBrowserTests(availability.playwright);
-      console.info(`browser tests: Chromium ${browser.chromiumVersion}`);
+      browser = await startBrowserTests(availability.playwright, browserName);
+      console.info(`browser tests: ${title} ${browser.browserVersion}`);
     });
 
     afterEach(async () => {
@@ -86,8 +125,9 @@ describe.skipIf(!availability.available)(
           };
         });
         console.info(
-          `web provider: ${JSON.stringify(seen.capabilities)}, stream error codes up to ${seen.maxStreamErrorCode}`,
+          `web provider: ${title} ${JSON.stringify(seen.capabilities)}, stream error codes up to ${seen.maxStreamErrorCode}`,
         );
+        expectCapabilitiesOfVersion(seen.capabilities);
       });
 
       test('a session that offers no protocol: none selected', async () => {
@@ -101,6 +141,41 @@ describe.skipIf(!availability.available)(
           h.eq(session.protocol, undefined, 'the protocol');
           await session.close(0, '');
         });
+      });
+
+      test('protocols: the browser offers them, the server selects the first it serves and refuses a session offering none it serves', async () => {
+        const seen = await run(async ({ sb, h }) => {
+          const id = h.newId();
+          const session = await h.within(
+            sb.webTransport().connect(h.url('echo', id), {
+              alpn: ['other', 'switchboard'],
+              serverCertificateHashes: [h.server.hash],
+            }),
+          );
+          h.addTearDown(() => session.close(0, ''));
+          const request = await h.reported(id, (e) => e['event'] === 'session');
+          if (session.capabilities.protocol) {
+            // WT-Available-Protocols, in the order given; the answer's WT-Protocol.
+            h.eq(request['protocols'], ['other', 'switchboard'], 'what the server saw offered');
+            h.eq(request['protocol'], 'switchboard', 'what the server selected');
+            h.eq(session.protocol, 'switchboard', 'what the browser reports');
+            const refused = await h.rejects(
+              sb.webTransport().connect(h.url('echo', h.newId()), {
+                alpn: ['other'],
+                serverCertificateHashes: [h.server.hash],
+              }),
+            );
+            h.eq(refused.kind, 'handshakeFailed', 'a session offering only another protocol');
+          } else {
+            // A browser without the protocols option offers none: the server selects none.
+            h.eq(request['protocols'], [], 'what the server saw offered');
+            h.eq(request['protocol'], null, 'what the server selected');
+            h.eq(session.protocol, undefined, 'what the browser reports');
+          }
+          return { capabilities: session.capabilities, draft: request['draft'] };
+        });
+        console.info(`web provider: ${title} signals the WebTransport draft ${seen.draft}`);
+        expectCapabilitiesOfVersion(seen.capabilities);
       });
 
       test('a stream echoed, FIN both ways, acknowledgement', async () => {
@@ -351,13 +426,14 @@ describe.skipIf(!availability.available)(
             serverCertificateHashes: [new Uint8Array(16)],
           });
           h.eq((await h.rejects(short)).name, 'RangeError', 'a 16-byte hash');
-          // Chromium sends no WT-Available-Protocols and refuses nothing: the provider does.
+          // Chromium before 143 sends no WT-Available-Protocols and refuses nothing: the provider
+          // checks the protocols itself.
           const twice = provider.connect('https://127.0.0.1:1/sb', { alpn: ['a', 'a'] });
           h.eq((await h.rejects(twice)).name, 'TypeError', 'a protocol offered twice');
         });
       });
 
-      test("the exporter: undefined without exportKeyingMaterial (Chromium 141), the server's value with it", async () => {
+      test("the exporter: undefined without exportKeyingMaterial, the server's value with it", async () => {
         await run(async ({ sb, h }) => {
           const id = h.newId();
           const session = await h.open('sink', id);
@@ -558,7 +634,7 @@ describe.skipIf(!availability.available)(
         });
       });
 
-      test('a nonce-bound IDENT from the browser, accepted by a listener with QuicIdentityRules.none', async () => {
+      test('an IDENT from the browser (exporter-bound where it exports keying material, nonce-bound elsewhere), accepted by a listener with QuicIdentityRules.none', async () => {
         await run(async ({ sb, h, node }) => {
           const connection = await node.dial();
           const key = await sb.Ed25519HolderKey.generate();

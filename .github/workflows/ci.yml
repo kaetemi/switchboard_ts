@@ -248,11 +248,12 @@ jobs:
         env:
           SWITCHBOARD_NATIVE: required
 
-  # The web provider in a browser: Playwright's Chromium against native
-  # WebTransport listeners in the test process (the addon built as in the
-  # native job), the page served by Vite (test/browser).
+  # The web provider in a browser: Playwright's Chromium and Firefox, one
+  # test project each, against native WebTransport listeners in the test
+  # process (the addon built as in the native job), the page served by Vite
+  # (test/browser).
   browser:
-    name: Browser (WebTransport in Chromium)
+    name: Browser (WebTransport in Chromium and Firefox)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -275,7 +276,7 @@ jobs:
       - run: npm ci
       - run: node tool/sync-sbq.mjs --check switchboard_quic
       - run: npm run build:native
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium firefox
       - run: npm run test:browser
         env:
           SWITCHBOARD_BROWSER: required

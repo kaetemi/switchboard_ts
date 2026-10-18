@@ -1,6 +1,7 @@
 // The Node side of the browser tests: the server of `web-server.ts`, Vite
 // serving the page (`page/index.html`, whose module imports the web entry
-// point from the sources), and Playwright's Chromium driving it. A test's
+// point from the sources), and Playwright's Chromium or Firefox driving it
+// (the project's `browserName`, see `vitest.config.ts`). A test's
 // body is a function of the page's API (`page/page.ts`) that the harness
 // sends to the page as source and runs there: it may use its parameters
 // only, never a binding of the test file (Vitest rewrites those, and the
@@ -34,21 +35,38 @@ interface Browser {
   close(): Promise<void>;
 }
 
-/** The members of the Playwright module the harness uses. */
-interface Playwright {
-  readonly chromium: {
-    executablePath(): string;
-    launch(options?: { readonly headless?: boolean }): Promise<Browser>;
-  };
+/** The browsers the tests run in, as Playwright names them. */
+export type BrowserName = 'chromium' | 'firefox';
+
+declare module 'vitest' {
+  export interface ProvidedContext {
+    /** The browser of the project (`vitest.config.ts`). */
+    browserName: BrowserName;
+  }
 }
 
-/** Whether the browser tests can run here: Playwright, its Chromium and the native addon. */
+/** The members of a Playwright browser type the harness uses. */
+interface BrowserType {
+  executablePath(): string;
+  launch(options?: { readonly headless?: boolean }): Promise<Browser>;
+}
+
+/** The members of the Playwright module the harness uses. */
+type Playwright = { readonly [name in BrowserName]: BrowserType };
+
+/** The browser's name as people write it. */
+export const browserTitles: { readonly [name in BrowserName]: string } = {
+  chromium: 'Chromium',
+  firefox: 'Firefox',
+};
+
+/** Whether the browser tests can run here: Playwright, its browser and the native addon. */
 export type BrowserAvailability =
   | { readonly available: true; readonly playwright: Playwright }
   | { readonly available: false; readonly reason: string };
 
-/** Whether the tests can run: the native addon (the server), Playwright and its Chromium. */
-export function browserAvailability(): BrowserAvailability {
+/** Whether the tests can run in [name]: the native addon (the server), Playwright and the browser. */
+export function browserAvailability(name: BrowserName): BrowserAvailability {
   const native = nativeQuicAvailability();
   if (!native.available) return { available: false, reason: native.reason };
   let playwright: Playwright;
@@ -61,11 +79,11 @@ export function browserAvailability(): BrowserAvailability {
         'Playwright is not installed (npm ci installs the dev dependency; NODE_PATH may name a global install)',
     };
   }
-  const chromium = playwright.chromium.executablePath();
-  if (!existsSync(chromium)) {
+  const executable = playwright[name].executablePath();
+  if (!existsSync(executable)) {
     return {
       available: false,
-      reason: `no Chromium at ${chromium} (npx playwright install chromium)`,
+      reason: `no ${browserTitles[name]} at ${executable} (npx playwright install ${name})`,
     };
   }
   return { available: true, playwright };
@@ -74,8 +92,10 @@ export function browserAvailability(): BrowserAvailability {
 /** A running page, its server, and how to run a test's body in it. */
 export interface BrowserTests {
   readonly server: WebServer;
-  /** The Chromium version, as the browser reports it. */
-  readonly chromiumVersion: string;
+  /** The browser. */
+  readonly browserName: BrowserName;
+  /** Its version, as the browser reports it. */
+  readonly browserVersion: string;
   /**
    * Runs [body] in the page with the page's API and [arg] (JSON-like), and resolves with what it
    * returns (JSON-like). [body] may use its parameters only.
@@ -88,8 +108,11 @@ export interface BrowserTests {
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
 
-/** Starts the server, Vite and Chromium, and opens the page. */
-export async function startBrowserTests(playwright: Playwright): Promise<BrowserTests> {
+/** Starts the server, Vite and the browser [name], and opens the page. */
+export async function startBrowserTests(
+  playwright: Playwright,
+  name: BrowserName,
+): Promise<BrowserTests> {
   const log = process.env['SWITCHBOARD_BROWSER_LOG'] === '1';
   const server = await startWebServer();
   const vite = await createServer({
@@ -109,7 +132,7 @@ export async function startBrowserTests(playwright: Playwright): Promise<Browser
     if (address === null || address === undefined || typeof address === 'string') {
       throw new Error('Vite is not listening on a port');
     }
-    browser = await playwright.chromium.launch({ headless: true });
+    browser = await playwright[name].launch({ headless: true });
     const page = await browser.newPage();
     page.on('pageerror', (error) => {
       if (log) console.error(`page error: ${error.message}`);
@@ -128,7 +151,8 @@ export async function startBrowserTests(playwright: Playwright): Promise<Browser
     const opened = browser;
     return {
       server,
-      chromiumVersion: opened.version(),
+      browserName: name,
+      browserVersion: opened.version(),
       run<R, A>(body: (api: PageApi, arg: A) => Promise<R>, arg?: A): Promise<R> {
         return page.evaluate(
           ({ source, arg }) => {
