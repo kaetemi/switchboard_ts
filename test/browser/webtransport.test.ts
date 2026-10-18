@@ -87,7 +87,8 @@ const departures = {
    * `Http3Session::CloseWebTransportConn`), and the shim ends every session of a connection that
    * closes as lost at once, so a WT_CLOSE_SESSION that arrives with the connection's close is not
    * read. The server then sees a lost connection, without the code or the reason (CI saw both
-   * outcomes). The page's own end is the local close either way.
+   * outcomes). The page's own end is the local close either way. Native peers race the same way
+   * when the dialler closes its last session (the WebTransport case of the interop close scenario).
    */
   closeRace:
     "the page's close races the browser's connection close, and may reach the server as a loss",
