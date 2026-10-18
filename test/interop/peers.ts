@@ -79,9 +79,17 @@ export function peerCommand(implementation: Implementation): PeerCommand {
   if ('reason' in a) {
     throw new Error(`${implementation} peer unavailable: ${a.reason}`);
   }
-  return implementation === 'dart'
-    ? { label: 'dart', command: a.path }
-    : { label: 'ts', command: process.execPath, args: [a.path] };
+  if (implementation === 'dart') {
+    return { label: 'dart', command: a.path };
+  }
+  // The runtime of the TS peer: this Node (type stripping runs main.ts as it
+  // is), or SWITCHBOARD_TS_PEER_RUNTIME, such as `bun`.
+  const runtime = process.env['SWITCHBOARD_TS_PEER_RUNTIME'];
+  return {
+    label: 'ts',
+    command: runtime === undefined || runtime === '' ? process.execPath : runtime,
+    args: [a.path],
+  };
 }
 
 /** Starts a peer of [implementation]. */

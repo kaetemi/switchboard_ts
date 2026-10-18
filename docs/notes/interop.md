@@ -802,3 +802,40 @@ started" in the work split. Still open in the driver's terms (section D,
 transport, LIMITS sent mid-connection, a naming-service restart with
 re-claims by epoch (it needs a TS peer restarted on the same port),
 slot-request EXTEND deadlines, `reassemblyBudget` back-pressure.
+
+## 13. The TS peer on another runtime (branch `claude/runtimes`)
+
+`SWITCHBOARD_TS_PEER_RUNTIME=<executable>` starts the TS peer as
+`<executable> test/interop/ts_peer/main.ts` instead of with the Node that runs
+the tests (`peerCommand` in `test/interop/peers.ts`; every peer, including the
+oracle's and the probes', starts through it). Only the TS peer moves: the test
+process, the matrix and the Dart peer stay as they were, and the matrix still
+decides whether the QUIC cells skip from the addon's availability in the
+Node. The peer is `<executable> main.ts` with nothing else, so it covers Bun;
+Deno would need `run -A` and flags, and the Dart driver still spawns `node`.
+
+Measured with Bun 1.4.2 under Node 22.22 (the Dart peer prebuilt at the pins,
+the addon through `SWITCHBOARD_QUIC_ADDON`, `SWITCHBOARD_INTEROP=required`
+and `SWITCHBOARD_NATIVE=required`; a wrapper executable counted the launches
+and checked the peer really ran under Bun):
+
+* **TCP and WebSocket cells** (`-t 'over (tcp|ws) '`: every scenario, mesh
+  and reconnect cell over the two stream transports, in all four pairings):
+  1968 passed, none failed, in about 70 s; the same selection with the peer on
+  Node passes the same 1968. The oracle (328) and the raw-byte conformance
+  probe (70) with the TS peer on Bun: 398 passed.
+* **The whole interop project**, since the addon loads in Bun (N-API) and the
+  QUIC and WebTransport cells could run too: 4540 passed and 4 skipped (the
+  GOAWAY-lost case of the QUIC probe in its four cells, section 12, design
+  section 13 item 8), in 151 s and again in 141 s, both runs green; about
+  4 minutes on Node. The close races of section 12 did not show differently
+  under Bun.
+* **Nothing needed fixing** in the peer, the Node entry or the tests: the peer
+  runs under Bun as it is (as the header of `main.ts` already said).
+
+Because both runs were fully green and take about two and a half minutes, the
+`interop` job runs the project a second time with
+`SWITCHBOARD_TS_PEER_RUNTIME=bun` (`oven-sh/setup-bun`, latest, as the Bun
+unit job) after the Node run, in required mode, when the Dart peer and the
+addon were built. The all-Dart cells run again with it; the step can be
+dropped without touching anything else.

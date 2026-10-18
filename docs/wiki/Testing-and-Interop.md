@@ -19,7 +19,7 @@
 | `PLAYWRIGHT_BROWSERS_PATH` | where Playwright's browsers are (`npx playwright install chromium firefox` puts them in the default place) |
 | `SWITCHBOARD_VECTORS_STRICT=1` | every wiki vector table must be covered, not only those a test started on |
 
-The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.64.1: Chromium 156 and Firefox 157); `npm run test:browser -- --project firefox` runs one browser. Where Firefox departs from the drafts, the tests check the departure ([Runtimes and QUIC](Runtimes-and-QUIC)). CI also runs the unit project on Bun and on Deno, and the built package on Deno (`test/runtime/smoke.mjs`).
+The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.64.1: Chromium 156 and Firefox 157); `npm run test:browser -- --project firefox` runs one browser. Where Firefox departs from the drafts, the tests check the departure ([Runtimes and QUIC](Runtimes-and-QUIC)). CI also runs the unit project on Bun, the unit and integration projects on Deno, and the built package on Deno (`test/runtime/smoke.mjs`).
 
 ## Test vectors
 
@@ -68,6 +68,7 @@ It needs a Dart SDK (3.13.5 in CI; `dart` on PATH, `SWITCHBOARD_DART_SDK`, `DART
 | `SWITCHBOARD_DART_PEER` | a prebuilt peer executable |
 | `SWITCHBOARD_DART_SDK`, `DART_SDK` | a Dart SDK not on PATH |
 | `SWITCHBOARD_FUZZ_SEED`, `SWITCHBOARD_FUZZ_COUNT` | replay or widen the oracle's random inputs (the seed is in the test names) |
+| `SWITCHBOARD_TS_PEER_RUNTIME=<executable>` | run the TS peer on another runtime than the Node running the tests, such as `bun` |
 
 Without a peer the interop files skip, and the run prints one line saying why.
 
@@ -81,7 +82,7 @@ Without a peer the interop files skip, and the run prints one line saying why.
 
 **The Dart driver** (`test/interop/dart_driver/`, `node tool/dart-peer.mjs driver`) runs Dart-written scenarios (59 tests in six files) with the Dart Switchboard in process against the TS peer it spawns, for what the Dart side sees that the TS-driven cells cannot: its windows and the LIMITS it read, its reconnecting client, its QUIC binding against TS listeners, its Talk handlers and slot handlers.
 
-In CI the `interop` job checks out the two Dart repositories at the pinned commits, installs Dart and Rust, builds the peer (cached on the peer's sources and the pins) and the native QUIC addon, runs `npm run test:interop` with `SWITCHBOARD_INTEROP=required` and `SWITCHBOARD_NATIVE=required`, then the Dart driver. When Dart or Rust cannot be installed it warns and runs with the cells needing them skipped.
+In CI the `interop` job checks out the two Dart repositories at the pinned commits, installs Dart and Rust, builds the peer (cached on the peer's sources and the pins) and the native QUIC addon, runs `npm run test:interop` with `SWITCHBOARD_INTEROP=required` and `SWITCHBOARD_NATIVE=required`, then the same again with the TS peer on Bun (`SWITCHBOARD_TS_PEER_RUNTIME=bun`), then the Dart driver. When Dart or Rust cannot be installed it warns and runs with the cells needing them skipped.
 
 ## Clocks
 

@@ -51,11 +51,13 @@ jobs:
       - run: bun run test:unit
 
   # Deno 2.9, which runs the Node entry through its Node compatibility: the
-  # unit project under Deno (the runner with -A), then the built package as a
-  # consumer installs it, from tarballs (the package, the prebuilt addon for
-  # Linux x64 packed as release.yml packs it, and ws), its TCP, WebSocket, raw
-  # QUIC and WebTransport round trips run with the permissions a deployment
-  # grants (test/runtime/smoke.mjs). What does not run on Deno is written in
+  # unit and integration projects under Deno (the runner with -A; the addon
+  # built here, so the native QUIC files run, and fail rather than skip when
+  # it is missing), then the built package as a consumer installs it, from
+  # tarballs (the package, the prebuilt addon for Linux x64 packed as
+  # release.yml packs it, and ws), its TCP, WebSocket, raw QUIC and
+  # WebTransport round trips run with the permissions a deployment grants
+  # (test/runtime/smoke.mjs). What does not run on Deno is written in
   # docs/wiki/Runtimes-and-QUIC.md.
   deno:
     name: Deno
@@ -79,6 +81,10 @@ jobs:
       - run: npm run build:native
       - name: The unit project on Deno
         run: deno run -A node_modules/vitest/vitest.mjs run --project unit
+      - name: The integration project on Deno
+        run: deno run -A node_modules/vitest/vitest.mjs run --project integration
+        env:
+          SWITCHBOARD_NATIVE: required
       - name: The built package on Deno, installed from its tarballs
         run: |
           npm run build
@@ -118,9 +124,11 @@ jobs:
   # peer serves and dials raw QUIC and WebTransport too. The matrix then runs
   # every pairing (Dart and TS, server and client) over TCP, WebSocket, raw
   # QUIC and WebTransport, and the Dart driver (test/interop/dart_driver) runs
-  # Dart-written scenarios against the TS peer. When a toolchain cannot be
-  # installed the job warns and the cells needing it skip; otherwise a missing
-  # peer or addon fails the run (SWITCHBOARD_INTEROP=required,
+  # Dart-written scenarios against the TS peer. The whole matrix then runs a
+  # second time with the TS peer on Bun instead of Node
+  # (SWITCHBOARD_TS_PEER_RUNTIME). When a toolchain cannot be installed the
+  # job warns and the cells needing it skip; otherwise a missing peer or
+  # addon fails the run (SWITCHBOARD_INTEROP=required,
   # SWITCHBOARD_NATIVE=required).
   interop:
     name: Interop (Dart reference and TS peer)
@@ -209,6 +217,18 @@ jobs:
             echo "::warning::the native QUIC addon could not be built: the TS cells over raw QUIC and WebTransport skip"
           fi
           npm run test:interop
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Interop tests, the TS peer on Bun
+        if: steps.peer.outcome == 'success' && steps.addon.outcome == 'success'
+        run: npm run test:interop
+        env:
+          SWITCHBOARD_INTEROP: required
+          SWITCHBOARD_NATIVE: required
+          SWITCHBOARD_TS_PEER_RUNTIME: bun
 
       - name: Dart driver against the TS peer
         if: steps.peer.outcome == 'success'

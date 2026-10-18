@@ -5,8 +5,8 @@
 | Runtime | Import | Transports | QUIC and WebTransport | Tested |
 | --- | --- | --- | --- | --- |
 | Node.js 22, 24, 26 | `@kaetemi/switchboard/node` | TCP, WebSocket client and server, in-memory | native provider | CI: unit and integration |
-| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider | CI: unit; TCP, WebSocket and QUIC by hand |
-| Deno 2.x | `@kaetemi/switchboard/node` | same, through `node:` compatibility | native provider | CI (Deno 2.9): unit; the built package's TCP, WebSocket, QUIC and WebTransport round trips |
+| Bun 1.x | `@kaetemi/switchboard/node` | same, through Bun's Node compatibility | native provider | CI: unit, and the interop matrix with the TS peer on Bun; TCP, WebSocket and QUIC by hand |
+| Deno 2.x | `@kaetemi/switchboard/node` | same, through `node:` compatibility | native provider | CI (Deno 2.9): unit and integration; the built package's TCP, WebSocket, QUIC and WebTransport round trips |
 | Browsers | `@kaetemi/switchboard/web` | WebSocket | WebTransport API | CI: Chromium 156 and Firefox 157 |
 | Edge runtimes | `@kaetemi/switchboard` with your own transport | WebSocket where offered | none | not a target |
 
@@ -14,7 +14,7 @@ The core entry `@kaetemi/switchboard` uses only Web platform APIs that every run
 
 **Deno:** `deno run --allow-net --allow-read --allow-env --allow-ffi app.ts`. `--allow-ffi` loads the QUIC addon (`--allow-net` does not constrain its sockets); the WebSocket server needs `ws` in a `node_modules` directory (npm specifiers, or `--node-modules-dir=manual` next to an installed `ws` for a lone script).
 
-On Deno, CI runs the unit project (`deno run -A node_modules/vitest/vitest.mjs run --project unit`) and the built package as a consumer installs it, from its tarballs with the prebuilt addon and `ws`, under exactly those permissions (`test/runtime/smoke.mjs`: Talk requests over TCP, WebSocket, raw QUIC and WebTransport). What does not run there: the integration project passes on Deno 2.9 except one case, the native provider's child-process test, because Deno runs `node --input-type=module -e` as a script, where top-level `await` fails (the package is not involved; the case passes when the same code runs as a module file), so the project stays out of the Deno job. The interop and browser suites drive Dart and Playwright from Node and are not meant for Deno.
+On Deno, CI runs the unit and integration projects (`deno run -A node_modules/vitest/vitest.mjs run --project unit`, and the same with `--project integration` and the addon built, so that the native QUIC files run) and the built package as a consumer installs it, from its tarballs with the prebuilt addon and `ws`, under exactly those permissions (`test/runtime/smoke.mjs`: Talk requests over TCP, WebSocket, raw QUIC and WebTransport). What does not run there: the interop and browser suites drive Dart and Playwright from Node and are not meant for Deno.
 
 **Node 22** runs the compiled package; running TypeScript that uses `await using` directly needs Node 24 or later, or `tsc` (Node 22's type stripping cannot parse it).
 
