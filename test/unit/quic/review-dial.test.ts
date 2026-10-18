@@ -10,9 +10,10 @@
 //   connected: a `recordLimit` out of range rejects the dial with its RangeError and leaves the
 //   session open, until the acceptor gives up waiting for a HELLO (the session holds a native
 //   provider's event loop meanwhile). Dart validates in the same place; checking before the dial
-//   (or closing the session on the throw) settles it.
+//   (or closing the session on the throw) settles it. `listenQuic` takes the same options without
+//   checking them, and then refuses every session it accepts (INTERNAL, logged as a warning).
 //
-// Both cases are `test.fails` until fixed. In-memory provider, virtual time.
+// The cases are `test.fails` until fixed. In-memory provider, virtual time.
 import { describe, expect, test } from 'vitest';
 import type { MuxOptions } from '../../../src/core/mux/contract.ts';
 import type { QuicConnector } from '../../../src/core/quic/contract.ts';
@@ -112,5 +113,18 @@ describe('review: connectQuic', () => {
     expect(net.sessions.every((session) => session.ended)).toBe(true);
     await clock.elapseAsync(60_000);
     await net.close();
+  });
+
+  test.fails('listenQuic refuses binding options out of range at once, as connectQuic should', () => {
+    const memory = new MemoryQuicNetwork({ clock: new ManualClock() });
+    const listener = memory.listen(endpoint);
+    let thrown: unknown;
+    try {
+      const accepting = listenQuic(listener, { quicOptions: { recordLimit: 100 } });
+      void accepting.close();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(RangeError);
   });
 });
