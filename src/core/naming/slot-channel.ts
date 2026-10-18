@@ -5,6 +5,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
 import { defaultMuxOptions, type MuxChannel, type MuxChannelCarrier } from '../mux/contract.ts';
+import { readSubframes } from '../mux/mux-protocol.ts';
 import type { Name } from '../name.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
 import { followBulkTarget } from '../talk/talk-bulk-routes.ts';
@@ -77,7 +78,7 @@ interface Held {
  * have taken effect, and only the application knows whether it can be
  * repeated.
  */
-export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
+export class SlotChannel implements MuxChannelCarrier, AsyncIterable<Uint8Array>, AsyncDisposable {
   /** The sharded type. */
   readonly type: Name;
   /** The slot this channel is addressed to. */
@@ -190,6 +191,17 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
       { highWaterMark: 0 },
     );
     return this.#readable;
+  }
+
+  /**
+   * The subframes of {@link readable}, for `for await (const subframe of
+   * channel)`, as on `MuxChannel` (design section 12, item 12): each step
+   * takes delivery of one, across a replacement; stopping early (`break`,
+   * an exception) cancels the readable, which discards what arrives from
+   * then on and leaves the channel open. Locks {@link readable}.
+   */
+  [Symbol.asyncIterator](): AsyncIterableIterator<Uint8Array, undefined> {
+    return readSubframes(this.readable);
   }
 
   /**

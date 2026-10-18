@@ -4,16 +4,15 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Review finding (naming layer): `SlotChannel`, which `openChannelToSlot`
-// returns and which "behaves like" the `MuxChannel` it carries, departs from
-// the channel idioms of design sections 5 and 12 where `MuxChannel` keeps
-// them: it is not async iterable (12.12), a write to its `writable` once it
-// can no longer send is dropped and resolves instead of rejecting (12.8),
-// and cancelling its `readable` before the first read does not reach the
-// mux channel, so what arrives is held (and holds its credit) instead of
-// being discarded (12.10). Each `test.fails` is a finding; the plain tests
-// beside them pin the `MuxChannel` behaviour the slot channel is held to.
-// Over the frame mux, on the in-memory transport.
+// Review findings (naming layer), fixed: `SlotChannel`, which
+// `openChannelToSlot` returns and which "behaves like" the `MuxChannel` it
+// carries, keeps the channel idioms of design sections 5 and 12 as
+// `MuxChannel` does: it is async iterable (12.12), a write to its
+// `writable` once it can no longer send rejects and errors the writable
+// (12.8), and cancelling its `readable` before the first read reaches the
+// mux channel, and a replacement's, so what arrives is discarded and its
+// credit returned (12.10). The controls pin the `MuxChannel` behaviour the
+// slot channel is held to. Over the frame mux, on the in-memory transport.
 
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { ServiceAddress } from '../../../src/core/address/index.ts';
@@ -107,16 +106,29 @@ describe('review: SlotChannel against the MuxChannel idioms', () => {
   });
 
   // Design 5 ("Channels ([Symbol.asyncIterator] over their subframes)") and
-  // 12.12; SlotChannel has no [Symbol.asyncIterator], so `for await` over
-  // what openChannelToSlot returns throws a TypeError.
-  test.fails('a SlotChannel is async iterable over its subframes too', async () => {
+  // 12.12: `for await` over what openChannelToSlot returns.
+  test('a SlotChannel is async iterable over its subframes too', async () => {
     const channel: SlotChannel = await router.openChannelToSlot(svc, 1);
-    const iterable = channel as unknown as AsyncIterable<Uint8Array>;
-    expect(typeof iterable[Symbol.asyncIterator]).toBe('function');
-    for await (const subframe of iterable) {
+    expect(typeof channel[Symbol.asyncIterator]).toBe('function');
+    for await (const subframe of channel) {
       expect(utf8Decode(subframe)).toBe('hello');
       break;
     }
+  });
+
+  // 12.12: `break` cancels the readable, so what arrives is discarded, and
+  // leaves the channel open.
+  test('a break out of a SlotChannel loop discards what arrives and leaves it open', async () => {
+    backend.mode = 'flood';
+    const channel = await router.openChannelToSlot(svc, 1);
+    for await (const subframe of channel) {
+      expect(utf8Decode(subframe)).toBe('0'.repeat(100));
+      break;
+    }
+    await pump();
+    expect(channel.channel.bufferedBytes).toBe(0);
+    expect(channel.canSend).toBe(true);
+    await channel.send(bytes('still open'));
   });
 
   test('control: a write to a MuxChannel writable after the channel ended rejects', async () => {
