@@ -33,6 +33,7 @@ export {
   type AcceptedWebSocket,
   acceptWebSocket,
   listenWebSocket,
+  maxMessageFragments,
   type WebSocketAcceptOptions,
   WebSocketListener,
   type WebSocketListenOptions,
