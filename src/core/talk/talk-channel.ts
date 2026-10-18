@@ -672,7 +672,7 @@ export class TalkChannel implements TalkChannelContract {
    * the payload is that byte source, read in chunks of `bulkChunkSize` as
    * the bulk channel's window takes them. Cancelling the request, or its
    * failing locally, stops the transfer CANCELLED. Needs a mux channel:
-   * over any other channel a bulk payload rejects UNIMPLEMENTED.
+   * over any other channel a bulk payload throws UNIMPLEMENTED.
    *
    * Pacing: the frame is handed to the channel without waiting for the
    * peer's window; await {@link whenWritable} before each request to pace
@@ -680,8 +680,10 @@ export class TalkChannel implements TalkChannelContract {
    *
    * @throws {SwitchboardError} RESOURCE_EXHAUSTED if `maxOutgoingRequests`
    * is reached, FAILED_PRECONDITION if the channel is closed, CANCELLED if
-   * `signal` is aborted already; {@link TypeError} for a payload with
-   * `bulk`; {@link RangeError} for an invalid name, timeout or bulk length.
+   * `signal` is aborted already, UNIMPLEMENTED for a bulk payload over a
+   * channel that is not a mux channel; {@link TypeError} for a payload
+   * with `bulk`; {@link RangeError} for an invalid name, timeout or bulk
+   * length.
    */
   startRequest(procedure: NameLike, payload?: PayloadLike, options?: RequestOptions): TalkRequest {
     const name = options?.name ?? toName(procedure);
