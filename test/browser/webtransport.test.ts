@@ -26,7 +26,7 @@
 // against the native server (Firefox 157: STOP_SENDING, the close,
 // WT_DRAIN_SESSION and the exporter's context; see `departures`), the tests
 // that touch it check the departure, and fail once the browser no longer
-// departs.
+// departs (the close, a race, is checked whichever way it goes).
 //
 // Without the native addon, Playwright or the project's browser the file
 // skips with the reason; with SWITCHBOARD_BROWSER=required (CI) it fails
@@ -82,12 +82,15 @@ const departures = {
    */
   noStopSending: 'cancelling a readable sends no STOP_SENDING',
   /**
-   * The page's close does not reach the server as one: the browser closes its dedicated connection
-   * as soon as the session has closed (Firefox: `Http3Session::CloseWebTransportConn`), and the shim
-   * ends every session of a connection that closes as lost, without the code or the reason. The
-   * page's own end is the local close.
+   * The page's close reaches the server only when it outruns the connection's: the browser closes
+   * its dedicated connection as soon as the session has closed (Firefox:
+   * `Http3Session::CloseWebTransportConn`), and the shim ends every session of a connection that
+   * closes as lost at once, so a WT_CLOSE_SESSION that arrives with the connection's close is not
+   * read. The server then sees a lost connection, without the code or the reason (CI saw both
+   * outcomes). The page's own end is the local close either way.
    */
-  closeLost: "the server sees the page's close as a lost connection",
+  closeRace:
+    "the page's close races the browser's connection close, and may reach the server as a loss",
   /**
    * `draining` exists but the server's WT_DRAIN_SESSION does not resolve it: the browser reads only
    * WT_CLOSE_SESSION on the CONNECT stream and resolves `draining` on an HTTP/3 GOAWAY (Firefox:
@@ -108,7 +111,7 @@ type Departure = keyof typeof departures;
 /** The departures of each browser, as of the version Playwright brings (Firefox 157 with 1.64.1). */
 const departuresOf: { readonly [name in typeof browserName]: readonly Departure[] } = {
   chromium: [],
-  firefox: ['noStopSending', 'closeLost', 'drainIgnored', 'exporterContext'],
+  firefox: ['noStopSending', 'closeRace', 'drainIgnored', 'exporterContext'],
 };
 
 /** Whether the project's browser departs from the drafts in [departure]. */
@@ -371,7 +374,7 @@ describe.skipIf(!availability.available)(
       });
 
       test('close(7, reason) reaches the server; the session ends as a local application close', async () => {
-        await run(async ({ h }, closeLost) => {
+        const reached = await run(async ({ h }, closeRace) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           const stream = await session.openStream();
@@ -383,17 +386,21 @@ describe.skipIf(!availability.available)(
           h.eq((await h.rejects(session.openStream())).kind, 'sessionEnded', 'openStream');
           h.eq((await h.rejects(stream.write(h.bytes('y')))).kind, 'sessionEnded', 'a write');
           const seen = await h.reported(id, (e) => e['event'] === 'end');
-          if (closeLost) {
-            // The departure: the server saw the connection go, not the close.
-            h.eq([seen['code'], seen['byPeer'], seen['lost']], [null, false, true], 'seen');
-          } else {
-            h.eq([seen['code'], seen['reason'], seen['byPeer']], [7, 'browser done', true], 'seen');
+          if (closeRace && seen['lost'] === true) {
+            // The departure: the connection's close came first.
+            h.eq([seen['code'], seen['byPeer']], [null, false], 'seen');
+            return false;
           }
-        }, departs('closeLost'));
+          h.eq([seen['code'], seen['reason'], seen['byPeer']], [7, 'browser done', true], 'seen');
+          return true;
+        }, departs('closeRace'));
+        console.info(
+          `web provider: ${title}'s close(7) ${reached ? 'reached' : 'did not reach'} the server`,
+        );
       });
 
       test('a reason is cut to 1024 bytes of UTF-8 at a character boundary', async () => {
-        await run(async ({ h }, closeLost) => {
+        const reached = await run(async ({ h }, closeRace) => {
           const id = h.newId();
           const session = await h.open('sink', id);
           await session.close(300, 'é'.repeat(600));
@@ -403,17 +410,24 @@ describe.skipIf(!availability.available)(
             { code: 300, reason: 'é'.repeat(512), byPeer: false, lost: false },
             'the end',
           );
-          const seen = await h.reported(id, (e) => e['event'] === 'end');
-          if (closeLost) {
-            // The departure: the server saw the connection go, not the close.
-            h.eq([seen['code'], seen['byPeer'], seen['lost']], [null, false, true], 'seen');
-          } else {
-            h.eq(seen['code'], 300, 'the code');
-            h.eq(seen['reason'], 'é'.repeat(512), 'the reason');
-          }
           h.eq(h.throws(() => session.close(-1, '')).name, 'RangeError', 'close(-1)');
           h.eq(h.throws(() => session.close(0x100000000, '')).name, 'RangeError', 'close(2^32)');
-        }, departs('closeLost'));
+          const seen = await h.reported(id, (e) => e['event'] === 'end');
+          if (closeRace && seen['lost'] === true) {
+            // The departure: the connection's close came first.
+            h.eq([seen['code'], seen['byPeer']], [null, false], 'seen');
+            return false;
+          }
+          h.eq(
+            [seen['code'], seen['reason'], seen['byPeer']],
+            [300, 'é'.repeat(512), true],
+            'seen',
+          );
+          return true;
+        }, departs('closeRace'));
+        console.info(
+          `web provider: ${title}'s close(300) ${reached ? 'reached' : 'did not reach'} the server`,
+        );
       });
 
       test("the server's close is the session's end with its code and reason; what is pending fails", async () => {
