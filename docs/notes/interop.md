@@ -755,6 +755,18 @@ Dart driver passes 59 tests. Nothing in `src/**` changed.
 
 Differences and reference behaviour found, none a failing cell:
 
+* **Both races, closed on the TS side** (branch `claude/wt-races`, the
+  binding page's text of Sway ae8c2a7d and 89778e18; design section 13,
+  item 8). The TS binding writes a PING right behind its GOAWAY and closes
+  only once its PONG, the peer's close or `closeConfirmTimeout` came, and
+  holds a WebTransport channel's codeless reset or STOP_SENDING for the
+  session's end (2 s). The probe's GOAWAY case runs in the TS cells (lost
+  before in 1 of 40, after in none of 40) and stays skipped in the Dart
+  cells (lost in 14 of 40) until the Dart branch lands; `expectEndedWith`
+  and the close scenario accept UNKNOWN from a Dart reader only (TS
+  readers: none in 140 readings before or after; Dart readers 5 of 40
+  before, 5 of 80 and 3 of 60 after). The two entries below are the
+  findings as they were.
 * **GOAWAY record lost (both implementations).** With no channel open,
   `goAway()` leads straight to the application close, and the shutdown
   waits only for the stream directions the binding finished, not the

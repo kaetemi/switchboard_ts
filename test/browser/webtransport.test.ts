@@ -825,8 +825,8 @@ describe.skipIf(!availability.available)(
           h.eq(connection.isOpen, false, 'isOpen');
           const seen = await h.reported(id, (e) => e['event'] === 'connection done');
           if (closeRace && seen['code'] === sb.StatusCode.connectionLost) {
-            // The departure: the connection's close came first, and with no channel open the
-            // binding's GOAWAY record goes with the session (design section 13, item 8).
+            // The departure: the connection's close came first, and close() sends no GOAWAY
+            // that would have told the node otherwise (design section 13, items 7 and 8).
             return false;
           }
           h.eq(seen['code'], sb.StatusCode.goingAway, 'what the node saw');

@@ -80,14 +80,14 @@ A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` 
 | `maxChannels` | 65536 | open channels, and separately the incoming backlog; 0 unlimited |
 | `keepAliveInterval`, `keepAliveTimeout` | 10 000, 10 000 | PING after silence; close if nothing answers; `undefined` disables the PING |
 | `goAwayGrace` | 10 000 | how long `goAway()` (and a node's `close()`) waits for open channels |
-| `closeConfirmTimeout` | 30 000 | how long `channel.close()` waits for the peer's CLOSE |
+| `closeConfirmTimeout` | 30 000 | how long `channel.close()` waits for the peer's CLOSE; over QUIC also how long the close after a GOAWAY waits for the peer to show it read it |
 | `receiveHighWaterMarkBytes` | 16 MiB | stop reading the transport while this much is unread |
 | `identityVerifier`, `identityTimeout`, `requireNamedIdent` | none, 10 000, false | see [Identity](Identity) |
 | `clock`, `logger` | system clock, silent | injectable everywhere |
 
 ### Lifetimes
 
-Connections and channels are `AsyncDisposable`: `await using channel = ...` closes the channel at the end of the block. `connection.goAway(status?)` sends GOAWAY and waits for the open channels up to `goAwayGrace` before closing; `connection.close()` closes the transport now. `connection.ping(payload?, { signal })` resolves with the round trip in milliseconds.
+Connections and channels are `AsyncDisposable`: `await using channel = ...` closes the channel at the end of the block. `connection.goAway(status?)` sends GOAWAY and waits for the open channels up to `goAwayGrace` before closing; over QUIC and WebTransport a PING follows the GOAWAY, and the close also waits for its PONG (or the peer's own close, at most `closeConfirmTimeout` after the GOAWAY), so that the peer reads the GOAWAY before the session goes. `connection.close()` closes the transport now. `connection.ping(payload?, { signal })` resolves with the round trip in milliseconds.
 
 ## Talk
 

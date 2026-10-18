@@ -143,13 +143,14 @@ This is where a JS port is most likely to go wrong. The rule: **unread data stay
 * End status = the first non-`OK` status seen or sent. The channel ends when both directions have ended.
 * Confirmation timeout (`closeConfirmTimeout`, 30 s): `STOP_SENDING DEADLINE_EXCEEDED` (forces the peer's reset), reset own direction if its CLOSE is stuck behind unread data (an `OK` close becoming `DEADLINE_EXCEEDED`), and report the channel closed. After the peer's CLOSE record, the reader waits for FIN within the same timeout, then stops the stream.
 * Received codes: 0 to 255 are that status; larger, or none (`null`), read as `UNKNOWN`. Only 0 to 255 are ever sent; `CONNECTION_LOST` goes as `UNAVAILABLE`; application codes (256+) are never sent in CLOSE/GOAWAY.
+* Session gone (the binding page since Sway ae8c2a7d and 89778e18; TS since `claude/wt-races`, Dart on its own branch): over WebTransport only, a channel's reset or `STOP_SENDING` **without** an application code (`WT_SESSION_GONE` of a terminating session) is held for the session's end, up to the control stream's 2 s grace. A held reset stops delivery at once (a partial record is discarded); the session's end within the grace ends the channel with the connection's status (`GOING_AWAY` after a graceful close), never `UNKNOWN`; only past the grace does it read `UNKNOWN`, as the peer's own close. A codeless reset confirming this side's `STOP_SENDING` is not held; raw QUIC holds nothing.
 
 ### 6.2 Connections
 
 | Event | Binding behaviour |
 | --- | --- |
-| `goAway(status)` | Send `GOAWAY`; refuse new channels (`GOING_AWAY`, except bulk continuations); wait until idle or `goAwayGrace`; then `close()` |
-| `close()` | Wait (within `keepAliveTimeout`) until the directions this side finished are acknowledged (QUIC `stopped`/FIN-acked), then an application close: code 0 when graceful, else the code of this side's `GOAWAY` status. Channels still open end `CONNECTION_LOST` (or the GOAWAY status if either side sent one) |
+| `goAway(status)` | Send `GOAWAY` and a `PING` right behind it (the PING barrier); refuse new channels (`GOING_AWAY`, except bulk continuations); wait until idle or `goAwayGrace`; then `close()` |
+| `close()` | After this side's `GOAWAY`: wait for the barrier's `PONG`, the peer's own close, or `closeConfirmTimeout` counted from the `GOAWAY` (0: no bound), whichever comes first; a later `PONG` is ignored (the binding page since Sway ae8c2a7d; TS since `claude/wt-races`, the pinned Dart closes without it). Wait (within `keepAliveTimeout`) until the directions this side finished are acknowledged (QUIC `stopped`/FIN-acked), then an application close: code 0 when graceful, else the code of this side's `GOAWAY` status. Channels still open end `CONNECTION_LOST` (or the GOAWAY status if either side sent one). Without a prior `goAway()` no `GOAWAY` is sent and nothing is waited for but the acknowledgements |
 | Protocol error | Application close at once with `PROTOCOL_ERROR` (32) and a reason; **no `GOAWAY` first** (it could be lost with its stream) |
 | `IDENT` fails verification / binding required but missing | Close `UNAUTHENTICATED` (16), generic reason |
 | Local transport failure | Close with `UNAVAILABLE` (14) |
@@ -157,7 +158,7 @@ This is where a JS port is most likely to go wrong. The rule: **unread data stay
 | Peer's application close (raw `CONNECTION_CLOSE` 0x1d, `WT_CLOSE_SESSION`, CONNECT FIN = code 0) | A `GOAWAY` with that status (0 reads as `GOING_AWAY`), then the end of the transport |
 | Anything else (QUIC transport error, idle timeout, stateless reset, CONNECT stream reset) | Lost: channels end `CONNECTION_LOST` |
 
-Both stacks discard in-flight stream data on an application close, which is why `close()` waits for acknowledgements first. The QUIC idle timeout (30 s) must exceed the control keep-alive interval (10 s); the stack keep-alive (QUIC PING, 10 s) keeps a quiet connection alive but proves only that the peer's stack answers, so the control `PING` remains the application's probe.
+Both stacks discard in-flight stream data on an application close, which is why `close()` waits for acknowledgements first; the control stream is never finished, so for the `GOAWAY` on it no acknowledgement of the stack can tell, on any provider (native, browser, in-memory), and the `PONG` of the barrier says it instead: the peer has read everything before it. The QUIC idle timeout (30 s) must exceed the control keep-alive interval (10 s); the stack keep-alive (QUIC PING, 10 s) keeps a quiet connection alive but proves only that the peer's stack answers, so the control `PING` remains the application's probe.
 
 ### 6.3 Binding options and defaults (`QuicBindingOptions`)
 
@@ -172,7 +173,7 @@ Both stacks discard in-flight stream data on an application close, which is why 
 | `maxPendingStreams` | 128 | streams whose OPEN is still being read |
 | `writeBatchBytes` | 64 KiB | records per provider write |
 
-Fixed: control-stream session-gone grace 2 s; record reader chunk 256 KiB.
+Fixed: the session-gone grace 2 s (`sessionGoneGrace` in `core/quic/binding-util.ts`: the control stream's, a WebTransport channel's codeless reset or `STOP_SENDING`, and the web provider's wait for the session's end once a stream reported it gone); record reader chunk 256 KiB.
 
 ## 7. The provider contract (what any TS provider must implement)
 
