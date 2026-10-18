@@ -852,20 +852,25 @@ export class FrameMuxConnection implements MuxConnection {
    * Rejects with a {@link SwitchboardError} if the connection is closed or
    * ends before the PONG, with DEADLINE_EXCEEDED if
    * {@link FrameMuxConnection.maxPendingPings} later PINGs are sent before
-   * it arrives, and with the signal's reason when it aborts.
+   * it arrives, and with the signal's reason when it aborts. The promise
+   * is safe to drop: a rejection nobody awaits is not reported as
+   * unhandled.
    *
    * @throws {RangeError} if [payload] is longer than 125 bytes.
    */
   ping(payload?: Uint8Array, options: { signal?: AbortSignal } = {}): Promise<number> {
     const message = MuxControlMessage.ping(payload ?? this.#nextPingPayload());
+    // Rejected through a Deferred, so that a ping dropped on a closed
+    // connection is never an unhandled rejection.
+    const result = new Deferred<number>();
     if (this.#closing) {
-      return Promise.reject(
-        SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'),
-      );
+      result.reject(SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'));
+      return result.promise;
     }
     const signal = options.signal;
     if (signal?.aborted) {
-      return Promise.reject(signal.reason);
+      result.reject(signal.reason);
+      return result.promise;
     }
     if (this.#pings.length >= FrameMuxConnection.maxPendingPings) {
       this.#pings
@@ -880,7 +885,7 @@ export class FrameMuxConnection implements MuxConnection {
     const pending: PendingPing = {
       payload: message.payload.slice(),
       sent: this.#clock.now(),
-      result: new Deferred<number>(),
+      result,
     };
     this.#pings.push(pending);
     if (signal !== undefined) {
@@ -1697,7 +1702,9 @@ export class FrameMuxConnection implements MuxConnection {
       return Promise.resolve({ value: undefined, done: true });
     }
     if (this.#incomingWaiter !== undefined) {
-      return Promise.reject(new Error('incoming channels have one consumer'));
+      const refused = new Deferred<IteratorResult<MuxChannel>>();
+      refused.reject(new Error('incoming channels have one consumer'));
+      return refused.promise;
     }
     this.#incomingWaiter = new Deferred<IteratorResult<MuxChannel>>();
     return this.#incomingWaiter.promise;

@@ -11,6 +11,7 @@ Scope: `src/core/transport/**`, `src/node/transport/**`, `src/core/mux/**`, the 
 - **Test:** `test/unit/mux/review-promises.test.ts`: "a ping dropped on a closed connection is not an unhandled rejection", "a ping dropped with an aborted signal is not an unhandled rejection".
 - **Fix:** reject through a `Deferred`, as the QUIC binding does (or attach `.catch(() => {})` before returning).
 - **Dart:** the same (`Future.error`, uncaught if dropped). Design section 7 and `docs/wiki/Channels-and-Talk.md` ("Every promise the library hands out is pre-caught") rule for the TS port.
+- **Resolved:** `ping` rejects through a `Deferred` on both paths; so does a second concurrent `next()` of `incoming`, which had the same plain `Promise.reject`. `identify`, `send`, `whenWritable`, `goAway` and `close` were checked and were pre-caught already. The tests pass and assert it.
 
 ### 2. `send()`, `open()` and `openAfter()` put zero bytes on the wire for a string
 - **Severity:** wire or data loss, for callers outside the types (JavaScript, a cast).

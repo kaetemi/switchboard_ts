@@ -4,21 +4,24 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// REVIEW FINDING (docs/notes/review-mux.md, finding 1). `FrameMuxConnection.ping()`
-// hands out a plain `Promise.reject(...)` when the connection is closed and
-// when the signal it is given is aborted already, so a caller that drops
-// the promise (a heartbeat `void connection.ping()`) gets an unhandled
-// rejection, which ends a Node process run with the default
+// Review finding 1 (docs/notes/review-mux.md): `FrameMuxConnection.ping()`
+// handed out a plain `Promise.reject(...)` when the connection was closed
+// and when the signal it was given had aborted already, so a caller that
+// dropped the promise (a heartbeat `void connection.ping()`) got an
+// unhandled rejection, which ends a Node process run with the default
 // `--unhandled-rejections=throw`. Design section 7 and the Channels and Talk
 // wiki page promise that every promise the library hands out is pre-caught;
-// the QUIC binding's `ping` is (it rejects through a Deferred).
-//
-// The tests are `test.fails`: their bodies fail against the current sources.
-// Once the defect is fixed they pass, `test.fails` reports that, and the
-// `.fails` goes.
+// the QUIC binding's `ping` is (it rejects through a Deferred), and now the
+// frame mux's is too. The same holds for the other promises the frame mux
+// hands out on a refusal: a second concurrent read of `incoming` (which
+// was a plain `Promise.reject` too), `identify`, `send`, `whenWritable`,
+// `goAway` and `close`.
 
 import { describe, expect, test } from 'vitest';
-import { muxPair, settle } from './support.ts';
+import { hexBytes } from '../../../src/core/bytes.ts';
+import { StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { stubCredential } from '../../support/identity/stub-verifier.ts';
+import { empty, Incoming, muxPair, quiet, rejection, settle } from './support.ts';
 
 /**
  * The reasons of the unhandled rejections reported while [run] and a few
@@ -48,8 +51,8 @@ async function unhandledDuring(run: () => void): Promise<unknown[]> {
   return reasons;
 }
 
-describe('review: ping hands out pre-caught promises', () => {
-  test.fails('a ping dropped on a closed connection is not an unhandled rejection', async () => {
+describe('review: the frame mux hands out pre-caught promises', () => {
+  test('a ping dropped on a closed connection is not an unhandled rejection', async () => {
     const [a, b] = muxPair();
     await a.close();
     await b.done;
@@ -59,7 +62,7 @@ describe('review: ping hands out pre-caught promises', () => {
     expect(reasons).toEqual([]);
   });
 
-  test.fails('a ping dropped with an aborted signal is not an unhandled rejection', async () => {
+  test('a ping dropped with an aborted signal is not an unhandled rejection', async () => {
     const [a, b] = muxPair();
     const controller = new AbortController();
     controller.abort(new Error('stop'));
@@ -69,5 +72,67 @@ describe('review: ping hands out pre-caught promises', () => {
     expect(reasons).toEqual([]);
     await a.close();
     await b.done;
+  });
+
+  test('a ping refused at once still rejects for a caller that awaits it', async () => {
+    const [a, b] = muxPair();
+    const controller = new AbortController();
+    const reason = new Error('stop');
+    controller.abort(reason);
+    expect(await rejection(a.ping(undefined, { signal: controller.signal }))).toBe(reason);
+    await a.close();
+    await b.done;
+    const closed = await rejection(a.ping());
+    expect(closed).toBeInstanceOf(SwitchboardError);
+    expect((closed as SwitchboardError).code).toBe(StatusCode.failedPrecondition);
+  });
+
+  test('a second concurrent read of incoming, dropped, is not an unhandled rejection', async () => {
+    const [a, b] = muxPair();
+    const iterator = b.incoming[Symbol.asyncIterator]();
+    const first = iterator.next();
+    const reasons = await unhandledDuring(() => {
+      void iterator.next();
+    });
+    expect(reasons).toEqual([]);
+    // One awaited still rejects.
+    expect(await rejection(iterator.next())).toBeInstanceOf(Error);
+    a.open(empty);
+    expect((await first).done).toBe(false);
+    await a.close();
+    await b.done;
+  });
+
+  test('the other promises the frame mux refuses with are pre-caught', async () => {
+    const [a, b] = muxPair({ acceptor: { ...quiet, initialWindow: 64 } });
+    const incoming = new Incoming(b);
+    const channel = a.open(empty);
+    await incoming.next();
+    // Two subframes take the window (16 + 16 each); the third waits for credit.
+    void channel.send(new Uint8Array(16));
+    void channel.send(new Uint8Array(16));
+    const waiting = channel.send(new Uint8Array(16));
+    const writable = channel.whenWritable;
+    const credential = stubCredential({ identity: 'n', bytes: hexBytes('01') });
+    const reasons = await unhandledDuring(() => {
+      void waiting;
+      void writable;
+      void a.close();
+    });
+    expect(reasons).toEqual([]);
+    await b.done;
+    const later = await unhandledDuring(() => {
+      void channel.whenWritable;
+      void channel.close();
+      void a.identify(credential);
+      void a.goAway();
+      void a.close();
+    });
+    expect(later).toEqual([]);
+    // Awaited, the refusals still reject.
+    expect(await rejection(waiting)).toBeInstanceOf(SwitchboardError);
+    expect(await rejection(writable)).toBeInstanceOf(SwitchboardError);
+    expect(await rejection(channel.whenWritable)).toBeInstanceOf(SwitchboardError);
+    expect(await rejection(a.identify(credential))).toBeInstanceOf(SwitchboardError);
   });
 });
