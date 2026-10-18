@@ -1275,7 +1275,7 @@ The counts are `test(` call sites; parameterized loops expand to more tests.
 | `transport_test` | 894 | 41 | MemoryTransport; StreamTransport over byte pipes and TCP; WebSocketTransport (two flavours) | Node `net`, `ws` |
 | `web_socket_server_test` | 1033 | 31 | handshake; frames; limits and protocol errors; ping interval; interoperability; listener | `ws` / http |
 | `identity_test` | 953 | 36 | issuer; verifier; connection identity; receiver binding; protocol errors with and without a verifier | crypto, virtual time |
-| `binding_seam_test`, `binding_bulk_test`, `binding_drain_test`, `binding_review_test` | 665 / 580 / 90 / 710 | 15 / 19 / 3 / 22 | the seam over `memory_binding.dart` (1435 lines, an unordered binding) | QUIC thread / seam |
+| `binding_seam_test`, `binding_bulk_test`, `binding_drain_test`, `binding_review_test` | 665 / 580 / 90 / 710 | 15 / 19 / 3 / 22 | the seam over `inproc_binding.dart` (1435 lines, an unordered binding) | QUIC thread / seam |
 | `talk_test` | 3678 | 123 | Talk runtime | virtual time |
 | `talk_bulk_test`, `talk_forward_test`, `talk_window_test`, `talk_credit_test` | 1960 / 1893 / 1575 / 561 | 60 / 49 / 41 / 18 | bulk, forwarding, item windows, awaitable sends | virtual time |
 | `mux_talk_test` | 104 | 4 | Talk over mux smoke | |
