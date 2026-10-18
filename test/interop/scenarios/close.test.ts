@@ -121,21 +121,26 @@ describeCells('close', {}, (peers) => {
     );
     if (peers.cell.transport === 'webtransport') {
       // The close of a WebTransport session races two things in the native
-      // QUIC stack both implementations use: the stack resets the session's
-      // streams with WT_SESSION_GONE, which carries no application code and
-      // can overtake the CLOSE_WEBTRANSPORT_SESSION capsule (the far channel
-      // then ends as a reset without a code reads, UNKNOWN), and the
-      // dialler's provider shuts its native context down once its last
-      // session ended, which can close the HTTP/3 connection before the
-      // capsule is read (the far connection is then lost, "shutdown"). The
-      // Dart to Dart cell shows both, a few times in a hundred under load.
+      // QUIC stack both implementations use: the stack resets and stops
+      // the session's streams with WT_SESSION_GONE, which carries no
+      // application code and can overtake the CLOSE_WEBTRANSPORT_SESSION
+      // capsule, and the dialler's provider shuts its native context down
+      // once its last session ended, which can close the HTTP/3 connection
+      // before the capsule is read (the far connection is then lost,
+      // "shutdown"; close() sends no GOAWAY that would say otherwise). The
+      // binding page holds such a reset for the session's end, so that the
+      // far channel ends as the far connection does: a TS reader does
+      // (design section 12, item 17). A Dart reader at its pinned commit
+      // ends the channel UNKNOWN when it reads the reset first. The Dart to
+      // Dart cell shows both, a few times in a hundred under load.
       const unknown = [StatusCode.unknown, 'no application error code'];
       const shutdown = [StatusCode.connectionLost, 'shutdown'];
-      if (farEnd[0] === StatusCode.goingAway) {
-        expect([[StatusCode.goingAway, ''], unknown]).toContainEqual(farChannel);
+      const graceful = [StatusCode.goingAway, ''];
+      expect([graceful, shutdown]).toContainEqual(farEnd);
+      if (peers.cell.server === 'ts') {
+        expect(farChannel).toEqual(farEnd);
       } else {
-        expect(farEnd).toEqual(shutdown);
-        expect([shutdown, unknown]).toContainEqual(farChannel);
+        expect([farEnd, unknown]).toContainEqual(farChannel);
       }
       return;
     }

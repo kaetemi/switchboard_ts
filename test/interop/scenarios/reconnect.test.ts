@@ -230,6 +230,7 @@ describeCells('reconnecting client', {}, (peers) => {
       await nthOf(peers, 'persistent.closed', persistent),
       lost,
       peers.cell.transport,
+      peers.cell.client,
     );
     expect(
       await peers.client.events.waitFor({
@@ -417,6 +418,7 @@ describeCells('reconnecting client', {}, (peers) => {
       await nthOf(peers, 'persistent.closed', persistent, 2),
       lostOnClose(peers),
       peers.cell.transport,
+      peers.cell.client,
     );
     const third = await opened(peers, persistent, 3);
     expect([first.connection, second.connection]).not.toContain(third.connection);
