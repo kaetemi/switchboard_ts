@@ -205,7 +205,7 @@ Call it inside a `serve` handler, as above, so the message's frame credit is pas
 | `minExtension`, `maxExtension` | 1000, 3 600 000 | the clamp on declared extensions |
 | `extendBuffer` | 5000 | added on the wire by `extend()` |
 | `maxIncomingRequests`, `maxOutgoingRequests` | 1024, 1024 | beyond: `RESOURCE_EXHAUSTED` |
-| `bulkThreshold`, `bulkChunkSize` | the channel's `maxSubframeLength`, 64 KiB | when a payload goes bulk, and its chunks |
+| `bulkThreshold`, `bulkChunkSize` | the channel's `maxSubframeLength`, 64 KiB | when a payload goes bulk, and its chunks (a positive integer, else `RangeError`) |
 | `maxInlinePayload`, `reassemblyBudget` | 16 MiB, 16 MiB | reassembly bounds |
 | `bulkWindow`, `maxUnclaimedBulk` | 1 MiB, 16 | the window of a bulk channel, and bulk channels ahead of their messages |
 | `bulkOpenTimeout`, `bulkIdleTimeout` | 10 000, 30 000 | waiting for a bulk channel, and a stalled one |
