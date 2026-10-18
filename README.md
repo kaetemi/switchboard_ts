@@ -57,7 +57,7 @@ npm run check          # lint, typecheck, unit and integration tests
 npx tsc -p tsconfig.test.json --noEmit    # type-checks the tests too
 npm run build          # dist/
 npm run build:native   # the QUIC addon, with Rust (see native/README.md)
-npm run test:browser   # WebTransport in Playwright's Chromium (needs the addon)
+npm run test:browser   # WebTransport in Playwright's Chromium and Firefox (needs the addon)
 npm run test:interop   # against the Dart reference (needs a Dart SDK and Rust; see test/interop/README.md)
 ```
 
