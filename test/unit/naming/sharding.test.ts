@@ -36,6 +36,7 @@ import {
   talkOptions,
 } from '../../../src/core/talk/contract.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   clientOptions,
   delay,
@@ -59,7 +60,6 @@ import {
   userq,
   zone,
 } from '../../support/naming/sharding-harness.ts';
-import { TestClock } from '../../support/naming/test-clock.ts';
 
 function staticSpace(type: Name, count: number): SlotSpace {
   return new SlotSpace(type, { count, mode: SlotMode.static });
@@ -103,7 +103,7 @@ function never<T = void>(): Promise<T> {
 }
 
 /** Resolves after [ms] of [clock]'s time (a Dart `Future.delayed` inside `fakeAsync`). */
-function after(clock: TestClock, ms: number): Promise<void> {
+function after(clock: ManualClock, ms: number): Promise<void> {
   return new Promise((resolve) => {
     clock.setTimeout(resolve, ms);
   });
@@ -123,11 +123,11 @@ function drain(items: AsyncIterable<TalkMessage>): void {
 }
 
 /** Closes [h] and checks that no timer of [clock] is left. */
-async function closeWithoutTimers(clock: TestClock, h: Harness): Promise<void> {
+async function closeWithoutTimers(clock: ManualClock, h: Harness): Promise<void> {
   void h.close();
   await pump();
   // The scripted instances' own EXTEND timers notice on their next tick.
-  await clock.elapse(ms50 * 2);
+  await clock.elapseAsync(ms50 * 2);
   expect(clock.pendingCount).toBe(0);
 }
 
@@ -566,7 +566,7 @@ describe('allocator', () => {
   });
 
   test("holder-only: a down instance's slots wait for the grace", async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const a = new Instance(h, kv, 1, log);
@@ -574,19 +574,19 @@ describe('allocator', () => {
     const space = new SlotSpace(kv, { count: 4 });
     void a.start({ space });
     void b.start({ space });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     const table = tableOf(h, kv);
     expect(counts(table)).toEqual({ 1: 2, 2: 2 });
     expect(table.slotsOf(1)).toEqual([0, 2]);
     log.length = 0;
     void a.close();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(table.get(0)).toEqual(SlotEntry.free({ holder: 1, epoch: 1 }));
     expect(table.get(2)).toEqual(SlotEntry.free({ holder: 1, epoch: 1 }));
-    await clock.elapse(4 * 60_000 + 59_000);
+    await clock.elapseAsync(4 * 60_000 + 59_000);
     expect(log).toEqual([]);
     expect(table.get(0).isFree).toBe(true);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     // Reassigned with the holder cleared: the state starts fresh.
     expect(log).toEqual(['2 ASSIGN 0 e2 h0', '2 ASSIGN 2 e2 h0']);
     expect(table.get(0)).toEqual(SlotEntry.owned(2, { holder: 2, epoch: 2 }));
@@ -597,24 +597,24 @@ describe('allocator', () => {
   });
 
   test('holder-only: the holder returning within the grace reclaims', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const space = new SlotSpace(kv, { count: 4 });
     void new Instance(h, kv, 1, log).start({ space });
     const b = new Instance(h, kv, 2, log);
     void b.start({ space });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     void b.close();
-    await clock.elapse(60_000);
+    await clock.elapseAsync(60_000);
     log.length = 0;
     // Same id after a reboot.
     const again = new Instance(h, kv, 2, log);
     void again.start({ space });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(log).toEqual(['2 ASSIGN 1 e2 h2', '2 ASSIGN 3 e2 h2']);
     expect(counts(tableOf(h, kv))).toEqual({ 1: 2, 2: 2 });
-    await clock.elapse(600_000);
+    await clock.elapseAsync(600_000);
     expect(log).toHaveLength(2);
     void h.close();
     await pump();
@@ -1047,7 +1047,7 @@ describe('MIGRATE', () => {
 describe('hand-over bound', () => {
   /** Two zone instances; 1 owns slots 1 and 2. Returns them and a router. */
   async function zones(
-    clock: TestClock,
+    clock: ManualClock,
     h: Harness,
     log: string[],
   ): Promise<[Instance, Instance, Instance]> {
@@ -1055,10 +1055,10 @@ describe('hand-over bound', () => {
     const b = new Instance(h, zone, 2, log);
     void a.start({ space: staticSpace(zone, 4), capacity: 0 });
     void b.start({ space: staticSpace(zone, 4), capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void a.claim(1);
     void a.claim(2);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     log.length = 0;
     const router = new Instance(h, zone, 0, log);
     router.channel = h.link()[0];
@@ -1066,7 +1066,7 @@ describe('hand-over bound', () => {
   }
 
   test('a FORWARD is not bounded: what it declares reaches the MIGRATE as declared', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverMaxDuration: 1000 });
     const log: string[] = [];
     const [a, , router] = await zones(clock, h, log);
@@ -1089,7 +1089,7 @@ describe('hand-over bound', () => {
         outcome = e;
       },
     );
-    await clock.elapse(11_000);
+    await clock.elapseAsync(11_000);
     expect(log).toEqual(['1 DRAIN 1 e2 to2', '2 ASSIGN 1 e2 h1', '1 FORWARD 1 e2 to2']);
     // As declared, plus the buffer each side adds to what it declares.
     expect(declared.at(-1)).toBe(
@@ -1100,20 +1100,20 @@ describe('hand-over bound', () => {
   });
 
   test('a DRAIN running longer is cancelled and the migration rolled back', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverMaxDuration: 1000 });
     const log: string[] = [];
     const [a, , router] = await zones(clock, h, log);
     // Hangs, kept alive with EXTEND all along.
     a.onDrain = () => never();
     const m = new Migration(router.channel, zone, 1, { to: 2 });
-    await clock.elapse(990);
+    await clock.elapseAsync(990);
     expect(log).toEqual(['1 DRAIN 1 e2 to2']);
     let status: Status | undefined;
     void m.done.then((s) => {
       status = s;
     });
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(status?.known).toBe(StatusCode.unavailable);
     expect(status?.reason).toContain('ran longer than');
     expect(m.phases).toEqual(['draining', 'rolledBack']);
@@ -1122,7 +1122,7 @@ describe('hand-over bound', () => {
     // The next migration of the space is not held up.
     a.onDrain = async () => {};
     const next = new Migration(router.channel, zone, 2, { to: 2 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     let nextStatus: Status | undefined;
     void next.done.then((s) => {
       nextStatus = s;
@@ -1133,13 +1133,13 @@ describe('hand-over bound', () => {
   });
 
   test('an ASSIGN running longer: RESUME to the old owner', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverMaxDuration: 1000 });
     const log: string[] = [];
     const [, b, router] = await zones(clock, h, log);
     b.onAssign = () => never();
     const m = new Migration(router.channel, zone, 1, { to: 2 });
-    await clock.elapse(1010);
+    await clock.elapseAsync(1010);
     let status: Status | undefined;
     void m.done.then((s) => {
       status = s;
@@ -1153,7 +1153,7 @@ describe('hand-over bound', () => {
   });
 
   test('an allocator ASSIGN running longer frees the slot for the backoff', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverMaxDuration: 1000 });
     const log: string[] = [];
     const at: number[] = [];
@@ -1168,7 +1168,7 @@ describe('hand-over bound', () => {
       return Promise.resolve(new AssignResponse());
     };
     void a.start({ space: new SlotSpace(kv, { count: 1 }) });
-    await clock.elapse(3000);
+    await clock.elapseAsync(3000);
     // Cancelled after 1 s, offered again after the 200 ms backoff.
     expect(at).toEqual([0, 1200]);
     expect(tableOf(h, kv).get(0)).toEqual(SlotEntry.owned(1, { holder: 1, epoch: 1 }));
@@ -1236,7 +1236,7 @@ describe('ASSIGN backoff', () => {
    * of fake time) in [at].
    */
   function refusing(
-    clock: TestClock,
+    clock: ManualClock,
     at: number[],
     refusals = 1 << 30,
   ): () => Promise<AssignResponse> {
@@ -1252,14 +1252,14 @@ describe('ASSIGN backoff', () => {
   }
 
   test('a refusing candidate is retried at the backoff intervals', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const log: string[] = [];
     const at: number[] = [];
     const a = new Instance(h, kv, 1, log);
     a.onAssign = refusing(clock, at, 3);
     void a.start({ space: new SlotSpace(kv, { count: 1 }) });
-    await clock.elapse(30_000);
+    await clock.elapseAsync(30_000);
     // 200 ms, then doubling: not a burst of retries.
     expect(at).toEqual([0, 200, 600, 1400]);
     expect(log).toEqual(Array(4).fill('1 ASSIGN 0 e1 h0'));
@@ -1268,27 +1268,27 @@ describe('ASSIGN backoff', () => {
   });
 
   test('the backoff grows to its maximum and resets on success', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignBackoff: ms50, assignBackoffMax: 120 });
     const log: string[] = [];
     const at: number[] = [];
     const a = new Instance(h, kv, 1, log);
     a.onAssign = refusing(clock, at, 4);
     void a.start({ space: new SlotSpace(kv, { count: 1 }) });
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     expect(at).toEqual([0, 50, 150, 270, 390]);
     // Freed again and refused again: from 50 ms again.
     at.length = 0;
     a.onAssign = refusing(clock, at, 1);
     void a.release(0);
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     expect(at).toEqual([1000, 1050]);
     expect(tableOf(h, kv).get(0).owner).toBe(1);
     await closeWithoutTimers(clock, h);
   });
 
   test('another candidate takes the slot meanwhile', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const at: number[] = [];
@@ -1298,7 +1298,7 @@ describe('ASSIGN backoff', () => {
     const space = new SlotSpace(kv, { count: 1 });
     void a.start({ space });
     void b.start({ space });
-    await clock.elapse(30_000);
+    await clock.elapseAsync(30_000);
     // a first (equal share, lower id); once it refuses, b at once.
     expect(log).toEqual(['1 ASSIGN 0 e1 h0', '2 ASSIGN 0 e1 h0']);
     expect(tableOf(h, kv).get(0)).toEqual(SlotEntry.owned(2, { holder: 2, epoch: 1 }));
@@ -1306,7 +1306,7 @@ describe('ASSIGN backoff', () => {
   });
 
   test('LOCATE waits for the backoffs, then fails with UNAVAILABLE', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const log: string[] = [];
     const space = new SlotSpace(userq, { count: 16, lazy: true });
@@ -1319,7 +1319,7 @@ describe('ASSIGN backoff', () => {
       };
       void i.start({ space });
     }
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const router = new Instance(h, userq, 0, log);
     router.channel = h.link()[0];
     const start = clock.now();
@@ -1334,7 +1334,7 @@ describe('ASSIGN backoff', () => {
         failedAt = clock.now() - start;
       },
     );
-    await clock.elapse(30_000);
+    await clock.elapseAsync(30_000);
     expect(status?.known).toBe(StatusCode.unavailable);
     expect(status?.reason).toContain('not ready');
     // Both tried, both again when their backoff ended, then the
@@ -1346,13 +1346,13 @@ describe('ASSIGN backoff', () => {
   });
 
   test('a refused rebalancing migration waits for the backoff', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const space = new SlotSpace(kv, { count: 4 });
     void new Instance(h, kv, 1, log).start({ space });
     void new Instance(h, kv, 2, log).start({ space });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     const table = tableOf(h, kv);
     expect(counts(table)).toEqual({ 1: 2, 2: 2 });
     log.length = 0;
@@ -1361,7 +1361,7 @@ describe('ASSIGN backoff', () => {
     c.onAssign = refusing(clock, at, 3);
     const joined = clock.now();
     void c.start({ space });
-    await clock.elapse(30_000);
+    await clock.elapseAsync(30_000);
     expect(at.map((t) => t - joined)).toEqual([0, 200, 600, 1400]);
     expect(log).toEqual([
       ...[0, 1, 2].flatMap(() => ['1 DRAIN 0 e2 to3', '3 ASSIGN 0 e2 h1', '1 RESUME 0 e1']),
@@ -1374,7 +1374,7 @@ describe('ASSIGN backoff', () => {
   });
 
   test('a refused DRAIN of a rebalancing migration waits for a backoff', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const at = new Map<number, number[]>();
@@ -1387,11 +1387,11 @@ describe('ASSIGN backoff', () => {
     };
     const space = new SlotSpace(kv, { count: 2 });
     void a.start({ space });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(counts(tableOf(h, kv))).toEqual({ 1: 2 });
     const joined = clock.now();
     void new Instance(h, kv, 3, log).start({ space, capacity: 3 });
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     // Each slot is retried at the backoff intervals, not at once.
     for (const slot of [0, 1]) {
       expect(at.get(slot)?.map((t) => t - joined)).toEqual([0, 200, 600, 1400]);
@@ -1401,7 +1401,7 @@ describe('ASSIGN backoff', () => {
   });
 
   test('rebalancing takes a slot from the next over-share instance when the first has none it can move', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50 });
     const log: string[] = [];
     const space = new SlotSpace(kv, { count: 4 });
@@ -1411,14 +1411,14 @@ describe('ASSIGN backoff', () => {
     };
     void a.start({ space });
     void new Instance(h, kv, 2, log).start({ space });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     const table = tableOf(h, kv);
     expect(counts(table)).toEqual({ 1: 2, 2: 2 });
     const [a0, a1] = table.slotsOf(1);
     const [b0] = table.slotsOf(2);
     log.length = 0;
     void new Instance(h, kv, 3, log).start({ space });
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(log).toEqual([
       `1 DRAIN ${a0} e2 to3`,
       `1 RESUME ${a0} e1`,
@@ -1433,7 +1433,7 @@ describe('ASSIGN backoff', () => {
   });
 
   test('close leaves no timers: backoffs, LOCATE, settle window', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: 10_000, holdingSettle: 1000 });
     const log: string[] = [];
     const a = new Instance(h, kv, 1, log);
@@ -1447,7 +1447,7 @@ describe('ASSIGN backoff', () => {
     };
     void u.start({ space: new SlotSpace(userq, { count: 4, lazy: true }) });
     // Through the settle window: both kv slots in their backoff.
-    await clock.elapse(1100);
+    await clock.elapseAsync(1100);
     expect(log).toHaveLength(2);
     let status: Status | undefined;
     u.locate(1).then(
@@ -1458,10 +1458,10 @@ describe('ASSIGN backoff', () => {
         status = (e as SwitchboardError).status;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // A new settle window.
     void a.slots(new SlotSpace(kv, { count: 2 }));
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(status).toBeUndefined();
     await closeWithoutTimers(clock, h);
     expect(status?.known).toBe(StatusCode.goingAway);
@@ -1490,7 +1490,7 @@ describe('RESUME after a rollback', () => {
    * is the attempt (1 = the first) from which it answers them.
    */
   async function zones(
-    clock: TestClock,
+    clock: ManualClock,
     h: Harness,
     log: string[],
     at: number[],
@@ -1509,9 +1509,9 @@ describe('RESUME after a rollback', () => {
     };
     void a.start({ space: staticSpace(zone, 4), capacity: 0 });
     void b.start({ space: staticSpace(zone, 4), capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void a.claim(1);
-    await clock.elapse(90);
+    await clock.elapseAsync(90);
     log.length = 0;
     return [a, b];
   }
@@ -1525,7 +1525,7 @@ describe('RESUME after a rollback', () => {
 
   test('one not answered is sent again at the backoff intervals, then the slot is free with its holder', async () => {
     // Not answered within the handover timeout (300 ms): failed.
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const log: string[] = [];
     const at: number[] = [];
@@ -1535,11 +1535,11 @@ describe('RESUME after a rollback', () => {
     void m.done.then((s) => {
       status = s;
     });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(status?.known).toBe(StatusCode.unavailable);
     const table = tableOf(h, zone);
     expect(table.get(1)).toEqual(SlotEntry.owned(1, { holder: 1, epoch: 1 }));
-    await clock.elapse(10_000);
+    await clock.elapseAsync(10_000);
     // Each fails 300 ms later and is sent again after 200, 400, 800,
     // then 1600 ms.
     expect(at).toEqual([100, 600, 1300, 2400, 4300]);
@@ -1550,45 +1550,45 @@ describe('RESUME after a rollback', () => {
   });
 
   test('one answered at the third attempt ends the retries', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const log: string[] = [];
     const at: number[] = [];
     await zones(clock, h, log, at, { answerFrom: 3 });
     await rollBack(h);
-    await clock.elapse(10_000);
+    await clock.elapseAsync(10_000);
     expect(at).toEqual([100, 600, 1300]);
     expect(tableOf(h, zone).get(1)).toEqual(SlotEntry.owned(1, { holder: 1, epoch: 1 }));
     await closeWithoutTimers(clock, h);
   });
 
   test('the attempts can be set; the owner going down ends them', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, resumeAttempts: 2 });
     const log: string[] = [];
     const at: number[] = [];
     const [a] = await zones(clock, h, log, at);
     await rollBack(h);
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(at).toEqual([100, 600]);
     expect(tableOf(h, zone).get(1)).toEqual(SlotEntry.free({ holder: 1, epoch: 1 }));
 
     // Going down while a RESUME waits for its backoff: no more.
     at.length = 0;
     void a.claim(1);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     await rollBack(h);
-    await clock.elapse(350);
+    await clock.elapseAsync(350);
     expect(at).toHaveLength(1);
     void a.close();
-    await clock.elapse(2000);
+    await clock.elapseAsync(2000);
     expect(at).toHaveLength(1);
     expect(tableOf(h, zone).get(1).owner).toBe(0);
     await closeWithoutTimers(clock, h);
   });
 
   test('a managed slot set free goes to another instance first', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, resumeAttempts: 1 });
     const log: string[] = [];
     // a owns slot 0, refuses to DRAIN it and never answers RESUME.
@@ -1600,18 +1600,18 @@ describe('RESUME after a rollback', () => {
     };
     const space = new SlotSpace(kv, { count: 1 });
     void a.start({ space });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(tableOf(h, kv).get(0).owner).toBe(1);
     void new Instance(h, kv, 2, log).start({ space });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     log.length = 0;
     new Migration(h.link()[0], kv, 0, { to: 2 });
-    await clock.elapse(290);
+    await clock.elapseAsync(290);
     expect(log).toEqual(['1 DRAIN 0 e2 to2', '1 RESUME 0 e1']);
     expect(tableOf(h, kv).get(0).owner).toBe(1);
     // The RESUME failed: free with holder a, which is in its backoff
     // for it and passed over; b fetches it from a.
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(log.at(-1)).toBe('2 ASSIGN 0 e2 h1');
     expect(tableOf(h, kv).get(0)).toEqual(SlotEntry.owned(2, { holder: 2, epoch: 2 }));
     await closeWithoutTimers(clock, h);
@@ -1622,23 +1622,23 @@ describe('settle window after SLOTS', () => {
   test('a holder whose HOLDING comes late after the hold gets its slot', async () => {
     // A restarted naming service; its hold is over before anyone is
     // back.
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50, holdingSettle: 1000 });
     const log: string[] = [];
     const space = new SlotSpace(kv, { count: 4 });
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(h.service.isHoldingAssignments).toBe(false);
     // b, which holds nothing, is back first with capacity.
     void new Instance(h, kv, 2, log).start({ space });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // a holds the storage of slot 2; its HOLDING comes 300 ms after
     // its SLOTS.
     const a = new Instance(h, kv, 1, log);
     void a.start({ space });
-    await clock.elapse(300);
+    await clock.elapseAsync(300);
     expect(log).toEqual([]);
     const discard = a.holding([2]);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(log).toEqual(['1 ASSIGN 2 e1 h1']);
     let discarded: readonly number[] | undefined;
     void discard.then((d) => {
@@ -1648,9 +1648,9 @@ describe('settle window after SLOTS', () => {
     expect(discarded).toEqual([]);
     // The rest once the window is over: 1 s after it opened (the most
     // it is extended to here, 5 x 50 ms being shorter).
-    await clock.elapse(600);
+    await clock.elapseAsync(600);
     expect(log).toHaveLength(1);
-    await clock.elapse(200);
+    await clock.elapseAsync(200);
     const table = tableOf(h, kv);
     expect(allOwned(table)).toBe(true);
     expect(table.get(2)).toEqual(SlotEntry.owned(1, { holder: 1, epoch: 1 }));
@@ -1658,51 +1658,51 @@ describe('settle window after SLOTS', () => {
     expect(counts(table)).toEqual({ 1: 2, 2: 2 });
     void h.close();
     await pump();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(clock.pendingCount).toBe(0);
   });
 
   test('arrivals extend the window until it goes quiet, up to a bound', async () => {
     // Quiet for 200 ms, at most 5 x 50 ms = 250 ms.
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: ms50, holdingSettle: 200 });
     const log: string[] = [];
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     const a = new Instance(h, kv, 1, log);
     void a.start({ space: new SlotSpace(kv, { count: 4 }) });
-    await clock.elapse(150);
+    await clock.elapseAsync(150);
     expect(log).toEqual([]);
     // A CLAIM is served at once and extends the window past 300 ms.
     let epoch: number | undefined;
     void a.claim(3).then((e) => {
       epoch = e;
     });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(epoch).toBe(1);
     expect(log).toEqual(['1 ASSIGN 3 e1 h0']);
-    await clock.elapse(80);
+    await clock.elapseAsync(80);
     expect(log).toHaveLength(1);
     // 250 ms after it opened it is over all the same.
-    await clock.elapse(20);
+    await clock.elapseAsync(20);
     expect(log).toHaveLength(4);
     expect(allOwned(h.service.slotTable(kv))).toBe(true);
     void h.close();
     await pump();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(clock.pendingCount).toBe(0);
   });
 
   test('LOCATE assigns at once within the window', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, holdingSettle: 1000 });
     const log: string[] = [];
     const space = new SlotSpace(kv, { count: 4 });
     const a = new Instance(h, kv, 1, log);
     void a.start({ space, capacity: 1 });
     void new Instance(h, kv, 2, log).start({ space, capacity: 3 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void a.holding([1]);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // A slot with a known holder goes back to it within the window.
     expect(log).toEqual(['1 ASSIGN 1 e1 h1']);
     const router = new Instance(h, kv, 0, log);
@@ -1711,12 +1711,12 @@ describe('settle window after SLOTS', () => {
     void router.locate(0).then((r) => {
       located = r;
     });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(located).toEqual(new LocateResponse(SlotState.owned, 2, 1));
     expect(log).toEqual(['1 ASSIGN 1 e1 h1', '2 ASSIGN 0 e1 h0']);
     void h.close();
     await pump();
-    await clock.elapse(ms50 * 2);
+    await clock.elapseAsync(ms50 * 2);
     expect(clock.pendingCount).toBe(0);
   });
 });
@@ -1728,7 +1728,7 @@ describe('declared deadlines, no heartbeat', () => {
   type Declared = [number | undefined, number | undefined];
 
   test('a HOLDING waiting for an ASSIGN elsewhere is told the handover timeout once', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const a = new Instance(h, kv, 1, log);
@@ -1741,7 +1741,7 @@ describe('declared deadlines, no heartbeat', () => {
     };
     void a.start();
     void b.start({ space: new SlotSpace(kv, { count: 2 }) });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(log).toHaveLength(2);
     const declared: Declared[] = [];
     let discard: readonly number[] | undefined;
@@ -1752,18 +1752,18 @@ describe('declared deadlines, no heartbeat', () => {
       .response.then((r) => {
         discard = HoldingResponse.decode(r.payload).discard;
       });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // Both ASSIGNs started together: one bound covers both.
     expect(declared).toEqual([[handover - ms10 + buffer, undefined]]);
     decide.resolve();
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(discard).toEqual([0, 1]);
     expect(declared).toHaveLength(1);
     await closeWithoutTimers(clock, h);
   });
 
   test('a RELEASE of a slot being assigned to the caller waits for the ASSIGN, told the handover timeout once', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const decide = new Deferred<void>();
@@ -1778,7 +1778,7 @@ describe('declared deadlines, no heartbeat', () => {
       return new AssignResponse();
     };
     void a.start({ space: new SlotSpace(kv, { count: 2 }) });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(log).toEqual(['1 ASSIGN 0 e1 h0', '1 ASSIGN 1 e1 h0']);
     const declared = new Map<number, Declared[]>([
       [0, []],
@@ -1799,7 +1799,7 @@ describe('declared deadlines, no heartbeat', () => {
           },
         );
     }
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(outcome.size, 'both wait for their ASSIGN').toBe(0);
     for (const slot of [0, 1]) {
       expect(declared.get(slot)).toEqual([[handover - ms10 + buffer, undefined]]);
@@ -1817,13 +1817,13 @@ describe('declared deadlines, no heartbeat', () => {
   });
 
   test('a CLAIM made during the hold is told the time left in it', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, assignmentHold: 2000 });
     const log: string[] = [];
     const a = new Instance(h, zone, 1, log);
     a.heartbeat = false;
     void a.start({ space: staticSpace(zone, 4), capacity: 0 });
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     const declared: Declared[] = [];
     let epoch: number | undefined;
     void a.channel
@@ -1833,9 +1833,9 @@ describe('declared deadlines, no heartbeat', () => {
       .response.then((r) => {
         epoch = ClaimResponse.decode(r.payload).epoch;
       });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     expect(declared).toEqual([[1500 + buffer, undefined]]);
-    await clock.elapse(1500);
+    await clock.elapseAsync(1500);
     expect(epoch).toBe(1);
     // Then the ASSIGN to it: one more, the handover timeout.
     expect(declared).toEqual([
@@ -1846,7 +1846,7 @@ describe('declared deadlines, no heartbeat', () => {
   });
 
   test('a LOCATE waiting out a backoff is told the wait it knows', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const space = new SlotSpace(userq, { count: 16, lazy: true });
@@ -1858,11 +1858,11 @@ describe('declared deadlines, no heartbeat', () => {
       };
       void i.start({ space });
     }
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // A first LOCATE puts both candidates in their backoff (200 ms).
     const [router] = h.link();
     router.request('LOCATE', new LocateRequest(userq, 3).encode()).catch(() => {});
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(log).toHaveLength(2);
     const declared: Declared[] = [];
     let error: unknown;
@@ -1876,17 +1876,17 @@ describe('declared deadlines, no heartbeat', () => {
           error = e;
         },
       );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // It waits for a backoff, at most the handover timeout.
     expect(log).toHaveLength(2);
     expect(declared).toEqual([[handover + buffer, undefined]]);
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     expect(isStatus(error, StatusCode.unavailable)).toBe(true);
     await closeWithoutTimers(clock, h);
   });
 
   test('a MIGRATE queued behind another is told each step of it', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock, handoverTimeout: handover });
     const log: string[] = [];
     const a = new Instance(h, zone, 1, log);
@@ -1895,10 +1895,10 @@ describe('declared deadlines, no heartbeat', () => {
     b.heartbeat = false;
     void a.start({ space: staticSpace(zone, 4), capacity: 0 });
     void b.start({ space: staticSpace(zone, 4), capacity: 0 });
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     void a.claim(1);
     void a.claim(2);
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const draining = new Deferred<void>();
     a.onDrain = () => draining.promise;
     const [operator] = h.link();
@@ -1908,7 +1908,7 @@ describe('declared deadlines, no heartbeat', () => {
     );
     drain(first.items);
     first.done.catch(() => {});
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     const declared: Declared[] = [];
     const second = operator.streamRequest(
       'MIGRATE',
@@ -1925,11 +1925,11 @@ describe('declared deadlines, no heartbeat', () => {
         outcome = e;
       },
     );
-    await clock.elapse(ms10);
+    await clock.elapseAsync(ms10);
     // Behind the first, in its DRAIN since 10 ms.
     expect(declared).toEqual([[handover - ms10 + buffer, undefined]]);
     draining.resolve();
-    await clock.elapse(ms50);
+    await clock.elapseAsync(ms50);
     expect(outcome).toBe('done');
     expect(log.filter((l) => l.includes('DRAIN'))).toHaveLength(2);
     await closeWithoutTimers(clock, h);
@@ -1937,7 +1937,7 @@ describe('declared deadlines, no heartbeat', () => {
 });
 
 test('close leaves no timers: grace, migration, held requests', async () => {
-  const clock = new TestClock();
+  const clock = new ManualClock();
   const h = new Harness({ clock, assignmentHold: ms50 });
   const log: string[] = [];
   const a = new Instance(h, kv, 1, log);
@@ -1946,25 +1946,25 @@ test('close leaves no timers: grace, migration, held requests', async () => {
   const space = new SlotSpace(kv, { count: 4 });
   void a.start({ space });
   void b.start({ space });
-  await clock.elapse(ms50 * 2);
+  await clock.elapseAsync(ms50 * 2);
   // A grace timer.
   void a.close();
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   // A migration stuck in DRAIN.
   void c.start({ space: staticSpace(zone, 2), capacity: 0 });
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   void c.claim(0);
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   const d = new Instance(h, zone, 4, log);
   void d.start({ space: staticSpace(zone, 2), capacity: 0 });
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   c.onDrain = () => never();
   const m = new Migration(h.link()[0], zone, 0, { to: 4 });
-  await clock.elapse(ms10);
+  await clock.elapseAsync(ms10);
   expect(log.at(-1)).toBe('3 DRAIN 0 e2 to4');
   void h.close();
   // The scripted instances' own EXTEND timers notice on their next tick.
-  await clock.elapse(ms50 * 2);
+  await clock.elapseAsync(ms50 * 2);
   let status: Status | undefined;
   void m.done.then((s) => {
     status = s;

@@ -15,6 +15,7 @@ import {
 } from '../../../src/core/mux/mux-frame.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { stubCredential } from '../../support/identity/stub-verifier.ts';
 import {
   collect,
@@ -33,7 +34,6 @@ import {
   rawOptions,
   rawPair,
   rejection,
-  SteppingClock,
   Subframes,
   settle,
   settleRaw,
@@ -392,7 +392,7 @@ describe('argument checks', () => {
       { bulkZipper: 0 },
       { bulkChunkSize: 0 },
     ]) {
-      const [t] = memoryPair(new SteppingClock());
+      const [t] = memoryPair(new ManualClock());
       expect(
         () => new FrameMuxConnection(t, { ...quiet, ...options, isInitiator: true }),
         JSON.stringify(options),
@@ -401,7 +401,7 @@ describe('argument checks', () => {
   });
 
   test('a transport whose streams are taken already', () => {
-    const [t] = memoryPair(new SteppingClock());
+    const [t] = memoryPair(new ManualClock());
     t.readable.getReader();
     expect(() => new FrameMuxConnection(t, { ...quiet, isInitiator: true })).toThrow(TypeError);
   });
@@ -487,7 +487,7 @@ describe('a burst of frames', () => {
   });
 
   test('a transport that fails drops what waits', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     let fail: ((error: unknown) => void) | undefined;
     const written: number[] = [];
     const writable = new WritableStream<Uint8Array>(
@@ -521,7 +521,7 @@ describe('a burst of frames', () => {
     await settle();
     expect(written).toHaveLength(1);
     const closing = mux.close();
-    await clock.elapse(10_000);
+    await clock.elapseAsync(10_000);
     await closing;
     expectCode(await mux.done, StatusCode.connectionLost);
   });

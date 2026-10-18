@@ -2,7 +2,7 @@
 // channel ids, protocol errors, the control channel, GOAWAY, byte
 // counters, keep-alive, the end of a connection and transport failures.
 // Ports `test/mux_test.dart`; the harness is `support.ts`
-// (`mux_harness.dart`). Time is a SteppingClock: the Dart tests that wait
+// (`mux_harness.dart`). Time is a ManualClock: the Dart tests that wait
 // on real time (keep-alive, the GOAWAY grace) elapse it instead.
 import { describe, expect, test } from 'vitest';
 import { hexBytes, hexString } from '../../../src/core/bytes.ts';
@@ -19,6 +19,7 @@ import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.t
 import { StreamFraming } from '../../../src/core/transport/stream-framing.ts';
 import { StreamTransport } from '../../../src/core/transport/stream-transport.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   AnsweringTransport,
   ByteDrain,
@@ -46,7 +47,6 @@ import {
   rawOptions,
   rawPair,
   rejection,
-  SteppingClock,
   Subframes,
   settle,
   streamOf,
@@ -62,7 +62,7 @@ test('a synchronous keep-alive reply and close leave no timer', async () => {
   // closes the connection from there. Here the answer is queued as the
   // PING is written and the close happens inside the write too; the mux
   // reads the PONG only after it closed.
-  const clock = new SteppingClock();
+  const clock = new ManualClock();
   let mux: FrameMuxConnection | undefined;
   let closed: Promise<void> | undefined;
   const transport = new AnsweringTransport((bytes) => {
@@ -83,11 +83,11 @@ test('a synchronous keep-alive reply and close leave no timer', async () => {
     clock,
     isInitiator: true,
   });
-  await clock.elapse(5);
+  await clock.elapseAsync(5);
   expect(closed).toBeDefined();
   await closed;
   await settle();
-  expect(clock.pending).toBe(0);
+  expect(clock.pendingCount).toBe(0);
 });
 
 describe('channels', () => {
@@ -95,7 +95,7 @@ describe('channels', () => {
     // The confirmation is queued as the CLOSE is written; the mux handles
     // it once it reads it, not during the write, so the channel is closed
     // after a turn rather than at once.
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const transport = new AnsweringTransport((bytes) => {
       const frame = MuxFrame.decode(bytes);
       return frame.command === MuxCommand.close ? [MuxFrame.close(frame.channelId).encode()] : [];
@@ -105,9 +105,9 @@ describe('channels', () => {
     void channel.close();
     await settle();
     expect(channel.state).toBe('closed');
-    expect(clock.pending).toBe(0);
+    expect(clock.pendingCount).toBe(0);
     await mux.close();
-    expect(clock.pending).toBe(0);
+    expect(clock.pendingCount).toBe(0);
   });
 
   test('open from both sides, payloads and data both ways', async () => {
@@ -479,7 +479,7 @@ describe('rejection and limits', () => {
   });
 
   test('frame over the stream transport limit sends GOAWAY', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const toMux = new ByteFeed();
     const fromMux = new ByteDrain();
     const mux = new FrameMuxConnection(
@@ -490,7 +490,7 @@ describe('rejection and limits', () => {
     // A length of 4096 and no body.
     toMux.add(hexBytes('00 10 00 00'));
     expectCode(await mux.done, StatusCode.frameTooLarge);
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     const frames = framesIn(fromMux.chunks);
     expect(frames).toHaveLength(1);
     const goAway = MuxControlMessage.decode(MuxFrame.decode(frames[0] as Uint8Array).payload);
@@ -955,9 +955,9 @@ describe('GOAWAY', () => {
     const ca = a.open(empty);
     const rb = await bIncoming.next();
     const goingAway = tracked(b.goAway(Status.of(StatusCode.unavailable, 'maintenance')));
-    await clock.elapse(29);
+    await clock.elapseAsync(29);
     expect(goingAway.settled).toBe(false);
-    await clock.elapse(1);
+    await clock.elapseAsync(1);
     await goingAway.promise;
     expectCode(await rb.done, StatusCode.unavailable);
     expectCode(await ca.done, StatusCode.goingAway);
@@ -1083,7 +1083,7 @@ describe('keep-alive', () => {
     // A frame every 5 ms for 100 ms.
     for (let i = 0; i < 20; i++) {
       raw.send('02 00 00 7F');
-      await clock.elapse(5);
+      await clock.elapseAsync(5);
     }
     await mux.close();
     const rest = await raw.rest();
@@ -1100,7 +1100,7 @@ describe('keep-alive', () => {
     // end the connection.
     while (elapsed < 250) {
       elapsed += await elapseUntil(clock, raw.nextControl(ping));
-      await clock.elapse(20);
+      await clock.elapseAsync(20);
       elapsed += 20;
       // An unknown control type, not a PONG.
       raw.send('02 00 00 7F');
@@ -1126,7 +1126,7 @@ describe('keep-alive', () => {
   test('two live peers keep the connection open', async () => {
     const options = { keepAliveInterval: 10, keepAliveTimeout: 20 };
     const [a, b] = muxPair({ initiator: options, acceptor: options });
-    await clockOf(a).elapse(100);
+    await clockOf(a).elapseAsync(100);
     expect(a.isOpen && b.isOpen).toBe(true);
     await a.close();
     await b.done;
@@ -1136,7 +1136,7 @@ describe('keep-alive', () => {
     // Dart's peer hangs up while the constructor writes LIMITS, before the
     // first timer is armed. Here the hang-up reaches the mux once it reads,
     // after the constructor: what is checked is that no timer is left.
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const transport = new AnsweringTransport((_frame, self) => {
       self.end();
       return [];
@@ -1150,14 +1150,14 @@ describe('keep-alive', () => {
     await settle();
     expect(mux.isOpen).toBe(false);
     // Past the bound of the close on the transport.
-    await clock.elapse(2000);
-    expect(clock.pending).toBe(0);
+    await clock.elapseAsync(2000);
+    expect(clock.pendingCount).toBe(0);
   });
 });
 
 describe('connection end', () => {
   test('transport drop ends every channel with CONNECTION_LOST', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [ta, tb] = memoryPair(clock);
     const tap = new Tap(tb);
     const a = new FrameMuxConnection(ta, { ...quiet, clock, isInitiator: true });
@@ -1202,7 +1202,7 @@ describe('connection end', () => {
   });
 
   test('close() over a failed transport', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [ta, tb] = memoryPair(clock);
     const mux = new FrameMuxConnection(ta, { ...quiet, clock, isInitiator: true });
     const writer = tb.writable.getWriter();
@@ -1251,7 +1251,7 @@ describe('connection end', () => {
 describe('transport failures end to end', () => {
   /** Runs a mux over a byte pipe fed with [input]; its end status and the control messages it sent. */
   async function overBytes(input: Uint8Array): Promise<[Status, MuxControlMessage[]]> {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const toMux = new ByteFeed();
     const fromMux = new ByteDrain();
     const mux = new FrameMuxConnection(new StreamTransport(toMux, fromMux, { clock }), {
@@ -1261,7 +1261,7 @@ describe('transport failures end to end', () => {
     });
     toMux.add(input);
     const status = await mux.done;
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     toMux.end();
     return [
       status,
@@ -1293,14 +1293,14 @@ describe('transport failures end to end', () => {
   // FRAME_TOO_LARGE.
 
   test('memory transport limit: the sender sees GOAWAY FRAME_TOO_LARGE', async () => {
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [ta, tb] = memoryPair(clock, { maxFrameSize: 64 });
     const mux = new FrameMuxConnection(tb, { ...rawOptions, clock, isInitiator: false });
     const raw = new RawPeer(ta);
     raw.send(`02 02 00 ${'00 '.repeat(67)}`);
     expectCode(await mux.done, StatusCode.frameTooLarge);
     const rest = raw.rest();
-    await clock.elapse(0);
+    await clock.elapseAsync(0);
     const frames = await rest;
     expect(frames).toHaveLength(1);
     const goAway = MuxControlMessage.decode((frames[0] as MuxFrame).payload);
@@ -1315,7 +1315,7 @@ describe('transport failures end to end', () => {
         records.push({ level, name, message });
       },
     };
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const [ta, tb] = memoryPair(clock, { maxFrameSize: 512 });
     const a = new FrameMuxConnection(ta, { ...quiet, clock, logger, isInitiator: true });
     const b = new FrameMuxConnection(tb, { ...quiet, clock, logger, isInitiator: false });
@@ -1395,7 +1395,7 @@ describe('real transports', () => {
     // Not a Dart test: the exercise of the three above over the stream
     // binding without a socket, so that the mux runs over a transport that
     // reports output readiness and throttles its input.
-    const clock = new SteppingClock();
+    const clock = new ManualClock();
     const toServer = new ByteFeed();
     const toClient = new ByteFeed();
     const client = new FrameMuxConnection(

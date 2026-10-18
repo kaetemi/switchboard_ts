@@ -12,6 +12,7 @@ import { Name } from '../../../src/core/name.ts';
 import { NamingClient } from '../../../src/core/naming/naming-client.ts';
 import { NamingResolver } from '../../../src/core/naming/naming-resolver.ts';
 import { StatusCode } from '../../../src/core/status.ts';
+import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
   Connector,
   describeEvent,
@@ -28,7 +29,6 @@ import {
   uriB,
   within,
 } from '../../support/naming/harness.ts';
-import { TestClock } from '../../support/naming/test-clock.ts';
 
 describe('NamingResolver', () => {
   let h: Harness;
@@ -191,7 +191,7 @@ describe('NamingResolver', () => {
   });
 
   test('close stops reconnecting and leaves no timers', async () => {
-    const clock = new TestClock();
+    const clock = new ManualClock();
     const h = new Harness({ clock });
     const connector = new Connector(h);
     connector.down = true;
@@ -202,14 +202,14 @@ describe('NamingResolver', () => {
     resolver.resolve(Name.of('npc')).catch((e: unknown) => {
       error = e;
     });
-    await clock.elapse(500);
+    await clock.elapseAsync(500);
     await rejectsWith(Promise.reject(error), StatusCode.unavailable);
     const calls = connector.calls;
     expect(calls).toBeGreaterThan(5);
     void resolver.close();
     await pump();
     expect(clock.pendingCount).toBe(0);
-    await clock.elapse(1000);
+    await clock.elapseAsync(1000);
     expect(connector.calls).toBe(calls);
     void h.close();
     await pump();

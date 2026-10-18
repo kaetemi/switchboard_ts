@@ -53,7 +53,6 @@ import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { codeOf, node, onCleanup, overFrameMux, rejectsWith } from '../../support/node/harness.ts';
-import { SteppingClock } from '../../support/node/stepping-clock.ts';
 
 /** The Talk options of every node of the Dart test. */
 const talk: Partial<TalkOptions> = { requestTimeout: 2000, replyTimeout: 1000 };
@@ -91,7 +90,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 function issue(
@@ -285,22 +284,18 @@ class Recorded extends SlotLifecycle {
   serve(): void {}
 }
 
-/** A stepping clock whose time is also the (faked) system time: Dart's fake_async with `package:clock`. */
-class FakeWall extends SteppingClock {
+/**
+ * A manual clock whose time is also the wall time, `Date.now()` reading it
+ * at [origin] plus the clock's time: Dart's fake_async with
+ * `package:clock`. Undone after each test.
+ */
+class FakeWall extends ManualClock {
   readonly origin: number;
 
   constructor(origin: number) {
     super();
     this.origin = origin;
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(origin);
-  }
-
-  override advance(ms: number): void {
-    // SteppingClock moves from timer to timer: whatever fires in this call
-    // fires at its end.
-    vi.setSystemTime(this.origin + this.now() + ms);
-    super.advance(ms);
+    vi.spyOn(Date, 'now').mockImplementation(() => this.origin + this.now());
   }
 }
 
@@ -686,7 +681,7 @@ describe('expiry and RENEW', () => {
     expect(mesh.service.table.size).toBe(1);
     expect(joined.nextRenewalAt).toBe((original.issuedAt + 7200) * 1000);
     // Two hours in: renewed, and presented on the naming connection.
-    await clock.elapse(2 * hour);
+    await clock.elapseAsync(2 * hour);
     await until(() => worker.credential !== original, 'renewed');
     const renewed = worker.credential as Credential;
     expect(renewed.expiresAt).toBeGreaterThan(original.expiresAt);
@@ -694,21 +689,21 @@ describe('expiry and RENEW', () => {
     await until(() => joined.nextRenewalAt !== undefined, 'next renewal scheduled');
     expect(joined.nextRenewalAt).toBe((renewed.issuedAt + 7200) * 1000);
     // Past the first expiry: still registered.
-    await clock.elapse(hour + 30 * minute);
+    await clock.elapseAsync(hour + 30 * minute);
     expect(mesh.service.table.size).toBe(1);
     expect(ended).toEqual([]);
     // Revoked: the next renewals fail (from four hours in), each retried
     // after a quarter of the time left, and the session ends at the
     // expiry, five hours in.
     revoked = true;
-    await clock.elapse(30 * minute);
+    await clock.elapseAsync(30 * minute);
     await until(() => joined.nextRenewalAt !== undefined, 'retry scheduled');
     expect(joined.nextRenewalAt).toBe(clock.origin + 4 * hour + 15 * minute);
-    await clock.elapse(30 * minute);
+    await clock.elapseAsync(30 * minute);
     expect(worker.credential).toBe(renewed);
     expect(mesh.service.table.size).toBe(1);
     expect(ended).toEqual([]);
-    await clock.elapse(31 * minute);
+    await clock.elapseAsync(31 * minute);
     await until(() => mesh.service.table.size === 0, 'record dropped');
     // The naming connection is sent GOAWAY; so is every new one, since the
     // credential has expired.
@@ -720,11 +715,11 @@ describe('expiry and RENEW', () => {
       closed = true;
     });
     for (let i = 0; i < 100 && !closed; i++) {
-      await clock.elapse(second);
+      await clock.elapseAsync(second);
     }
     expect(closed).toBe(true);
-    await clock.elapse(30 * second);
-    expect(clock.pending).toBe(0);
+    await clock.elapseAsync(30 * second);
+    expect(clock.pendingCount).toBe(0);
   });
 });
 

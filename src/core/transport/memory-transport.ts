@@ -49,18 +49,27 @@ export interface MemoryTransport extends FrameTransport {
  * Two connected transports: frames written to one are read from the other.
  *
  * Frames are copied as the writable takes them, so the caller may reuse
- * its buffer once the write has resolved. Closing one side's writable ends both readables: its own at once (after
- * the frames already delivered to it), the other after the frames in
- * flight towards it. Frames written to a side whose pair has closed are
- * dropped. Aborting a writable closes the pair at once, dropping frames in
- * flight; that writable's `closed` promise rejects with the reason.
+ * its buffer once the write has resolved. Closing one side's writable
+ * ends both readables: its own at once (after the frames already
+ * delivered to it), the other after the frames in flight towards it.
+ * Aborting a writable closes the pair at once, dropping frames in flight;
+ * that writable's `closed` promise rejects with the reason.
+ *
+ * The other side's writable is errored when its readable ends, with a
+ * `SwitchboardError` `CONNECTION_LOST`, so that its `closed` settles and
+ * later writes are refused, as the stream transport's writable is when
+ * the peer closes (Dart's sink completes `done` and drops later frames).
+ * Frames written to it between the close and that moment, while the
+ * frames in flight towards it are still on their way, are dropped. A
+ * close or an abort of a writable settles it as asked.
  *
  * With a positive `maxFrameSize`, a frame longer than that errors the
  * receiving side's readable with `FRAME_TOO_LARGE` after the frames before
  * it, and ends it. The failed side stays writable until its reader has the
  * error, plus one turn of the clock, so that a mux can still send GOAWAY
- * to the sender; then the pair closes on its behalf. With nobody reading
- * it, the pair closes at once. Frames sent to the failed side are dropped.
+ * to the sender; then the pair closes on its behalf, and that side's
+ * writable is errored with the same error. With nobody reading it, the
+ * pair closes at once. Frames sent to the failed side are dropped.
  *
  * @throws {RangeError} for a negative delay or a negative or fractional
  *   frame size limit.
@@ -149,6 +158,10 @@ class MemoryEnd implements MemoryTransport {
   #failure: { readonly error: unknown; readonly closePair: boolean } | undefined;
   #cancelled = false;
   #arrived: Deferred<void> | undefined;
+  #writableController: WritableStreamDefaultController | undefined;
+  // Whether the user of `writable` closed or aborted it: its `closed` then
+  // settles as asked.
+  #closeAsked = false;
 
   constructor(link: MemoryLink, label: string, remote: string | undefined) {
     this.#link = link;
@@ -167,12 +180,19 @@ class MemoryEnd implements MemoryTransport {
       { highWaterMark: 0 },
     );
     this.writable = new WritableStream<Uint8Array>({
+      start: (controller) => {
+        this.#writableController = controller;
+      },
       write: (frame) => this.#send(frame),
       close: () => {
+        this.#closeAsked = true;
         this.#link.close(this);
         return this.#done.promise;
       },
-      abort: () => this.#link.close(this, true),
+      abort: () => {
+        this.#closeAsked = true;
+        this.#link.close(this, true);
+      },
     });
   }
 
@@ -180,13 +200,25 @@ class MemoryEnd implements MemoryTransport {
     return this.#link.maxFrameSize;
   }
 
-  /** Ends this side's readable after the frames already delivered to it. */
+  /**
+   * Ends this side's readable after the frames already delivered to it.
+   * Unless this side's own writable was closed or aborted, the pair
+   * closed under it: the writable is errored, with the failure that closed
+   * the pair on this side's behalf, or `CONNECTION_LOST`.
+   */
   finish(): void {
     if (!this.#ended) {
       this.#ended = true;
       this.#wake();
     }
     this.#done.resolve();
+    if (!this.#closeAsked) {
+      this.#closeAsked = true;
+      this.#writableController?.error(
+        this.#failure?.error ??
+          SwitchboardError.of(StatusCode.connectionLost, 'the peer closed the connection'),
+      );
+    }
   }
 
   #send(frame: Uint8Array): void {
