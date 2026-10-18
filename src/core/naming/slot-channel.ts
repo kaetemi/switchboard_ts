@@ -185,27 +185,17 @@ export class SlotChannel implements MuxChannelCarrier, AsyncDisposable {
 
   /**
    * Outgoing subframes, as `MuxChannel.writable`: a `write` is a
-   * {@link send} once {@link canSend} (dropped otherwise; a subframe the
-   * channel refuses for its size fails the write); `close()` is
+   * {@link send}, so a write once the channel can no longer send rejects
+   * and errors the writable (`FAILED_PRECONDITION`), as does a held
+   * subframe dropped because the channel ended first, and a subframe the
+   * channel refuses for its size (design section 12, item 8); `close()` is
    * `close(OK)`; `abort(reason)` closes with the status of a
    * `SwitchboardError` (an application code becomes `UNKNOWN`), else
    * `INTERNAL`.
    */
   get writable(): WritableStream<Uint8Array> {
     this.#writable ??= new WritableStream<Uint8Array>({
-      write: async (subframe) => {
-        if (!this.canSend) {
-          return;
-        }
-        try {
-          await this.send(subframe);
-        } catch (error) {
-          if (!(error instanceof SwitchboardError) || !error.is(StatusCode.failedPrecondition)) {
-            throw error;
-          }
-          // Closed while waiting: dropped, as a write after the end is.
-        }
-      },
+      write: (subframe) => this.send(subframe),
       close: () => this.close(),
       abort: (reason: unknown) => {
         let status =

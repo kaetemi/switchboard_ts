@@ -26,16 +26,19 @@ import {
   SlotSpace,
   serviceRecord,
 } from '../../../src/core/naming/naming-protocol.ts';
-import type { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
+import { SlotChannel } from '../../../src/core/naming/slot-channel.ts';
+import { StatusCode } from '../../../src/core/status.ts';
 import type { IncomingChannel } from '../../../src/core/switchboard/contract.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard } from '../../../src/core/switchboard/switchboard.ts';
-import { bytes, node, pump, svc, until, useMux } from '../../support/node/harness.ts';
+import { Deferred } from '../../../src/core/util/deferred.ts';
+import { isSettled } from '../../support/naming/harness.ts';
+import { bytes, node, pump, rejectsWith, svc, until, useMux } from '../../support/node/harness.ts';
 
 useMux('frame');
 
 /** How the backend treats a channel. */
-type Mode = 'greet' | 'relocated' | 'flood';
+type Mode = 'greet' | 'relocated' | 'moved' | 'flood';
 
 class Backend {
   sb!: Switchboard;
@@ -59,6 +62,9 @@ class Backend {
         break;
       case 'relocated':
         void incoming.reject(new MovedStatus({ owner: 2, epoch: 2 }).toStatus({ relocated: true }));
+        break;
+      case 'moved':
+        void incoming.reject(new MovedStatus({ owner: 2, epoch: 2 }).toStatus());
         break;
       case 'flood':
         // Ten subframes of 100 bytes, sent as the window lets them.
@@ -122,18 +128,40 @@ describe('review: SlotChannel against the MuxChannel idioms', () => {
   });
 
   // Design 12.8: "A write to a channel that can no longer send rejects and
-  // errors the writable (frame mux and QUIC binding alike); Dart's sink.add
-  // dropped the data silently." SlotChannel.writable keeps Dart's sink.add:
-  // `write` returns without sending once `canSend` is false, so a `pipeTo`
-  // into it drains its source into nothing after the owner closed the
-  // channel (RELOCATED here, which is never retried).
-  test.fails('a write to a SlotChannel writable after the channel ended rejects too', async () => {
+  // errors the writable"; the slot channel's `write` is its `send`, so a
+  // `pipeTo` into it fails once the owner closed the channel (RELOCATED
+  // here, which is never retried) instead of draining its source.
+  test('a write to a SlotChannel writable after the channel ended rejects too', async () => {
     backend.mode = 'relocated';
     const channel = await router.openChannelToSlot(svc, 1);
     await channel.done;
     expect(channel.canSend).toBe(false);
     const writer = channel.writable.getWriter();
-    await expect(writer.write(bytes('lost'))).rejects.toBeDefined();
+    await rejectsWith(writer.write(bytes('lost')), StatusCode.failedPrecondition);
+    await rejectsWith(writer.closed, StatusCode.failedPrecondition);
+  });
+
+  // A subframe held while the replacement is being opened, and dropped
+  // because the channel ended first, fails its write and the writable.
+  test('a held subframe dropped at the end fails the SlotChannel writable', async () => {
+    backend.mode = 'moved';
+    const first = await router.openChannel(new ServiceAddress(svc, 1), { shard: 1 });
+    expect((await first.done).is(StatusCode.moved)).toBe(true);
+    const reopened = new Deferred<MuxChannel | undefined>();
+    const channel = new SlotChannel(svc, 1, first, () => reopened.promise);
+    await pump(1);
+    const writer = channel.writable.getWriter();
+    const written = writer.write(bytes('held'));
+    written.catch(() => {});
+    await pump();
+    // Held: the channel can still send, and the write waits.
+    expect(channel.canSend).toBe(true);
+    expect(await isSettled(written)).toBe(false);
+    // Nowhere else to go: the channel ends with the MOVED itself.
+    reopened.resolve(undefined);
+    await rejectsWith(written, StatusCode.failedPrecondition);
+    await rejectsWith(writer.closed, StatusCode.failedPrecondition);
+    expect((await channel.done).is(StatusCode.moved)).toBe(true);
   });
 
   test('control: cancelling a MuxChannel readable before reading discards what arrives', async () => {
