@@ -9,8 +9,11 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  * from the package.
  */
 
+import type { MuxOptions } from '../mux/contract.ts';
 import type { Clock } from '../util/clock.ts';
 import { QuicError } from './contract.ts';
+import type { QuicBindingOptions } from './quic-options.ts';
+import { quicDefaultRecordLimit, quicMaxRecordLength } from './records.ts';
 
 /** The logger name of the binding, as in Dart. */
 export const quicLoggerName = 'Switchboard.Quic';
@@ -78,4 +81,35 @@ export function delay(clock: Clock, ms: number): Promise<void> {
   return new Promise((resolve) => {
     clock.setTimeout(resolve, ms);
   });
+}
+
+/**
+ * Checks the options a connection of the binding starts with:
+ * `QuicBindingConnection.start` does, and `connectQuic` and the listeners
+ * before anything is dialled or accepted.
+ *
+ * @throws {RangeError} for a `recordLimit` outside 32752 to 2^30 - 1, or
+ * binding limits and windows that are not positive.
+ */
+export function checkQuicBindingOptions(
+  options: MuxOptions,
+  quicOptions: QuicBindingOptions,
+): void {
+  const limit = quicOptions.recordLimit;
+  if (!Number.isInteger(limit) || limit < quicDefaultRecordLimit || limit > quicMaxRecordLength) {
+    throw new RangeError(
+      `quicOptions.recordLimit must be ${quicDefaultRecordLimit} to ${quicMaxRecordLength}, not ${limit}`,
+    );
+  }
+  if (
+    !(quicOptions.maxPendingStreams >= 1) ||
+    !(quicOptions.controlOutputMark >= 1) ||
+    !(quicOptions.writeBatchBytes >= 1) ||
+    !(quicOptions.maxHeldControlMessages >= 1) ||
+    !(options.initialWindow >= 1) ||
+    options.initialWindow > 0xffffffff ||
+    !(options.bulkChunkSize >= 1)
+  ) {
+    throw new RangeError('binding limits and windows must be positive');
+  }
 }

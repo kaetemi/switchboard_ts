@@ -9,12 +9,12 @@ import type { MuxOptions } from '../mux/contract.ts';
 import { muxOptions } from '../mux/contract.ts';
 import { Status, StatusCode, SwitchboardError } from '../status.ts';
 import { parseEndpoint } from '../transport/endpoint.ts';
-import { withTimeout } from './binding-util.ts';
+import { checkQuicBindingOptions, withTimeout } from './binding-util.ts';
 import type { QuicClientConfig, QuicConnector, QuicSession } from './contract.ts';
 import { QuicError, switchboardAlpn } from './contract.ts';
 import { QuicBindingConnection } from './quic-binding-connection.ts';
 import { QuicIdentityRules } from './quic-identity-rules.ts';
-import type { QuicBindingOptions } from './quic-options.ts';
+import { type QuicBindingOptions, quicBindingOptions } from './quic-options.ts';
 
 /** How {@link connectQuic} dials. Durations in milliseconds. */
 export interface QuicConnectOptions {
@@ -95,7 +95,9 @@ export type QuicCertificateHash =
  * connector cannot dial the scheme, `INVALID_ARGUMENT` for a `quic`
  * endpoint without a host or port, `UNAUTHENTICATED` when the
  * identification rules ended the connection while it started, and
- * `UNAVAILABLE` for any other failure.
+ * `UNAVAILABLE` for any other failure. Rejects with a `RangeError`, before
+ * anything is dialled, for options the binding refuses (as
+ * {@link QuicBindingConnection.start} does).
  *
  * @throws {TypeError} if [endpoint] is not an absolute URI, or for a
  *   certificate hash whose algorithm is not `sha-256`.
@@ -149,6 +151,7 @@ async function dial(
   const signal = init.signal;
   signal?.throwIfAborted();
   const options = muxOptions(init.options);
+  checkQuicBindingOptions(options, quicBindingOptions(init.quicOptions));
   const verifyCertificate = init.verifyCertificate ?? true;
   const config: QuicClientConfig = {
     alpn: [switchboardAlpn],
@@ -201,12 +204,19 @@ async function dial(
       hasCredential: init.localIdentity !== undefined,
       verifiesCredentials: options.identityVerifier !== undefined,
     });
-  const connection = await QuicBindingConnection.start(session, {
-    options,
-    quicOptions: { ...init.quicOptions, identity: rules },
-    isWebTransport: webTransport,
-    localIdentity: init.localIdentity,
-  });
+  let starting: Promise<QuicBindingConnection>;
+  try {
+    starting = QuicBindingConnection.start(session, {
+      options,
+      quicOptions: { ...init.quicOptions, identity: rules },
+      isWebTransport: webTransport,
+      localIdentity: init.localIdentity,
+    });
+  } catch (error) {
+    session.close(StatusCode.internal, 'internal error').catch(() => {});
+    throw error;
+  }
+  const connection = await starting;
   if (signal?.aborted) {
     await connection.close();
     throw signal.reason;

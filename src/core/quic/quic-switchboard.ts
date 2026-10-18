@@ -20,7 +20,7 @@ import type { BindingDialSettings, SwitchboardBinding } from '../switchboard/run
 import type { Switchboard } from '../switchboard/switchboard.ts';
 import { parseEndpoint } from '../transport/endpoint.ts';
 import type { LogLevel } from '../util/logger.ts';
-import { quicLoggerName } from './binding-util.ts';
+import { checkQuicBindingOptions, quicLoggerName } from './binding-util.ts';
 import type { QuicConnector, QuicListener, QuicSession } from './contract.ts';
 import { QuicBindingConnection } from './quic-binding-connection.ts';
 import { connectQuic, type QuicCertificateHash } from './quic-dial.ts';
@@ -317,14 +317,16 @@ export class QuicSwitchboardListener implements AsyncDisposable {
    * `declareEndpoint` (the default), the listener's endpoint is declared
    * to the node first.
    *
-   * Rejects as `Switchboard.addListeningEndpoint` does; the provider's
-   * listener is then left open.
+   * Rejects as `Switchboard.addListeningEndpoint` does, and with a
+   * `RangeError` for binding options out of range (before anything is
+   * declared); the provider's listener is then left open.
    */
   static async start(
     node: Switchboard,
     listener: QuicListener,
     options: QuicSwitchboardListenerOptions = {},
   ): Promise<QuicSwitchboardListener> {
+    checkQuicBindingOptions(node.muxOptions, quicBindingOptions(options.quicOptions));
     const declare = options.declareEndpoint ?? true;
     if (declare) {
       await node.addListeningEndpoint(listener.endpoint, {

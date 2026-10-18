@@ -6,12 +6,13 @@
 //   control stream to open), and the signal is looked at again only after it: an abort meanwhile
 //   rejects the dial only then. Design section 5 puts an AbortSignal on every operation that
 //   waits, connect first.
-// - The binding's own options are checked by `QuicBindingConnection.start`, after the provider
-//   connected: a `recordLimit` out of range rejects the dial with its RangeError and leaves the
-//   session open, until the acceptor gives up waiting for a HELLO (the session holds a native
-//   provider's event loop meanwhile). Dart validates in the same place; checking before the dial
-//   (or closing the session on the throw) settles it. `listenQuic` takes the same options without
-//   checking them, and then refuses every session it accepts (INTERNAL, logged as a warning).
+// - The binding's own options were checked by `QuicBindingConnection.start` only, after the
+//   provider connected: a `recordLimit` out of range rejected the dial with its RangeError and
+//   left the session open, until the acceptor gave up waiting for a HELLO (the session holds a
+//   native provider's event loop meanwhile). Dart validates in the same place. `listenQuic` took
+//   the same options without checking them, and then refused every session it accepted
+//   (INTERNAL, logged as a warning). Both check them first now (`checkQuicBindingOptions`), and
+//   the dial closes the session should `start` throw all the same.
 //
 // The cases are `test.fails` until fixed. In-memory provider, virtual time.
 import { describe, expect, test } from 'vitest';
@@ -97,7 +98,7 @@ describe('review: connectQuic', () => {
     await net.close();
   });
 
-  test.fails('binding options out of range are refused without leaving a session open', async () => {
+  test('binding options out of range are refused without leaving a session open', async () => {
     const clock = new ManualClock();
     const net = network(clock);
     const dial = track(
@@ -115,7 +116,7 @@ describe('review: connectQuic', () => {
     await net.close();
   });
 
-  test.fails('listenQuic refuses binding options out of range at once, as connectQuic should', () => {
+  test('listenQuic refuses binding options out of range at once, as connectQuic should', () => {
     const memory = new MemoryQuicNetwork({ clock: new ManualClock() });
     const listener = memory.listen(endpoint);
     let thrown: unknown;

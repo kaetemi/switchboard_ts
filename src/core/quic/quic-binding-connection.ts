@@ -29,7 +29,14 @@ import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.t
 import type { TimerHandle } from '../util/clock.ts';
 import { Deferred } from '../util/deferred.ts';
 import type { LogLevel } from '../util/logger.ts';
-import { attempt, delay, isSessionEnd, quicLoggerName, withTimeout } from './binding-util.ts';
+import {
+  attempt,
+  checkQuicBindingOptions,
+  delay,
+  isSessionEnd,
+  quicLoggerName,
+  withTimeout,
+} from './binding-util.ts';
 import {
   QuicError,
   type QuicReceiveStream,
@@ -65,7 +72,6 @@ import {
   quicDefaultRecordLimit,
   quicErrorCode,
   quicMaxChannelId,
-  quicMaxRecordLength,
   quicRecordCommandName,
   quicRecordHeaderSize,
   statusOfQuicErrorCode,
@@ -284,23 +290,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   ): Promise<QuicBindingConnection> {
     const options = muxOptions(init.options);
     const quicOptions = quicBindingOptions(init.quicOptions);
-    const limit = quicOptions.recordLimit;
-    if (!Number.isInteger(limit) || limit < quicDefaultRecordLimit || limit > quicMaxRecordLength) {
-      throw new RangeError(
-        `quicOptions.recordLimit must be ${quicDefaultRecordLimit} to ${quicMaxRecordLength}, not ${limit}`,
-      );
-    }
-    if (
-      !(quicOptions.maxPendingStreams >= 1) ||
-      !(quicOptions.controlOutputMark >= 1) ||
-      !(quicOptions.writeBatchBytes >= 1) ||
-      !(quicOptions.maxHeldControlMessages >= 1) ||
-      !(options.initialWindow >= 1) ||
-      options.initialWindow > 0xffffffff ||
-      !(options.bulkChunkSize >= 1)
-    ) {
-      throw new RangeError('binding limits and windows must be positive');
-    }
+    checkQuicBindingOptions(options, quicOptions);
     return QuicBindingConnection.#start(
       session,
       options,
