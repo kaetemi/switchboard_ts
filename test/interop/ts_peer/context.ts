@@ -118,31 +118,33 @@ export class PeerContext {
 
   /**
    * Registers [channel] and reports its end, and with [listen] its
-   * subframes, as events. A channel a Talk channel reads is tracked without
-   * [listen].
+   * subframes, as events; [announce] runs between the two, so that what it
+   * reports (`channel.incoming`, say) comes before the first subframe. A
+   * channel a Talk channel reads is tracked without [listen].
+   *
+   * Every `channel.data` comes before the `channel.closed`: delivery is
+   * pull-based, so the channel's `done` can settle while subframes that
+   * arrived before the CLOSE still wait to be read.
    */
-  trackChannel(channel: MuxChannel, listen = true): string {
+  trackChannel(channel: MuxChannel, listen = true, announce?: (handle: string) => void): string {
     const handle = this.handles.add('ch', channel);
-    if (listen) {
-      this.reportData(channel, handle);
-    }
-    void channel.done.then((s) =>
+    announce?.(handle);
+    const read = listen ? this.#reportData(channel, handle) : Promise.resolve();
+    void Promise.all([channel.done, read]).then(([s]) =>
       this.out.event('channel.closed', { channel: handle, ...statusJson(s) }),
     );
     return handle;
   }
 
-  /** Reads [channel] and reports each subframe as `channel.data`. */
-  reportData(channel: MuxChannel, handle: string): void {
-    void (async () => {
-      try {
-        for await (const subframe of channel.readable) {
-          this.out.event('channel.data', { channel: handle, hex: hex(subframe) });
-        }
-      } catch {
-        // The end is reported by channel.closed.
+  /** Reads [channel] and reports each subframe as `channel.data`, until its readable ends. */
+  async #reportData(channel: MuxChannel, handle: string): Promise<void> {
+    try {
+      for await (const subframe of channel.readable) {
+        this.out.event('channel.data', { channel: handle, hex: hex(subframe) });
       }
-    })();
+    } catch {
+      // The end is reported by channel.closed.
+    }
   }
 
   /**

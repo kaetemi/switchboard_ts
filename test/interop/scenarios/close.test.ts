@@ -41,6 +41,11 @@ function quic(peers: CellPeers): boolean {
   return peers.cell.transport === 'quic' || peers.cell.transport === 'webtransport';
 }
 
+/** The code and reason of a `channel.closed` or `connection.closed` event. */
+function statusOf(event: PeerEvent): [unknown, unknown] {
+  return [event['code'], event['reason']];
+}
+
 function closed(peer: CellPeers['server'], channel: string): Promise<PeerEvent> {
   return peer.events.waitFor({ event: 'channel.closed', channel });
 }
@@ -110,13 +115,36 @@ describeCells('close', {}, (peers) => {
     expect(await closed(peers.client, channel)).toMatchObject({
       code: StatusCode.connectionLost,
     });
-    // Over QUIC the close is an application close of the session, which the
-    // far side reads as a GOAWAY; over a stream the transport just ends.
-    const code = quic(peers) ? StatusCode.goingAway : StatusCode.connectionLost;
-    expect(await closed(peers.server, far)).toMatchObject({ code });
-    expect(
+    const farChannel = statusOf(await closed(peers.server, far));
+    const farEnd = statusOf(
       await peers.server.events.waitFor({ event: 'connection.closed', connection: farConnection }),
-    ).toMatchObject({ code });
+    );
+    if (peers.cell.transport === 'webtransport') {
+      // The close of a WebTransport session races two things in the native
+      // QUIC stack both implementations use: the stack resets the session's
+      // streams with WT_SESSION_GONE, which carries no application code and
+      // can overtake the CLOSE_WEBTRANSPORT_SESSION capsule (the far channel
+      // then ends as a reset without a code reads, UNKNOWN), and the
+      // dialler's provider shuts its native context down once its last
+      // session ended, which can close the HTTP/3 connection before the
+      // capsule is read (the far connection is then lost, "shutdown"). The
+      // Dart to Dart cell shows both, a few times in a hundred under load.
+      const unknown = [StatusCode.unknown, 'no application error code'];
+      const shutdown = [StatusCode.connectionLost, 'shutdown'];
+      if (farEnd[0] === StatusCode.goingAway) {
+        expect([[StatusCode.goingAway, ''], unknown]).toContainEqual(farChannel);
+      } else {
+        expect(farEnd).toEqual(shutdown);
+        expect([shutdown, unknown]).toContainEqual(farChannel);
+      }
+      return;
+    }
+    // Over raw QUIC the close is an application close of the connection,
+    // which the far side reads as a GOAWAY; over a stream the transport just
+    // ends.
+    const code = quic(peers) ? StatusCode.goingAway : StatusCode.connectionLost;
+    expect(farChannel[0]).toBe(code);
+    expect(farEnd[0]).toBe(code);
   });
 
   test('outstanding requests fail when the responder closes the channel', async () => {

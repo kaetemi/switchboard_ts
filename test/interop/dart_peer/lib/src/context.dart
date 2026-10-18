@@ -90,10 +90,21 @@ class PeerContext {
   }
 
   /// Registers [channel] and reports its end, and with [listen] its
-  /// subframes, as events. A channel a Talk channel reads is tracked
-  /// without [listen].
-  String trackChannel(MuxChannel channel, {bool listen = true}) {
+  /// subframes, as events; [announce] runs between the two, so that what
+  /// it reports (`channel.incoming`, say) comes before the first subframe.
+  /// A channel a Talk channel reads is tracked without [listen].
+  ///
+  /// Every `channel.data` comes before the `channel.closed`: the channel's
+  /// `done` can complete while subframes that arrived before the CLOSE are
+  /// still on their way through its stream.
+  String trackChannel(
+    MuxChannel channel, {
+    bool listen = true,
+    void Function(String handle)? announce,
+  }) {
     final handle = handles.add('ch', channel);
+    announce?.call(handle);
+    final read = Completer<void>();
     if (listen) {
       channel.stream.listen(
         (subframe) => out.event('channel.data', {
@@ -101,14 +112,16 @@ class PeerContext {
           'hex': hex(subframe),
         }),
         onError: (Object _) {},
+        onDone: read.complete,
       );
+    } else {
+      read.complete();
     }
-    unawaited(
-      channel.done.then(
-        (s) =>
-            out.event('channel.closed', {'channel': handle, ...statusJson(s)}),
-      ),
-    );
+    unawaited(() async {
+      final status = await channel.done;
+      await read.future;
+      out.event('channel.closed', {'channel': handle, ...statusJson(status)});
+    }());
     return handle;
   }
 
