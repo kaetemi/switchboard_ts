@@ -116,8 +116,9 @@ export interface MeshNodeOptions {
   readonly talkOptions?: Partial<TalkOptions> | undefined;
   /**
    * Longest {@link MeshNode.leave} spends handing this node's slots over,
-   * and then again releasing those it could not hand over, in ms; default
-   * 5000.
+   * and then again releasing those it could not hand over, and then again
+   * closing each gate (the unloads of the slots it still serves), in ms;
+   * default 5000.
    */
   readonly leaveTimeout?: number | undefined;
   /**
@@ -310,7 +311,7 @@ export class MeshNode implements AsyncDisposable {
   readonly client: NamingClient;
   /** The resolver installed on {@link switchboard}. */
   readonly resolver: NamingResolver;
-  /** Longest {@link leave} waits for the naming service, in ms, once for the hand-overs and once for the releases. */
+  /** Longest {@link leave} waits for the naming service, in ms, once for the hand-overs and once for the releases; and then for each gate's close. */
   readonly leaveTimeout: number;
   /** The policy of the connections the node dials for `CONNECT`. */
   readonly brokeredPolicy: ChannelPolicy;
@@ -866,7 +867,10 @@ export class MeshNode implements AsyncDisposable {
    *    new owner fetching the state from this node only while it is
    *    reachable.
    *
-   * Then every gate is closed (`SlotGate.close`). The returned
+   * Then every gate is closed (`SlotGate.close`, which waits for the
+   * `SlotLifecycle.unload` of each slot it still serves), each close
+   * bounded by {@link leaveTimeout} too: a gate whose unloads outlive it is
+   * abandoned with a warning, and the unloads go on. The returned
    * {@link LeaveReport} tells which slots were handed over, released, or
    * dropped (stopped here without the naming service taking them: not
    * connected, or the release failed). A node that is going to come back
@@ -947,7 +951,21 @@ export class MeshNode implements AsyncDisposable {
     if (report.dropped.size > 0) {
       this.#log('warn', `leaving: slots dropped: ${showSlots(report.dropped)}`);
     }
-    await Promise.allSettled([...this.gates.gates.values()].map((gate) => gate.close()));
+    // Each gate's close waits for the unloads of the slots it still serves:
+    // bounded too, so that an unload that does not end (a flush to a store
+    // that is down) cannot keep leave() pending. It goes on; the lifecycle
+    // keeps those slots busy until it ends.
+    await Promise.all(
+      [...this.gates.gates.values()].map(async (gate) => {
+        if (!(await this.#within(gate.close(), this.leaveTimeout))) {
+          this.#log(
+            'warn',
+            `leaving: ${gate.type} gate not closed within ${this.leaveTimeout} ms ` +
+              '(an unload is still running); abandoned',
+          );
+        }
+      }),
+    );
     if (this.switchboard.resolver === this.resolver) {
       this.switchboard.resolver = undefined;
     }

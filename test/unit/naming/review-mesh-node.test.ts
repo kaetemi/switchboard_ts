@@ -4,15 +4,16 @@ Microservice Network Architecture
 Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 */
 
-// Review finding (naming layer, MeshNode's sharded half): `leave()` bounds
-// the hand-over and the releases by `leaveTimeout` (design 6.7: "each step
-// bounded by leaveTimeout"; "Never rejects"), but then awaits every gate's
-// `close()`, which awaits `SlotLifecycle.unload` of each slot still served
-// without a bound. When the naming service is unreachable nothing is
-// released first, so an `unload` that does not complete (a flush to a store
-// that is down too) keeps `leave()`, and an `await using` of the mesh node,
-// pending for ever. Dart's `leave` does the same (`Future.wait` over
-// `gate.close()`). Over the toy mux on `mem` listeners.
+// Review finding (naming layer, MeshNode's sharded half), fixed: `leave()`
+// bounds the hand-over and the releases by `leaveTimeout` (design 6.7:
+// "each step bounded by leaveTimeout"; "Never rejects"), and then every
+// gate's `close()`, which awaits `SlotLifecycle.unload` of each slot still
+// served, by `leaveTimeout` too. When the naming service is unreachable
+// nothing is released first, so an `unload` that does not complete (a
+// flush to a store that is down too) kept `leave()`, and an `await using`
+// of the mesh node, pending for ever; now the gate is abandoned with a
+// warning. Dart's `leave` waits without a bound (`Future.wait` over
+// `gate.close()`; design section 12). Over the toy mux on `mem` listeners.
 
 import { expect, test } from 'vitest';
 import { Name } from '../../../src/core/name.ts';
@@ -22,6 +23,7 @@ import { NamingService } from '../../../src/core/naming/naming-service.ts';
 import { SlotLifecycle } from '../../../src/core/naming/slot-gate.ts';
 import { MeshNode } from '../../../src/core/switchboard/mesh-node.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import type { Logger } from '../../../src/core/util/logger.ts';
 import { node, onCleanup, until } from '../../support/node/harness.ts';
 
 const npc = Name.of('npc');
@@ -60,13 +62,24 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   });
 }
 
-test.fails('leave settles within its bounds when an unload hangs and the naming service is gone', async () => {
+test('leave settles within its bounds when an unload hangs and the naming service is gone', async () => {
   const host = node();
   const service = new NamingService({ assignmentHold: 0, holdingSettle: 0 });
   host.registerService(Services.naming, service.handler, { instance: 1 });
   const uri = await host.listenMemory();
   const n = node();
-  const joined = MeshNode.join(n, uri, { watch: false, reconnectDelay: 20, leaveTimeout: 100 });
+  const warnings: string[] = [];
+  const logger: Logger = {
+    log: (level, _name, message) => {
+      if (level === 'warn') warnings.push(message);
+    },
+  };
+  const joined = MeshNode.join(n, uri, {
+    watch: false,
+    reconnectDelay: 20,
+    leaveTimeout: 100,
+    logger,
+  });
   const lifecycle = new Flushing();
   onCleanup(() => lifecycle.flushed.resolve());
   await within(
@@ -83,4 +96,5 @@ test.fails('leave settles within its bounds when an unload hangs and the naming 
   const report = await within(leaving, 1000);
   expect([...report.dropped]).toEqual([[npc.key, [1]]]);
   expect(lifecycle.unloading).toBe(1);
+  expect(warnings.some((w) => w.includes('npc gate not closed within 100 ms'))).toBe(true);
 });
