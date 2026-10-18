@@ -19,7 +19,7 @@
 | `PLAYWRIGHT_BROWSERS_PATH` | where Playwright's browsers are (`npx playwright install chromium firefox` puts them in the default place) |
 | `SWITCHBOARD_VECTORS_STRICT=1` | every wiki vector table must be covered, not only those a test started on |
 
-The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.64.1: Chromium 156 and Firefox 157); `npm run test:browser -- --project firefox` runs one browser. Where Firefox departs from the drafts, the tests check the departure ([Runtimes and QUIC](Runtimes-and-QUIC)). CI also runs the unit project on Bun and on Deno, and the built package on Deno (`test/runtime/smoke.mjs`).
+The native QUIC files skip with a reason without the addon: build it with `npm run build:native` (Rust 1.88 or later; CI uses 1.99.0) or point `SWITCHBOARD_QUIC_ADDON` at one. The browser tests use the `playwright` dev dependency (1.64.1: Chromium 156 and Firefox 157); `npm run test:browser -- --project firefox` runs one browser. Where Firefox departs from the drafts, the tests check the departure ([Runtimes and QUIC](Runtimes-and-QUIC)). CI also runs the unit project on Bun, the unit and integration projects on Deno, and the built package on Deno (`test/runtime/smoke.mjs`).
 
 ## Test vectors
 

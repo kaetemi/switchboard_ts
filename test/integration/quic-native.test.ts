@@ -16,6 +16,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 import { spawn } from 'node:child_process';
 import { createSocket, type Socket } from 'node:dgram';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
@@ -944,12 +947,16 @@ describe.skipIf(!availability.available)(
           }
           console.log(${keepListening} ? 'listening' : 'closed');
         `;
-        const run = (keepListening: boolean) => {
-          const child = spawn(
-            process.execPath,
-            ['--input-type=module', '--no-warnings', '-e', script(keepListening)],
-            { stdio: ['ignore', 'pipe', 'pipe'] },
-          );
+        // The child runs from a module file: a runtime that takes `-e` code for a script (Deno)
+        // would not accept its top-level `await`.
+        const directory = await mkdtemp(join(tmpdir(), 'switchboard-exit-'));
+        addTearDown(() => rm(directory, { recursive: true, force: true }));
+        const run = async (keepListening: boolean) => {
+          const file = join(directory, `child-${keepListening ? 'listening' : 'closed'}.mjs`);
+          await writeFile(file, script(keepListening));
+          const child = spawn(process.execPath, ['--no-warnings', file], {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
           let out = '';
           child.stdout.on('data', (d: Buffer) => {
             out += d.toString();
@@ -960,10 +967,10 @@ describe.skipIf(!availability.available)(
           const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
           return { child, exited, output: () => out };
         };
-        const closing = run(false);
+        const closing = await run(false);
         expect(await within(closing.exited, 20_000)).toBe(0);
         expect(closing.output()).toContain('closed');
-        const listening = run(true);
+        const listening = await run(true);
         addTearDown(() => listening.child.kill());
         for (let i = 0; i < 200 && !listening.output().includes('listening'); i++) {
           if (listening.child.exitCode !== null) break;

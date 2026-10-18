@@ -51,11 +51,13 @@ jobs:
       - run: bun run test:unit
 
   # Deno 2.9, which runs the Node entry through its Node compatibility: the
-  # unit project under Deno (the runner with -A), then the built package as a
-  # consumer installs it, from tarballs (the package, the prebuilt addon for
-  # Linux x64 packed as release.yml packs it, and ws), its TCP, WebSocket, raw
-  # QUIC and WebTransport round trips run with the permissions a deployment
-  # grants (test/runtime/smoke.mjs). What does not run on Deno is written in
+  # unit and integration projects under Deno (the runner with -A; the addon
+  # built here, so the native QUIC files run, and fail rather than skip when
+  # it is missing), then the built package as a consumer installs it, from
+  # tarballs (the package, the prebuilt addon for Linux x64 packed as
+  # release.yml packs it, and ws), its TCP, WebSocket, raw QUIC and
+  # WebTransport round trips run with the permissions a deployment grants
+  # (test/runtime/smoke.mjs). What does not run on Deno is written in
   # docs/wiki/Runtimes-and-QUIC.md.
   deno:
     name: Deno
@@ -79,6 +81,10 @@ jobs:
       - run: npm run build:native
       - name: The unit project on Deno
         run: deno run -A node_modules/vitest/vitest.mjs run --project unit
+      - name: The integration project on Deno
+        run: deno run -A node_modules/vitest/vitest.mjs run --project integration
+        env:
+          SWITCHBOARD_NATIVE: required
       - name: The built package on Deno, installed from its tarballs
         run: |
           npm run build
