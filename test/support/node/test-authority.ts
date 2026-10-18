@@ -26,7 +26,7 @@ import { Scope } from '../../../src/core/identity/scope.ts';
  * mesh's HMAC key (`mesh1`), verified by a real verifier that knows the
  * authority and the mesh key. Holder keys are `Ed25519HolderKey`s
  * (`Ed25519HolderKey.fromSeed` for deterministic ones). Every party reads
- * the wall time when it needs it, so that a test faking `Date` moves
+ * the wall time when it needs it, so that a test replacing `Date.now` moves
  * issuance and expiry alike.
  */
 
@@ -39,7 +39,7 @@ export const rogueSeed: Uint8Array = Uint8Array.from({ length: 32 }, (_, i) => 5
 /** The mesh's HMAC key (Dart's `meshKey`). */
 export const meshKey: Uint8Array = Uint8Array.from({ length: 32 }, (_, i) => i);
 
-/** The wall time, read at each call (a faked `Date` included). */
+/** The wall time, read at each call (a replaced `Date.now` included). */
 const wallTime = (): number => Date.now();
 
 /** The mesh authority: Ed25519, key id `auth1`. */

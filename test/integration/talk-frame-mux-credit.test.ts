@@ -9,7 +9,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // application has taken what it carried (wiki "Mux", "Flow control";
 // "Talk", the delivery point), and the frame mux's windows, CREDIT frames
 // and send queue are what pace the sender. test/unit/talk/talk-credit.test.ts
-// runs the same tests over the fake mux pair. The two tests over a raw
+// runs the same tests over the memory mux pair. The two tests over a raw
 // stream channel ('over a raw stream channel nothing is flow controlled',
 // 'whenWritable over a raw stream channel completes at once') involve no
 // mux and are only there.

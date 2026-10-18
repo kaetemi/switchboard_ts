@@ -82,7 +82,7 @@ connection. `BulkRoutes` is not exported from the barrel; import from
 
 ## Test fixtures other threads may reuse
 
-- `test/support/talk/fake-channel.ts`: `fakeMuxPair()`, an in-memory
+- `test/support/talk/memory-mux.ts`: `memoryMuxPair()`, an in-memory
   `MuxConnection` pair implementing `mux/contract.ts` (cost = length + 16,
   credit batched at half the window, manual credit, grant, CLOSE confirmed
   by the peer, `openAfter` ordering, bulk chunking, adoptIncoming and

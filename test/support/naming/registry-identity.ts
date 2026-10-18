@@ -8,7 +8,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // tests. The credentials are real (`Credential`, the core's codec and
 // `Scope`s, so `Credential.decode` reads what the naming service answers),
 // but signed with a placeholder and verified by membership: a
-// `FakeNamingVerifier` accepts exactly the credentials a `FakeIssuer` issued,
+// `RegistryVerifier` accepts exactly the credentials a `RegistryIssuer` issued,
 // by their bytes, unless expired. Real signatures cannot be used here: the
 // Dart test runs on fake_async with Dart's own Ed25519, while WebCrypto
 // signs and verifies on a thread pool, whose answers arrive after an
@@ -39,9 +39,9 @@ import type {
 } from '../../../src/core/naming/naming-service.ts';
 import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { peerIdentityOf } from '../node/fake-identity.ts';
+import { peerIdentityOf } from '../node/test-authority.ts';
 
-/** Every credential a {@link FakeIssuer} issued, by its encoding. */
+/** Every credential a {@link RegistryIssuer} issued, by its encoding. */
 const registry = new Map<string, Credential>();
 
 /** A scope granting [right] over the types matching [pattern] (`Scope.of`). */
@@ -54,13 +54,13 @@ export function scopeOf(right: Right, pattern: string | Name): Scope {
  *
  * @throws as `Credential.decode` does, for bytes that are no credential.
  */
-export function decodeFakeCredential(bytes: Uint8Array): Credential {
+export function decodeCredential(bytes: Uint8Array): Credential {
   return Credential.decode(bytes);
 }
 
-/** What {@link FakeIssuer} takes. */
-export interface FakeIssuerOptions {
-  /** The issuer's key id; default `fake`. */
+/** What {@link RegistryIssuer} takes. */
+export interface RegistryIssuerOptions {
+  /** The issuer's key id; default `registry`. */
   readonly keyId?: string;
   /** Issues bearer credentials only, as an HMAC issuer does; default false. */
   readonly bearerOnly?: boolean;
@@ -73,17 +73,17 @@ export interface FakeIssuerOptions {
  * the wall time in whole seconds, expiring `lifetime` (ms, whole seconds
  * counted) later, or never for a null lifetime; Ed25519, or HMAC-SHA256 for
  * a bearer-only issuer), with a signature of zeros that only a
- * {@link FakeNamingVerifier} accepts.
+ * {@link RegistryVerifier} accepts.
  */
-export class FakeIssuer implements NamingCredentialIssuer {
+export class RegistryIssuer implements NamingCredentialIssuer {
   readonly keyId: Name;
   readonly bearerOnly: boolean;
   readonly now: () => number;
   /** Number of credentials issued. */
   issued = 0;
 
-  constructor(options: FakeIssuerOptions = {}) {
-    this.keyId = Name.of(options.keyId ?? 'fake');
+  constructor(options: RegistryIssuerOptions = {}) {
+    this.keyId = Name.of(options.keyId ?? 'registry');
     this.bearerOnly = options.bearerOnly ?? false;
     this.now = options.now ?? Date.now;
   }
@@ -123,11 +123,11 @@ export class FakeIssuer implements NamingCredentialIssuer {
 }
 
 /**
- * Verifies the credentials of the {@link FakeIssuer}s (`CredentialVerifier`):
+ * Verifies the credentials of the {@link RegistryIssuer}s (`CredentialVerifier`):
  * accepts exactly those, by their bytes, not expired at `options.now`, or at
  * its own wall time.
  */
-export class FakeNamingVerifier implements CredentialVerifier {
+export class RegistryVerifier implements CredentialVerifier {
   readonly now: () => number;
   /** Number of verifications asked for. */
   calls = 0;
@@ -152,7 +152,7 @@ export class FakeNamingVerifier implements CredentialVerifier {
  * valid `IDENT` of the peer, {@link goAway} records the GOAWAY this side
  * sends, which the peer reads as its `peerGoAwayStatus`.
  */
-export class FakeNamingConnection implements NamingConnection {
+export class ManualNamingConnection implements NamingConnection {
   readonly now: () => number;
   /** Every GOAWAY sent on this connection, in order. */
   readonly goAways: Status[] = [];

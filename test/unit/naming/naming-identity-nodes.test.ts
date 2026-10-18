@@ -9,7 +9,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // brokered connections to an outbound-only worker, the GOAWAY of a
 // dial-back nobody waits for, `Switchboard.broker`'s preconditions and a
 // PeerSet that brokers. `naming-identity.test.ts` ports the rest of the file
-// over in-memory Talk channels with fake connections; these need what only
+// over in-memory Talk channels with manual connections; these need what only
 // the node does (the IDENT exchange on real connections, dialling back), so
 // they run as Dart's do: over nodes on `mem` listeners with real
 // credentials (Ed25519 and HMAC issuers, holder keys, verifiers), over the

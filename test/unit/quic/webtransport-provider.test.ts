@@ -1,11 +1,11 @@
-// The web provider over an in-memory fake of the W3C WebTransport API: the
+// The web provider over an in-memory implementation of the W3C WebTransport API: the
 // parts of `switchboard_quic`'s `test/web_provider_test.dart` that need no
 // browser (the browser runs in `test/browser/webtransport.test.ts`), and
 // what a browser rarely shows: send orders and groups, `draining`,
 // `exportKeyingMaterial` and `getStats` where a browser has them, the
 // handshake deadline and the session-gone grace on a manual clock, the
 // `openStream` backoff, and the two forms of the `WebTransportError`
-// constructor. The fake models Chromium where nothing else is said: no
+// constructor. The in-memory API models Chromium where nothing else is said: no
 // optional member, `createBidirectionalStream` rejecting without stream
 // credit, the dictionary form of `WebTransportError` with an octet code, a
 // writer whose `desiredSize` starts at 1, and `closed` resolving at once on
@@ -41,7 +41,7 @@ import {
   webTransportConnector,
 } from '../../../src/web/quic/webtransport-provider.ts';
 
-// --- The fake API --------------------------------------------------------------------------------
+// --- The in-memory API ---------------------------------------------------------------------------
 
 /** Chromium's `WebTransportError`: only `new WebTransportError({ message, streamErrorCode })`, the code an octet. */
 class ChromiumError extends Error {
@@ -70,7 +70,7 @@ class SpecError extends Error {
   }
 }
 
-/** The error a stream of the fake reports for [source] with [code]. */
+/** The error a stream of the in-memory API reports for [source] with [code]. */
 function streamError(code: number | null, source = 'stream'): ChromiumError {
   const e = new ChromiumError({ message: `${source} error`, source });
   (e as { streamErrorCode: number | null }).streamErrorCode = code;
@@ -80,8 +80,8 @@ function streamError(code: number | null, source = 'stream'): ChromiumError {
 const codeOf = (reason: unknown): number | null | undefined =>
   reason === undefined ? undefined : (readApiError(reason).streamErrorCode ?? null);
 
-/** The server's end of one bidirectional stream of the fake. */
-class FakeStream {
+/** The server's end of one bidirectional stream of the in-memory API. */
+class ServerStream {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array> & { sendOrder?: number; sendGroup?: unknown };
   #toClient!: ReadableStreamDefaultController<Uint8Array>;
@@ -175,8 +175,8 @@ class FakeStream {
   }
 }
 
-/** What a fake session has beyond Chromium's. */
-interface FakeFeatures {
+/** What an in-memory session has beyond Chromium's. */
+interface ExtraFeatures {
   readonly protocol?: boolean;
   readonly draining?: boolean;
   readonly exporter?: (label: Uint8Array, context?: Uint8Array) => Promise<unknown>;
@@ -185,8 +185,8 @@ interface FakeFeatures {
   readonly sendOrder?: boolean;
 }
 
-/** One fake session, and the server's controls of it. */
-class FakeTransport implements WebTransportLike {
+/** One in-memory session, and the server's controls of it. */
+class MemoryWebTransport implements WebTransportLike {
   readonly url: string;
   readonly options: WebTransportInit;
   readonly ready: Promise<unknown>;
@@ -201,17 +201,17 @@ class FakeTransport implements WebTransportLike {
   readonly #ready = new Deferred<void>();
   readonly #closed = new Deferred<unknown>();
   readonly #drain = new Deferred<void>();
-  readonly #features: FakeFeatures;
+  readonly #features: ExtraFeatures;
   #pulling: ReadableStreamDefaultController<unknown> | undefined;
   #toClient!: ReadableStreamDefaultController<unknown>;
   #uniToClient!: ReadableStreamDefaultController<unknown>;
   /** Streams the client may still open (MAX_STREAMS). */
   credit = 128;
   /** The client's streams, in the order opened. */
-  readonly opened: FakeStream[] = [];
+  readonly opened: ServerStream[] = [];
   /** The server's streams the client took from `incomingBidirectionalStreams`. */
   taken = 0;
-  readonly #queued: FakeStream[] = [];
+  readonly #queued: ServerStream[] = [];
   /** Every `close` the client called. */
   readonly closes: (WebTransportCloseInit | undefined)[] = [];
   /** Every `createBidirectionalStream` the client called. */
@@ -220,7 +220,7 @@ class FakeTransport implements WebTransportLike {
   readonly groups: object[] = [];
   #ended = false;
 
-  constructor(url: string, options: WebTransportInit, features: FakeFeatures) {
+  constructor(url: string, options: WebTransportInit, features: ExtraFeatures) {
     this.url = url;
     this.options = options;
     this.#features = features;
@@ -271,7 +271,7 @@ class FakeTransport implements WebTransportLike {
       return Promise.reject(new DOMException('no stream credit', 'InvalidStateError'));
     }
     this.credit--;
-    const stream = new FakeStream({ sendOrder: this.#features.sendOrder === true });
+    const stream = new ServerStream({ sendOrder: this.#features.sendOrder === true });
     this.opened.push(stream);
     return Promise.resolve({ readable: stream.readable, writable: stream.writable });
   }
@@ -285,7 +285,7 @@ class FakeTransport implements WebTransportLike {
 
   // The server's side.
 
-  /** The server's 2xx: the session is established, selecting [protocol] where the fake has `protocol`. */
+  /** The server's 2xx: the session is established, selecting [protocol] where the session has `protocol`. */
   accept(protocol = 'switchboard'): void {
     if (this.#features.protocol === true) {
       (this as { protocol?: unknown }).protocol = protocol;
@@ -302,8 +302,8 @@ class FakeTransport implements WebTransportLike {
   }
 
   /** The server opens a bidirectional stream. */
-  openStream(): FakeStream {
-    const stream = new FakeStream();
+  openStream(): ServerStream {
+    const stream = new ServerStream();
     const pulling = this.#pulling;
     if (pulling !== undefined) {
       this.#pulling = undefined;
@@ -377,11 +377,11 @@ class FakeTransport implements WebTransportLike {
   }
 }
 
-/** A `WebTransport` constructor over fakes, with the sessions it created. */
-function fakeApi(features: FakeFeatures = {}) {
-  const sessions: FakeTransport[] = [];
+/** A `WebTransport` constructor of in-memory sessions, recording the sessions it created. */
+function memoryApi(features: ExtraFeatures = {}) {
+  const sessions: MemoryWebTransport[] = [];
   let failNext: Error | undefined;
-  class FakeWebTransport extends FakeTransport {
+  class RecordingWebTransport extends MemoryWebTransport {
     constructor(url: string, options: WebTransportInit) {
       if (failNext !== undefined) {
         const error = failNext;
@@ -393,9 +393,9 @@ function fakeApi(features: FakeFeatures = {}) {
     }
   }
   return {
-    WebTransport: FakeWebTransport,
+    WebTransport: RecordingWebTransport,
     sessions,
-    get last(): FakeTransport {
+    get last(): MemoryWebTransport {
       const last = sessions.at(-1);
       if (last === undefined) throw new Error('no session');
       return last;
@@ -488,16 +488,16 @@ async function readAll(stream: QuicStream, max = 65536): Promise<Uint8Array> {
 }
 
 interface Setup {
-  readonly api: ReturnType<typeof fakeApi>;
+  readonly api: ReturnType<typeof memoryApi>;
   readonly provider: WebTransportProvider;
   readonly clock: ManualClock | undefined;
 }
 
 function setup(
-  features: FakeFeatures = {},
+  features: ExtraFeatures = {},
   options: Omit<WebTransportProviderOptions, 'WebTransport'> & { manual?: boolean } = {},
 ): Setup {
-  const api = fakeApi(features);
+  const api = memoryApi(features);
   const clock = options.manual === true ? new ManualClock() : undefined;
   const provider = webTransport({
     WebTransport: api.WebTransport,
@@ -507,16 +507,16 @@ function setup(
   return { api, provider, clock };
 }
 
-/** An established session of a fresh fake. */
+/** An established session over a fresh in-memory API. */
 async function open(
-  features: FakeFeatures = {},
+  features: ExtraFeatures = {},
   options: Parameters<typeof setup>[1] = {},
-): Promise<Setup & { session: WebTransportSession; fake: FakeTransport }> {
+): Promise<Setup & { session: WebTransportSession; transport: MemoryWebTransport }> {
   const s = setup(features, options);
   const connecting = s.provider.connect('https://127.0.0.1:4433/provider?case=echo#x', config());
   s.api.last.accept();
   const session = await connecting;
-  return { ...s, session, fake: s.api.last };
+  return { ...s, session, transport: s.api.last };
 }
 
 // --- Tests ---------------------------------------------------------------------------------------
@@ -555,7 +555,7 @@ describe('the WebTransport API surface', () => {
 
 describe('connecting', () => {
   test('the session: the selected protocol, the initiator, the remote, what the browser does not tell', async () => {
-    const { session, fake, provider } = await open({ protocol: true });
+    const { session, transport, provider } = await open({ protocol: true });
     expect(provider.isSupported).toBe(true);
     expect(session).toBeInstanceOf(WebTransportSession);
     expect(session.protocol).toBe('switchboard');
@@ -565,8 +565,8 @@ describe('connecting', () => {
     expect(session.peerCertificateHash).toBeUndefined();
     expect(String(session)).toBe('WebTransportSession(127.0.0.1:4433)');
     // The fragment is dropped; the query stays.
-    expect(fake.url).toBe('https://127.0.0.1:4433/provider?case=echo');
-    expect(fake.options).toEqual({
+    expect(transport.url).toBe('https://127.0.0.1:4433/provider?case=echo');
+    expect(transport.options).toEqual({
       allowPooling: false,
       requireUnreliable: false,
       protocols: ['switchboard'],
@@ -702,10 +702,10 @@ describe('connecting', () => {
 
 describe('streams', () => {
   test('a stream echoed, FIN both ways, acknowledgement', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     expect(stream).toBeInstanceOf(WebTransportStream);
-    expect(fake.attempts).toEqual([{ waitUntilAvailable: true }]);
+    expect(transport.attempts).toEqual([{ waitUntilAvailable: true }]);
     stream.priority = 1;
     const mine = utf8('hello ');
     await stream.write(mine);
@@ -713,7 +713,7 @@ describe('streams', () => {
     await stream.write(utf8('switchboard'));
     await stream.finish();
     expect(await stream.stopped).toBeUndefined();
-    const server = fake.opened[0] as FakeStream;
+    const server = transport.opened[0] as ServerStream;
     expect(text(server.bytes)).toBe('hello switchboard');
     expect(server.fin).toBe(true);
     server.send('hello ');
@@ -728,10 +728,10 @@ describe('streams', () => {
   });
 
   test('read(max) returns at most max bytes, keeps the rest of a chunk, then FIN', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(new Uint8Array(4));
-    const server = fake.opened[0] as FakeStream;
+    const server = transport.opened[0] as ServerStream;
     const size = 300_000;
     const data = pattern(size);
     for (let at = 0; at < size; at += 65536) server.send(data.slice(at, at + 65536));
@@ -764,7 +764,7 @@ describe('streams', () => {
   });
 
   test('reset(42) reaches the server as 42; writes after it are errors', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('abc'));
     stream.reset(42);
@@ -773,13 +773,13 @@ describe('streams', () => {
     expect(await rejection(stream.write(utf8('d')))).toBeInstanceOf(Error);
     expect(await rejection(stream.finish())).toBeInstanceOf(Error);
     await tick();
-    expect((fake.opened[0] as FakeStream).resetCode).toBe(42);
+    expect((transport.opened[0] as ServerStream).resetCode).toBe(42);
   });
 
   test('a reset fails the writes still queued', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
-    (fake.opened[0] as FakeStream).hold();
+    (transport.opened[0] as ServerStream).hold();
     const first = stream.write(utf8('one'));
     const second = stream.write(utf8('two'));
     await tick();
@@ -789,10 +789,10 @@ describe('streams', () => {
   });
 
   test("the server's reset arrives as 14, also for a reader that is not reading", async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('go'));
-    (fake.opened[0] as FakeStream).reset(14);
+    (transport.opened[0] as ServerStream).reset(14);
     // Nobody reads: the reset is still observed.
     expect(await stream.resetReceived).toBe(14);
     await expectReset(stream.read(100), 14);
@@ -800,20 +800,20 @@ describe('streams', () => {
   });
 
   test('a reset without a code, or no WebTransportError, has none', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const a = await session.openStream();
     const b = await session.openStream();
-    (fake.opened[0] as FakeStream).reset(null);
+    (transport.opened[0] as ServerStream).reset(null);
     expect(await a.resetReceived).toBeUndefined();
     await expectReset(a.read(1), undefined);
     // A readable errored with something else entirely.
-    (fake.opened[1] as FakeStream).fail(new TypeError('broken'));
+    (transport.opened[1] as ServerStream).fail(new TypeError('broken'));
     expect(await b.resetReceived).toBeUndefined();
     await expectReset(b.read(1), undefined);
   });
 
   test('stop(5) reaches the server as STOP_SENDING 5, and ends the read direction at once', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('x'));
     const reading = stream.read(100);
@@ -822,17 +822,17 @@ describe('streams', () => {
     await expectReset(reading, 5);
     await expectReset(stream.read(100), 5);
     await tick();
-    expect((fake.opened[0] as FakeStream).stopCode).toBe(5);
+    expect((transport.opened[0] as ServerStream).stopCode).toBe(5);
     expect(await pending(stream.resetReceived)).toBe(true);
     // Writing goes on.
     await stream.write(utf8('y'));
   });
 
   test("the server's STOP_SENDING 9 resolves stopped with 9 and fails writes", async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('first'));
-    (fake.opened[0] as FakeStream).stop(9);
+    (transport.opened[0] as ServerStream).stop(9);
     expect(await stream.stopped).toBe(9);
     const error = await rejection(stream.write(utf8('second')));
     expect(error).toBeInstanceOf(QuicStreamStopped);
@@ -841,19 +841,19 @@ describe('streams', () => {
   });
 
   test('a STOP_SENDING without a code rejects stopped: never mistaken for an acknowledgement', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('x'));
-    (fake.opened[0] as FakeStream).stop(null);
+    (transport.opened[0] as ServerStream).stop(null);
     const error = await rejection(stream.stopped);
     expect(error).toBeInstanceOf(QuicStreamStopped);
     expect((error as QuicStreamStopped).code).toBeUndefined();
   });
 
   test('a STOP_SENDING while a write waits fails that write with it', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
-    const server = fake.opened[0] as FakeStream;
+    const server = transport.opened[0] as ServerStream;
     server.hold();
     const writing = stream.write(utf8('held'));
     await tick();
@@ -865,9 +865,9 @@ describe('streams', () => {
   });
 
   test('writes wait for the writer, in order, and fail when the session ends', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
-    const server = fake.opened[0] as FakeStream;
+    const server = transport.opened[0] as ServerStream;
     server.hold();
     const first = stream.write(utf8('1'));
     const second = stream.write(utf8('2'));
@@ -893,11 +893,11 @@ describe('streams', () => {
 
 describe('the end of a session', () => {
   test('close(7, reason) is a local application close; what follows fails sessionEnded', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     await stream.write(utf8('x'));
     await session.close(7, 'browser done');
-    expect(fake.closes).toEqual([{ closeCode: 7, reason: 'browser done' }]);
+    expect(transport.closes).toEqual([{ closeCode: 7, reason: 'browser done' }]);
     expect(await session.done).toEqual({
       code: 7,
       reason: 'browser done',
@@ -905,33 +905,33 @@ describe('the end of a session', () => {
       lost: false,
     });
     await session.close(8, 'again'); // Idempotent.
-    expect(fake.closes).toHaveLength(1);
+    expect(transport.closes).toHaveLength(1);
     await expectQuic(session.openStream(), 'sessionEnded');
     await expectQuic(stream.write(utf8('y')), 'sessionEnded');
     await expectQuic(stream.read(1), 'sessionEnded');
   });
 
   test('a reason is cut to 1024 bytes of UTF-8 at a character boundary; codes are u32', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     expect(() => session.close(-1, '')).toThrow(RangeError);
     expect(() => session.close(0x100000000, '')).toThrow(RangeError);
     expect(() => session.close(1.5, '')).toThrow(RangeError);
     await session.close(300, 'é'.repeat(600));
-    expect(fake.closes[0]).toEqual({ closeCode: 300, reason: 'é'.repeat(512) });
+    expect(transport.closes[0]).toEqual({ closeCode: 300, reason: 'é'.repeat(512) });
     expect((await session.done).reason).toBe('é'.repeat(512));
   });
 
   test("the server's close is the session's end with its code and reason; what is pending fails", async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
     const reset = rejection(stream.resetReceived);
     const stopped = rejection(stream.stopped);
     const reading = stream.read(10);
     await stream.write(utf8('x'));
     const opening = session.openStream();
-    fake.credit = 0;
+    transport.credit = 0;
     const waiting = session.openStream();
-    fake.serverClose(9, 'server bye');
+    transport.serverClose(9, 'server bye');
     expect(await session.done).toEqual({
       code: 9,
       reason: 'server bye',
@@ -951,9 +951,9 @@ describe('the end of a session', () => {
   });
 
   test('a lost connection: closed rejects, the session ends lost', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const stream = await session.openStream();
-    fake.lose('network gone');
+    transport.lose('network gone');
     const end = await session.done;
     expect(end.lost).toBe(true);
     expect(end.code).toBeUndefined();
@@ -962,9 +962,9 @@ describe('the end of a session', () => {
   });
 
   test('streams that report the session gone end it as lost after two seconds without closed', async () => {
-    const { session, fake, clock } = await open({}, { manual: true });
+    const { session, transport, clock } = await open({}, { manual: true });
     const stream = await session.openStream();
-    fake.streamsGone();
+    transport.streamsGone();
     await expectQuic(stream.read(1), 'sessionEnded');
     expect(await pending(session.done)).toBe(true);
     clock?.advance(1999);
@@ -976,11 +976,11 @@ describe('the end of a session', () => {
   });
 
   test('a session-gone report followed by closed: closed decides', async () => {
-    const { session, fake, clock } = await open({}, { manual: true });
+    const { session, transport, clock } = await open({}, { manual: true });
     await session.openStream();
-    fake.streamsGone();
+    transport.streamsGone();
     await tick();
-    fake.serverClose(3, 'later');
+    transport.serverClose(3, 'later');
     expect(await session.done).toEqual({ code: 3, reason: 'later', byPeer: true, lost: false });
     expect(clock?.pendingCount).toBe(0);
   });
@@ -990,10 +990,10 @@ describe('the session', () => {
   test('draining stays pending without the promise, and resolves on the server drain with it', async () => {
     const chromium = await open();
     expect(await pending(chromium.session.draining, 10)).toBe(true);
-    const { session, fake } = await open({ draining: true });
+    const { session, transport } = await open({ draining: true });
     expect(session.capabilities.draining).toBe(true);
     expect(await pending(session.draining)).toBe(true);
-    fake.drain();
+    transport.drain();
     await session.draining;
   });
 
@@ -1034,7 +1034,7 @@ describe('the session', () => {
   test('stats where the browser has getStats', async () => {
     const chromium = await open();
     expect(await chromium.session.stats()).toBeUndefined();
-    const { session, fake } = await open({
+    const { session, transport } = await open({
       stats: async () => ({ bytesSent: 10.7, packetsLost: 2, smoothedRtt: 1.25, minRtt: 'x' }),
     });
     expect(await session.stats()).toEqual({
@@ -1048,7 +1048,7 @@ describe('the session', () => {
       minRtt: undefined,
       estimatedSendRate: undefined,
     });
-    fake.serverClose(0, '');
+    transport.serverClose(0, '');
     await session.done;
     expect(await session.stats()).toBeUndefined();
     const failing = await open({ stats: () => Promise.reject(new Error('stub')) });
@@ -1066,24 +1066,24 @@ describe('the session', () => {
     expect(await pending(sb.done)).toBe(true);
     const stream = await sb.openStream();
     await stream.write(utf8('gamma'));
-    const server = s.api.sessions[1]?.opened[0] as FakeStream;
+    const server = s.api.sessions[1]?.opened[0] as ServerStream;
     expect(text(server.bytes)).toBe('gamma');
   });
 });
 
 describe("the server's streams", () => {
   test('a stream the server opens arrives on incomingStreams, taken only while someone waits', async () => {
-    const { session, fake } = await open();
-    const first = fake.openStream();
-    fake.openStream();
+    const { session, transport } = await open();
+    const first = transport.openStream();
+    transport.openStream();
     await tick();
     // Nobody iterates: the streams wait in the browser.
-    expect(fake.taken).toBe(0);
+    expect(transport.taken).toBe(0);
     const streams = session.incomingStreams[Symbol.asyncIterator]();
     const next = await streams.next();
     expect(next.done).toBe(false);
     await tick();
-    expect(fake.taken).toBe(1);
+    expect(transport.taken).toBe(1);
     const stream = next.value as QuicStream;
     first.send('from server');
     first.finish();
@@ -1096,17 +1096,17 @@ describe("the server's streams", () => {
     const waiting = streams.next();
     expect(await rejection(streams.next())).toBeInstanceOf(Error);
     expect((await waiting).done).toBe(false);
-    expect(fake.taken).toBe(2);
+    expect(transport.taken).toBe(2);
   });
 
   test('a stream read for a consumer that left is discarded: STOP_SENDING and RESET_STREAM 0', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const streams = session.incomingStreams[Symbol.asyncIterator]();
     const waiting = streams.next();
     await tick();
     await streams.return?.();
     expect((await waiting).done).toBe(true);
-    const late = fake.openStream();
+    const late = transport.openStream();
     await tick(5);
     expect(late.stopCode).toBe(0);
     expect(late.resetCode).toBe(0);
@@ -1114,17 +1114,17 @@ describe("the server's streams", () => {
   });
 
   test('incomingStreams ends with the session', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const streams = session.incomingStreams[Symbol.asyncIterator]();
     const waiting = streams.next();
-    fake.serverClose(0, '');
+    transport.serverClose(0, '');
     expect((await waiting).done).toBe(true);
   });
 
   test('incomingUnidirectionalStreams: delivered for the application to stop, ending with the session', async () => {
-    const { session, fake } = await open();
+    const { session, transport } = await open();
     const streams = session.incomingUnidirectionalStreams[Symbol.asyncIterator]();
-    const stopped = fake.openUnidirectional();
+    const stopped = transport.openUnidirectional();
     const next = await streams.next();
     expect(next.done).toBe(false);
     if (next.done !== true) {
@@ -1140,14 +1140,14 @@ describe("the server's streams", () => {
 
 describe('stream credit', () => {
   test('openStream waits for stream credit, in order, asking again at 5 to 200 ms', async () => {
-    const { session, fake, clock } = await open({}, { manual: true });
-    fake.credit = 2;
+    const { session, transport, clock } = await open({}, { manual: true });
+    transport.credit = 2;
     const first = await session.openStream();
     const second = await session.openStream();
     const third = session.openStream();
     const fourth = session.openStream();
     await tick();
-    const attempts = (): number => fake.attempts.length;
+    const attempts = (): number => transport.attempts.length;
     expect(attempts()).toBe(3);
     // The waits double from 5 ms up to 200 ms.
     const waits: number[] = [];
@@ -1163,12 +1163,12 @@ describe('stream credit', () => {
     expect(waits).toEqual([5, 10, 20, 40, 80, 160, 200, 200]);
     expect(await pending(third)).toBe(true);
     // Credit returns: the first waiting call gets the stream.
-    fake.credit = 1;
+    transport.credit = 1;
     clock?.advance(200);
     await tick();
     expect(await third).toBeInstanceOf(WebTransportStream);
     expect(await pending(fourth)).toBe(true);
-    fake.credit = 1;
+    transport.credit = 1;
     clock?.advance(5);
     await tick();
     expect(await fourth).toBeInstanceOf(WebTransportStream);
@@ -1193,11 +1193,11 @@ describe('codes and priorities', () => {
     const wide = await spec.session.openStream();
     wide.reset(0xffffffff);
     await tick();
-    expect((spec.fake.opened[0] as FakeStream).resetCode).toBe(0xffffffff);
+    expect((spec.transport.opened[0] as ServerStream).resetCode).toBe(0xffffffff);
   });
 
   test('without a WebTransportError constructor only code 0 goes out, as a reason that is none', async () => {
-    const api = fakeApi();
+    const api = memoryApi();
     const provider = webTransport({
       WebTransport: api.WebTransport,
       WebTransportError: undefined,
@@ -1211,7 +1211,7 @@ describe('codes and priorities', () => {
     expect(() => stream.reset(1)).toThrow(RangeError);
     stream.reset(0);
     await tick();
-    expect((api.last.opened[0] as FakeStream).resetCode).toBeNull();
+    expect((api.last.opened[0] as ServerStream).resetCode).toBeNull();
   });
 
   test('priorities: send orders and groups where the browser has them', async () => {
@@ -1228,7 +1228,7 @@ describe('codes and priorities', () => {
     expect(() => {
       plain.priority = 1.5;
     }).toThrow(RangeError);
-    const { session, fake } = await open({ sendGroups: true, sendOrder: true });
+    const { session, transport } = await open({ sendGroups: true, sendOrder: true });
     expect(session.hasSendGroups).toBe(true);
     const control = await session.openStream();
     const ordinary = await session.openStream();
@@ -1237,13 +1237,13 @@ describe('codes and priorities', () => {
     control.priority = 2;
     ordinary.priority = 1;
     bulk.priority = 0;
-    const [c, o, b] = fake.opened as [FakeStream, FakeStream, FakeStream];
+    const [c, o, b] = transport.opened as [ServerStream, ServerStream, ServerStream];
     expect([c.writable.sendOrder, o.writable.sendOrder, b.writable.sendOrder]).toEqual([1, 0, 0]);
     // Classes 2 and 1 share a group; class 0 has its own.
-    expect(fake.groups).toHaveLength(2);
-    expect(c.writable.sendGroup).toBe(fake.groups[0]);
-    expect(o.writable.sendGroup).toBe(fake.groups[0]);
-    expect(b.writable.sendGroup).toBe(fake.groups[1]);
+    expect(transport.groups).toHaveLength(2);
+    expect(c.writable.sendGroup).toBe(transport.groups[0]);
+    expect(o.writable.sendGroup).toBe(transport.groups[0]);
+    expect(b.writable.sendGroup).toBe(transport.groups[1]);
   });
 });
 

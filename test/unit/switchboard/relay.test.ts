@@ -9,7 +9,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // relay node publishing `_relay` with its identity, and consumers that
 // listen nowhere and reach the workers through it, over the toy mux and,
 // from `over-frame-mux/`, over the frame mux. The Dart tests run a naming
-// service and `MeshNode`; until those land here, a fake mesh stands in (a
+// service and `MeshNode`; until those land here, a table mesh stands in (a
 // shared table and the naming service's CONNECT). The workers answer Talk
 // requests, as in Dart; the bulk payload case needs the frame mux's frame
 // limit and window (over the toy mux the payloads go inline) and runs over
@@ -42,8 +42,6 @@ import { TalkChannel } from '../../../src/core/talk/index.ts';
 import { memoryTransportPair } from '../../../src/core/transport/memory-transport.ts';
 import type { Logger, LogLevel } from '../../../src/core/util/logger.ts';
 import { Frames, nextText } from '../../support/node/channels.ts';
-import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
-import { FakeMesh, type MeshResolver } from '../../support/node/fake-mesh.ts';
 import {
   fast,
   node,
@@ -53,6 +51,8 @@ import {
   testMux,
   until,
 } from '../../support/node/harness.ts';
+import { type MeshResolver, TableMesh } from '../../support/node/table-mesh.ts';
+import { issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
 
 const limit = 5000;
 
@@ -140,7 +140,7 @@ function newNode(options: NodeOptions = {}): Switchboard {
 }
 
 /** A node of [mesh]: its resolver is the mesh's, asking CONNECT as the node. */
-function meshNode(mesh: FakeMesh, options: NodeOptions = {}): Switchboard {
+function meshNode(mesh: TableMesh, options: NodeOptions = {}): Switchboard {
   const resolver: MeshResolver = mesh.resolver();
   const n = newNode({ ...options, resolver });
   resolver.requester = n;
@@ -157,12 +157,12 @@ interface Seen {
 /** An outbound-only worker: registered without endpoints, `register` only. */
 class Worker {
   readonly node: Switchboard;
-  readonly mesh: FakeMesh;
+  readonly mesh: TableMesh;
   readonly id: number;
   readonly type: Name;
   readonly seen: Seen[] = [];
 
-  private constructor(node: Switchboard, mesh: FakeMesh, type: Name) {
+  private constructor(node: Switchboard, mesh: TableMesh, type: Name) {
     this.node = node;
     this.mesh = mesh;
     this.type = type;
@@ -170,7 +170,7 @@ class Worker {
   }
 
   static async start(
-    mesh: FakeMesh,
+    mesh: TableMesh,
     options: { identity?: string; type?: Name } = {},
   ): Promise<Worker> {
     const n = newNode({ credential: await issue(options.identity ?? 'worker-a1', workerScopes) });
@@ -246,7 +246,7 @@ class Relay {
     this.address = address;
   }
 
-  static async start(mesh: FakeMesh, options: RelayOptions = {}): Promise<Relay> {
+  static async start(mesh: TableMesh, options: RelayOptions = {}): Promise<Relay> {
     const identity = options.identity ?? 'relay-1';
     const n = meshNode(mesh, {
       credential: await issue(identity, options.scopes ?? relayScopes),
@@ -310,7 +310,7 @@ class GatedResolver implements Resolver {
 
 /** A consumer that listens nowhere (unless [listen]), joined to the mesh, with [relay]. */
 async function consumer(
-  mesh: FakeMesh,
+  mesh: TableMesh,
   options: {
     identity?: string;
     scopes?: Scopes;
@@ -439,7 +439,7 @@ describe('identity holds', () => {
 });
 
 it('scoped() admits _relay and _ns for every identified peer', async () => {
-  const mesh = new FakeMesh();
+  const mesh = new TableMesh();
   // The relay listener's policy lets a consumer with no `open` scope for
   // `_relay` through; the relay checks the inner type.
   const relay = await Relay.start(mesh, { policy: ChannelPolicies.scoped() });
@@ -462,7 +462,7 @@ it('scoped() admits _relay and _ns for every identified peer', async () => {
 
 describe('relaying', () => {
   it("a channel through the relay: request and reply end to end; the instance sees the relay's identity and the consumer's payload, the relay the consumer's", async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
@@ -491,7 +491,7 @@ describe('relaying', () => {
 
   if (overFrameMux()) {
     it('bulk payloads through the relay, both ways', async () => {
-      const mesh = new FakeMesh();
+      const mesh = new TableMesh();
       await Relay.start(mesh);
       const worker = await Worker.start(mesh);
       const c = await consumer(mesh);
@@ -514,7 +514,7 @@ describe('relaying', () => {
   }
 
   it("the relay record carries the relay's identity; the consumer names it", async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh, { identity: 'relay-7' });
     const c = await consumer(mesh);
     const relays = await c.resolveRelays();
@@ -540,7 +540,7 @@ describe('relaying', () => {
   });
 
   it('explicit relay endpoints with an identity', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
@@ -569,7 +569,7 @@ describe('relaying', () => {
   });
 
   it('an expectedIdentityFor that throws fails that relay: the next is tried', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relays = [await Relay.start(mesh), await Relay.start(mesh, { identity: 'relay-2' })];
     const worker = await Worker.start(mesh);
     // The first relay asked about fails, the other one carries the open.
@@ -636,7 +636,7 @@ describe('relaying', () => {
   });
 
   it('one brokered connection shared by two consumers', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const a = await consumer(mesh);
@@ -654,7 +654,7 @@ describe('relaying', () => {
   });
 
   it('a node that can broker never relays', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
@@ -673,7 +673,7 @@ describe('relaying', () => {
   });
 
   it('without a relay, a node that cannot broker fails as before; a record with endpoints is dialled directly', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh, { useRelay: false });
@@ -705,7 +705,7 @@ describe('relaying', () => {
   });
 
   it('a lost connection on either side reaches the other as UNAVAILABLE; the relay brokers again', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
@@ -726,7 +726,7 @@ describe('relaying', () => {
   });
 
   it('MOVED is relayed with its fields byte for byte', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
@@ -739,7 +739,7 @@ describe('relaying', () => {
   });
 
   it('openTalkToSlot reaches a slot owner through the relay', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
@@ -758,7 +758,7 @@ describe('relaying', () => {
 
 describe('refusals', () => {
   it('an unidentified consumer: UNAUTHENTICATED, after the hold; one whose OPEN overtakes its IDENT is held, then admitted', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = await Worker.start(mesh);
     const relay = await Relay.start(mesh, { identityTimeout: 200 });
     const anonymous = newNode();
@@ -779,7 +779,7 @@ describe('refusals', () => {
   });
 
   it('a channel that ends while held for identity is dropped without a refusal and does not count toward the bound', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = await Worker.start(mesh);
     const { logger, messages } = logged('debug');
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 1, logger });
@@ -807,7 +807,7 @@ describe('refusals', () => {
   });
 
   it('without requireIdentity: an unidentified consumer is admitted unchecked after the hold, an identified one held to its scopes', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = await Worker.start(mesh);
     const hold = 300;
     const lenient = await Relay.start(mesh, {
@@ -834,7 +834,7 @@ describe('refusals', () => {
   });
 
   it('without requireIdentity: an OPEN that overtakes the IDENT is checked under the identity the IDENT establishes', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = await Worker.start(mesh);
     const lenient = await Relay.start(mesh, { identity: 'relay-2', requireIdentity: false });
     // A credential without `open` for the type, presented only after the OPEN.
@@ -860,7 +860,7 @@ describe('refusals', () => {
   });
 
   it('a consumer that identifies again while its channel is being opened is checked under the new identity', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     // A worker that listens, which the relay finds through a resolver that
     // answers only once the consumer has identified again.
     const lister = newNode({ credential: await issue('worker-b2', workerScopes) });
@@ -895,7 +895,7 @@ describe('refusals', () => {
 
   it('a consumer expiring while its channel is opened is refused; the channel to the instance is cancelled, the bound released', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = newNode();
     const workerUri = await worker.listenMemory();
     const opened: MuxChannel[] = [];
@@ -936,7 +936,7 @@ describe('refusals', () => {
   });
 
   it('a consumer that identifies without naming the relay is refused by requireNamedIdent', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
     await rejectsWith(c.connect(relay.uri), StatusCode.unauthenticated);
@@ -946,7 +946,7 @@ describe('refusals', () => {
   });
 
   it('malformed, untyped, host hints, reserved types and chains: INVALID_ARGUMENT', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = newNode({ credential: await issue('consumer-1', [[Right.open, '*']]) });
@@ -977,7 +977,7 @@ describe('refusals', () => {
   });
 
   it('a consumer without `open` for the inner type: PERMISSION_DENIED', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh, {
@@ -994,7 +994,7 @@ describe('refusals', () => {
   });
 
   it('the per-connection bound: RESOURCE_EXHAUSTED', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 2 });
     const worker = await Worker.start(mesh);
     const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
@@ -1022,7 +1022,7 @@ describe('refusals', () => {
   });
 
   it('maxChannelsPerConnection 0: no bound', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh, { maxChannelsPerConnection: 0 });
     const worker = await Worker.start(mesh);
     const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
@@ -1036,7 +1036,7 @@ describe('refusals', () => {
   });
 
   it('no record: NOT_FOUND; a record with endpoints: FAILED_PRECONDITION, relayed with allowEndpoints', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh);
     const worker = await Worker.start(mesh);
     const c = newNode({ credential: await issue('consumer-1', consumerScopes) });
@@ -1076,7 +1076,7 @@ describe('refusals', () => {
   });
 
   it("with allowEndpoints, a record pointing back at the relay's own listener: UNAVAILABLE, never connected to", async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const { logger, messages } = logged('warn', null);
     const relay = await Relay.start(mesh, { allowEndpoints: true, logger });
     // A record of a worker claiming to listen where the relay does.
@@ -1092,7 +1092,7 @@ describe('refusals', () => {
   });
 
   it('a relay without `broker`: UNAVAILABLE', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const relay = await Relay.start(mesh, {
       scopes: [
         [Right.register, '_relay'],
@@ -1109,7 +1109,7 @@ describe('refusals', () => {
   });
 
   it("a relay without `open` for the type: the worker's brokered policy refuses, and the refusal is relayed", async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     await Relay.start(mesh, {
       scopes: [
         [Right.register, '_relay'],
@@ -1128,7 +1128,7 @@ describe('refusals', () => {
 
 describe('PeerSet', () => {
   it('a peer without endpoints is connected through the relay, and comes back through the other relay when its relay goes', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const first = await Relay.start(mesh, { identity: 'relay-1' });
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh);
@@ -1179,7 +1179,7 @@ describe('PeerSet', () => {
   });
 
   it('a node that can neither broker nor relay reports the brokering failure', async () => {
-    const mesh = new FakeMesh();
+    const mesh = new TableMesh();
     const worker = await Worker.start(mesh);
     const c = await consumer(mesh, { useRelay: false });
     const set = PeerSet.watch(c, workerType, {

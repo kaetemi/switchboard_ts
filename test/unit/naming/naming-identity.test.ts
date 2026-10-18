@@ -7,14 +7,14 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Port of the Dart `naming_identity_test.dart`: the naming service and
 // identity (wiki page "Polyverse Switchboard Identity and Credentials",
 // stage B): scope enforcement per `_ns` channel (connection identity, or a
-// credential in the open payload), RENEW (with fake time), the end of a
+// credential in the open payload), RENEW (on manual time), the end of a
 // channel whose credential expires, slot spaces defined again after a
 // restart, and CONNECT brokering.
 //
 // The Dart test runs over mem:// nodes with real credentials. Until the
 // protocol core's identity and the node land, the port serves in-memory
-// Talk channels with fake connections and fake credentials
-// (`test/support/naming/fake-identity.ts`): a node is its credential and its
+// Talk channels with manual connections and registry credentials
+// (`test/support/naming/registry-identity.ts`): a node is its credential and its
 // connection to each naming service, a valid `IDENT` a new identity on that
 // connection (`updateCredential`, `identify`), and a `MeshNode` its naming
 // client. What only the node does (the `IDENT` exchange itself, brokered
@@ -73,13 +73,6 @@ import type { TalkChannel, TalkOptions } from '../../../src/core/talk/contract.t
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
-  decodeFakeCredential,
-  FakeIssuer,
-  FakeNamingConnection,
-  FakeNamingVerifier,
-  scopeOf,
-} from '../../support/naming/fake-identity.ts';
-import {
   delay,
   describeEvent,
   describe as describeMessage,
@@ -89,6 +82,13 @@ import {
   until,
   within,
 } from '../../support/naming/harness.ts';
+import {
+  decodeCredential,
+  ManualNamingConnection,
+  RegistryIssuer,
+  RegistryVerifier,
+  scopeOf,
+} from '../../support/naming/registry-identity.ts';
 
 /** The Talk options of every node of the Dart test. */
 const talk: Partial<TalkOptions> = { requestTimeout: 2000, replyTimeout: 1000 };
@@ -106,16 +106,16 @@ const holderKey = Uint8Array.from({ length: 32 }, (_, i) => 200 - i);
 
 /**
  * The wall clock (`package:clock` in the Dart test): the real time, or a
- * test clock's in the tests on fake time. Read by the issuers, the
+ * test clock's in the tests on manual time. Read by the issuers, the
  * verifiers, the connections and the naming services.
  */
 let wall: () => number = Date.now;
 const now = (): number => wall();
 
 /** Issues holder-key credentials (the Dart test's Ed25519 authority). */
-const authority = new FakeIssuer({ keyId: 'auth1', now });
+const authority = new RegistryIssuer({ keyId: 'auth1', now });
 /** Issues bearer credentials (the Dart test's HMAC issuer). */
-const hmac = new FakeIssuer({ keyId: 'mesh1', bearerOnly: true, now });
+const hmac = new RegistryIssuer({ keyId: 'mesh1', bearerOnly: true, now });
 
 const workerScopes: Scope[] = [scopeOf(Right.register, 'worker-*')];
 const consumerScopes: Scope[] = [
@@ -141,7 +141,7 @@ function issue(
 }
 
 function verifier(): CredentialVerifier {
-  return new FakeNamingVerifier({ now });
+  return new RegistryVerifier({ now });
 }
 
 const teardowns: (() => unknown)[] = [];
@@ -185,22 +185,22 @@ function outcomeOf(code: number): Outcome {
 /** A node: its credential, and its connection to each naming service. */
 class Node {
   credential: Credential | undefined;
-  readonly #connections = new Map<Mesh, FakeNamingConnection>();
+  readonly #connections = new Map<Mesh, ManualNamingConnection>();
   /** The connections this node identified on. */
-  readonly #identified = new Set<FakeNamingConnection>();
+  readonly #identified = new Set<ManualNamingConnection>();
 
   constructor(credential?: Credential) {
     this.credential = credential;
   }
 
   /** The node's open connection to [mesh], made (and identified, with a credential) if needed. */
-  connect(mesh: Mesh): FakeNamingConnection {
+  connect(mesh: Mesh): ManualNamingConnection {
     const existing = this.#connections.get(mesh);
     if (existing?.isOpen === true) {
       return existing;
     }
     const credential = this.credential;
-    const connection = new FakeNamingConnection({ credential, now });
+    const connection = new ManualNamingConnection({ credential, now });
     if (credential !== undefined) {
       this.#identified.add(connection);
     }
@@ -229,7 +229,7 @@ class Node {
   }
 }
 
-/** A node, closed after the test unless [close] is false (for fake time, where the test closes it). */
+/** A node, closed after the test unless [close] is false (for manual time, where the test closes it). */
 function node(options: { credential?: Credential; close?: boolean } = {}): Node {
   const n = new Node(options.credential);
   if (options.close ?? true) {
@@ -242,7 +242,7 @@ function node(options: { credential?: Credential; close?: boolean } = {}): Node 
 interface MeshOptions {
   readonly requireCredential?: boolean;
   readonly withIssuer?: boolean;
-  /** The issuer of `RENEW` when `withIssuer`; default the fake authority. */
+  /** The issuer of `RENEW` when `withIssuer`; default the registry authority. */
   readonly issuer?: NamingCredentialIssuer;
   readonly payloadVerifier?: CredentialVerifier;
   readonly renewable?: (credential: Credential) => boolean;
@@ -256,7 +256,7 @@ interface MeshOptions {
 class Mesh {
   readonly harness: Harness;
   /** The connections of the nodes to this naming service. */
-  readonly connections: FakeNamingConnection[] = [];
+  readonly connections: ManualNamingConnection[] = [];
   #closed = false;
 
   private constructor(harness: Harness) {
@@ -453,11 +453,11 @@ const idle: SlotHandler = {
   onResume: () => {},
 };
 
-/** A wall time in whole seconds for the tests on fake time. */
+/** A wall time in whole seconds for the tests on manual time. */
 const epoch = 1_800_000_000_000;
 
 /** A test clock that is also the wall clock until the end of the test. */
-function fakeTime(): ManualClock {
+function manualWallClock(): ManualClock {
   const clock = new ManualClock(epoch);
   wall = () => clock.now();
   return clock;
@@ -922,7 +922,7 @@ describe('a replacement credential', () => {
   );
 
   test('a REGISTER held for the assignment hold is refused once its type is no longer granted', async () => {
-    const clock = fakeTime();
+    const clock = manualWallClock();
     const mesh = Mesh.start({ assignmentHold: minute, clock, close: false });
     const worker = node({ credential: await issue('worker-a1', workerScopes), close: false });
     const c = mesh.link(worker);
@@ -968,7 +968,7 @@ describe('a replacement credential', () => {
 
 describe('expiry and RENEW', () => {
   test('connection expiry is enforced while the OPEN credential verifies', async () => {
-    const clock = fakeTime();
+    const clock = manualWallClock();
     const checked = new Deferred<void>();
     const mesh = Mesh.start({
       close: false,
@@ -1000,7 +1000,7 @@ describe('expiry and RENEW', () => {
   });
 
   test('connection expiry cannot fall back to the OPEN credential', async () => {
-    const clock = fakeTime();
+    const clock = manualWallClock();
     const mesh = Mesh.start({ close: false, clock });
     const changes: boolean[] = [];
     mesh.service.on('event', (e) => changes.push(e.up));
@@ -1029,7 +1029,7 @@ describe('expiry and RENEW', () => {
   });
 
   test('a replacement IDENT updates expiry without another request', async () => {
-    const clock = fakeTime();
+    const clock = manualWallClock();
     const mesh = Mesh.start({ close: false, clock });
     const worker = node({ credential: await issue('worker-a1', workerScopes), close: false });
     const channel = mesh.link(worker);
@@ -1053,7 +1053,7 @@ describe('expiry and RENEW', () => {
   });
 
   test('connection expiry sends GOAWAY even with an expired payload', async () => {
-    const clock = fakeTime();
+    const clock = manualWallClock();
     const mesh = Mesh.start({ close: false, clock });
     const client = node({
       credential: await issue('worker-a1', workerScopes, { lifetime: 2 * minute }),
@@ -1081,7 +1081,7 @@ describe('expiry and RENEW', () => {
 
   for (const initiallyIdentified of [false, true]) {
     test(`an idle session follows IDENT expiry (initially identified: ${initiallyIdentified})`, async () => {
-      const clock = fakeTime();
+      const clock = manualWallClock();
       const mesh = Mesh.start({ requireCredential: false, close: false, clock });
       const client = node({
         ...(initiallyIdentified ? { credential: await issue('worker-a1', workerScopes) } : {}),
@@ -1169,7 +1169,7 @@ describe('expiry and RENEW', () => {
     'a payload credential is renewed in place; one that is not ends its channel, and only ' +
       'its channel, at its expiry',
     async () => {
-      const clock = fakeTime();
+      const clock = manualWallClock();
       const mesh = Mesh.start({ close: false, clock });
       const client = node({ close: false });
       const bearer = await issue('consumer-2', consumerScopes, { bearer: true, lifetime: hour });
@@ -1185,7 +1185,7 @@ describe('expiry and RENEW', () => {
       renewing
         .request('RENEW', empty, { name: Procedures.renew })
         .then((answer) => {
-          renewed = decodeFakeCredential(answer.payload);
+          renewed = decodeCredential(answer.payload);
         })
         .catch(() => {});
       await clock.elapseAsync(second);
@@ -1230,7 +1230,7 @@ describe('expiry and RENEW', () => {
       c.request('RENEW', held.encode(), { name: Procedures.renew }),
       limit,
     );
-    const renewed = decodeFakeCredential(answer.payload);
+    const renewed = decodeCredential(answer.payload);
     expect(renewed.holderKey).toEqual(held.holderKey);
     expect(renewed.scopes).toEqual(held.scopes);
     // The channel is still identified by its own bearer credential.

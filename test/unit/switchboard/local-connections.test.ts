@@ -29,7 +29,6 @@ import { proxyHandler } from '../../../src/core/switchboard/proxy.ts';
 import { StaticResolver } from '../../../src/core/switchboard/resolver.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import { hmacAuthority, issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import {
   bytes,
   node,
@@ -40,6 +39,7 @@ import {
   tagOf,
   until,
 } from '../../support/node/harness.ts';
+import { hmacAuthority, issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
 
 const other = Name.of('other');
 const back = Name.of('back');

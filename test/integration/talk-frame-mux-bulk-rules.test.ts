@@ -12,10 +12,10 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // routing on its connection itself; the peers here install it on both
 // connections at once, as the Dart `Peers` routes bulk channels with
 // `TalkChannel.adoptBulk` from the start. Timings the Dart tests take in
-// real time run on a ManualClock. The tests the fake mux ports had to
+// real time run on a ManualClock. The tests the memory mux ports had to
 // adapt (the peer's LIMITS, the GOAWAY drain, the receive high-water mark)
 // run here as the Dart tests do. test/unit/talk/talk-bulk-rules.test.ts
-// runs the same over the fake mux pair; the first half of the Dart file is
+// runs the same over the memory mux pair; the first half of the Dart file is
 // in talk-frame-mux-bulk.test.ts.
 
 import { describe, expect, test } from 'vitest';

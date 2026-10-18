@@ -29,13 +29,6 @@ import { memoryTransportPair } from '../../../src/core/transport/memory-transpor
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import type { Logger } from '../../../src/core/util/logger.ts';
 import {
-  forged,
-  hmacAuthority,
-  issueCredential,
-  rogue,
-  TestVerifier,
-} from '../../support/node/fake-identity.ts';
-import {
   codeOf,
   currentRuntime,
   node as harnessNode,
@@ -44,6 +37,13 @@ import {
   rejectsWith,
   until,
 } from '../../support/node/harness.ts';
+import {
+  forged,
+  hmacAuthority,
+  issueCredential,
+  rogue,
+  TestVerifier,
+} from '../../support/node/test-authority.ts';
 
 const npc = Name.of('npc');
 const chat = Name.of('chat');

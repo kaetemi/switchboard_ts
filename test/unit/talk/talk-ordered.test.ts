@@ -24,7 +24,6 @@ import { TalkAbortError, TalkChannel } from '../../../src/core/talk/talk-channel
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { Carrier } from '../../support/talk/carrier.ts';
-import { channelPair, type FakeMuxChannel, fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { type FrameEnd, frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import {
   bytes,
@@ -37,15 +36,20 @@ import {
   serve,
   throwsStatus,
 } from '../../support/talk/helpers.ts';
+import {
+  channelPair,
+  type MemoryMuxChannel,
+  memoryMuxPair,
+} from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 
 /** A Talk channel on an {@link Carrier}, and the far end of its mux channel. */
 async function carriedChannel(
   options?: Partial<TalkOptions>,
-): Promise<[TalkChannel, Carrier, FakeMuxChannel]> {
+): Promise<[TalkChannel, Carrier, MemoryMuxChannel]> {
   const clock = options?.clock;
-  const [client, server] = fakeMuxPair(clock === undefined ? {} : { mux: { clock } });
+  const [client, server] = memoryMuxPair(clock === undefined ? {} : { mux: { clock } });
   const [local, remote] = await channelPair(client, server);
   const carrier = new Carrier(local);
   return [new TalkChannel(carrier, options), carrier, remote];
@@ -70,13 +74,18 @@ class SyncResponder {
 
   readonly talk: TalkChannel;
   readonly #carrier: Carrier;
-  readonly #peer: FakeMuxChannel;
+  readonly #peer: MemoryMuxChannel;
   readonly #held: TalkMessage[] = [];
 
   /** Every frame the responder sent, in wire order. */
   readonly sent: TalkFrame[] = [];
 
-  private constructor(talk: TalkChannel, carrier: Carrier, peer: FakeMuxChannel, stream: boolean) {
+  private constructor(
+    talk: TalkChannel,
+    carrier: Carrier,
+    peer: MemoryMuxChannel,
+    stream: boolean,
+  ) {
     this.talk = talk;
     this.#carrier = carrier;
     this.#peer = peer;

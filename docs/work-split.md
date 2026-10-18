@@ -63,7 +63,7 @@ Branch suggestion: `claude/sb-ts-talk`. Dart: `lib/src/talk/*` (8 100 lines).
 **Deliverables, in order**
 
 1. `talk-frame.ts` with every wiki and Dart vector (the frame codec is independent of the mux). **Done** (#1).
-2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a fake `MuxChannel` pair under `test/support/talk/fake-channel.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too. **Done** (#4, #11).
+2. `talk-channel.ts`, `talk-message.ts`, `talk-request.ts`, `talk-stream.ts`: requests, replies, streams, aborts, timeouts and EXTEND, item windows and credits, `ordered` requests, over a `MuxChannel`. Until thread 1's step 3 lands, test over a fake `MuxChannel` pair under `test/support/talk/memory-mux.ts` that implements `mux/contract.ts` in memory (send window, credit on delivery, close with status); keep it, it is a useful unit fixture after too. **Done** (#4, #11).
 3. Bulk transfers: `talk-bulk.ts`, `talk-bulk-transfer.ts`, the `_bulk` filter, `streamBulk`, budgets and timeouts. **Done** (#11).
 4. `talk-forward.ts`, the forwarding tests. **Done** (#11), and the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`, `test/integration/talk-*.test.ts`).
 

@@ -60,7 +60,7 @@ order:
 
 The test support is in `test/support/naming/`:
 
-* `fake-talk.ts`: an in-memory Talk pair built to the landed Talk contract
+* `memory-talk.ts`: an in-memory Talk pair built to the landed Talk contract
 * time: `ManualClock` with `await clock.elapseAsync(ms)`, the fake_async
   port (the thread's own `TestClock` was folded into it in the third round)
 * `harness.ts`, `sharding-harness.ts`: ports of the Dart harnesses
@@ -73,7 +73,7 @@ Merged into `main` (the integration branch since the first hand-off) from topic 
 
 1. **`SlotGate`, `SlotLifecycle`, `SlotGates`** (`src/core/naming/slot-gate.ts`, Dart `switchboard/slot_gate.dart`) on `claude/slot-routing`, with `slot-gate.test.ts` (53 of `slot_gate_test.dart`) and `slot-gate-credential.test.ts` (6 of `slot_gate_credential_test.dart`); the two `sharding-client.test.ts` tests once marked `// Not ported: SlotGate` run.
 2. **Slot routing in the node** (`claude/slot-routing`): `Switchboard.openChannelToSlot`, `openTalkToSlot`, `resolveSlotOwner` and slot-routed `selectAndConnect`, `src/core/switchboard/slot-layer.ts` wired to `SlotChannel` and `reopenAtSlotOwner`, `StaticResolver` as a `SlotResolver`, the proxy's slot groups; `slot-routing.test.ts` has the routing group and the Talk and proxy MOVED cases, over the node's `openChannelToSlot`. `isSlotResolver` moved to `src/core/switchboard/resolver.ts`.
-3. **Real Talk:** the suites run over real `TalkChannel`s (`test/support/naming/talk-link.ts`, an in-memory frame link), the fake pair (`fake-talk.ts`) staying only where a test needs synchronous delivery; `SlotChannel`'s replacement is followed by Talk's bulk routes (`followBulkTarget`). The suites that need nodes also run over the frame mux (`test/unit/naming/over-frame-mux/`).
+3. **Real Talk:** the suites run over real `TalkChannel`s (`test/support/naming/talk-link.ts`, an in-memory frame link), the fake pair (`memory-talk.ts`) staying only where a test needs synchronous delivery; `SlotChannel`'s replacement is followed by Talk's bulk routes (`followBulkTarget`). The suites that need nodes also run over the frame mux (`test/unit/naming/over-frame-mux/`).
 4. **`NamingClient.renew()`** on `claude/identity` (with `Credential.decode`); MeshNode's renewal schedule is in `test/unit/switchboard/mesh.test.ts`.
 5. **Integration tests:** `test/integration/naming-mesh.test.ts` (`naming_mesh_test.dart`, over TCP, WebSocket and `mem`), and the whole Dart sharding suite in `test/integration/sharding/` with `cluster.ts` (`claude/sharding`, together with `MeshNode.publishSharded`, `claimSlot`, `releaseSlot`, `gates` and the slot hand-over of `leave`).
 6. **The node-side identity tests** of `naming_identity_test.dart` that need real nodes are in `naming-identity-nodes.test.ts` (brokered connections, dial-back GOAWAY, the `broker` preconditions) and `test/unit/switchboard/mesh.test.ts`; each place left in `naming-identity.test.ts` says where.

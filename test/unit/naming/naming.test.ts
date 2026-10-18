@@ -36,7 +36,6 @@ import {
 } from '../../../src/core/talk/contract.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
-import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   bytes,
   Connector,
@@ -67,6 +66,7 @@ import {
   Watcher,
   within,
 } from '../../support/naming/harness.ts';
+import type { LinkFrame } from '../../support/naming/memory-talk.ts';
 
 describe('NamingService', () => {
   let h: Harness;
@@ -1936,9 +1936,9 @@ async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
 }
 
 /** [frame], which must be a message (a request, a response or a one-way message). */
-function messageFrame(frame: FakeFrame | undefined): Extract<FakeFrame, { kind: 'message' }> {
+function messageFrame(frame: LinkFrame | undefined): Extract<LinkFrame, { kind: 'message' }> {
   expect(frame?.kind).toBe('message');
-  return frame as Extract<FakeFrame, { kind: 'message' }>;
+  return frame as Extract<LinkFrame, { kind: 'message' }>;
 }
 
 /** Checks that [error] is a `SwitchboardError` of [code] (the Dart tests' `isStatus`). */

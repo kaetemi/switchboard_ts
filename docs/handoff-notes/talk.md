@@ -30,7 +30,7 @@ The tests are 15 files and 328 tests in `test/unit/talk/`. Every test name in th
 
 The test fixtures are in `test/support/talk/`:
 
-* `fake-channel.ts`: `fakeMuxPair()`, an in-memory `MuxConnection` pair with real credit semantics. Keep it.
+* `memory-mux.ts`: `memoryMuxPair()`, an in-memory `MuxConnection` pair with real credit semantics. Keep it.
 * `frame-mux-peers.ts`: Talk over the real frame mux: `frameMuxPair()` (two `FrameMuxConnection`s on the memory pair, bulk routing installed, closed after the test; a `WireLog` of what both sides write; a transport that queues frames ahead), `FrameMuxPeers` (the frame-mux `Peers`), `RawMuxPeer`/`rawMuxPair()` (a mux whose peer hands it raw frames all at once).
 * `frame-link.ts`: `Pair`, `RawPeer`, `FrameEnd`.
 * `helpers.ts`: `Queue`, `Collector`, `serve`, `flush`, the status assertions, and the helpers the files used to copy (`toList`, `first`, `rejection`, `within`, `sleep`, `expectBytes`, `expectSame`, `expectRemote`, `rejectsRemote`, `rawOf`, `only`, `last`).

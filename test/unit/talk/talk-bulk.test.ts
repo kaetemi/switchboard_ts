@@ -9,7 +9,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // reassembly budget tests, 'no deadlock', the cancellation tests,
 // 'idle timeout', 'over memory', and the ordering tests after it. Talk bulk
 // payloads (wiki page "Polyverse Switchboard Talk", section "Bulk
-// payloads") over the fake mux pair; the rest of the Dart file is in
+// payloads") over the memory mux pair; the rest of the Dart file is in
 // `talk-bulk-rules.test.ts`.
 
 import { describe, expect, test } from 'vitest';
@@ -40,7 +40,6 @@ import {
   SourceController,
   until,
 } from '../../support/talk/bulk-peers.ts';
-import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { bulkFrame } from '../../support/talk/frames.ts';
 import {
   bytes,
@@ -55,10 +54,11 @@ import {
   serve,
   within,
 } from '../../support/talk/helpers.ts';
+import { memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
 const empty = new Uint8Array(0);
 
-/** Lets what the fake mux and Talk have in flight settle: the Dart tests' short real-time waits. */
+/** Lets what the memory mux and Talk have in flight settle: the Dart tests' short real-time waits. */
 const settle = (): Promise<void> => flush(20);
 
 test('bulk channels finished before their references are not retained', async () => {
@@ -454,7 +454,7 @@ for (const cancelBefore of [false, true]) {
 
 test('references without bulk OPENs have a bounded dispatch wait', async () => {
   const clock = new ManualClock();
-  const [client, server] = fakeMuxPair({ mux: { clock } });
+  const [client, server] = memoryMuxPair({ mux: { clock } });
   const talks: TalkChannel[] = [];
   void server.accept().then((raw) => talks.push(new TalkChannel(raw)));
   const raw = client.open(empty);
@@ -481,7 +481,7 @@ test('references without bulk OPENs have a bounded dispatch wait', async () => {
 
 test("a request cancelled while it waits for the peer's LIMITS does not start its upload", async () => {
   const clock = new ManualClock();
-  const [client, server] = fakeMuxPair({ mux: { clock }, awaitLimits: true });
+  const [client, server] = memoryMuxPair({ mux: { clock }, awaitLimits: true });
   // A peer that takes the channels but never reads nor closes them.
   const taken: MuxChannel[] = [];
   void (async () => {
@@ -507,14 +507,14 @@ test("a request cancelled while it waits for the peer's LIMITS does not start it
 
 describe('idle timeout', () => {
   /**
-   * A Talk channel and its far end over a fake mux pair, in fake time, the
+   * A Talk channel and its far end over a memory mux pair, on manual time, the
    * bulk channels of both sides routed; then a function closing both.
    */
   async function fakeTalk(
     clock: ManualClock,
     init: { near?: Partial<TalkOptions>; far?: Partial<TalkOptions> } = {},
   ): Promise<[TalkChannel, TalkChannel, () => Promise<void>]> {
-    const [client, server] = fakeMuxPair({ mux: { clock } });
+    const [client, server] = memoryMuxPair({ mux: { clock } });
     installBulkRouting(client);
     installBulkRouting(server);
     const talk = new TalkChannel(client.open(empty), init.near);

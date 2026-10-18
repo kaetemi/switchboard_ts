@@ -53,7 +53,6 @@ import {
 import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
-import type { FakeFrame } from '../../support/naming/fake-talk.ts';
 import {
   Connector,
   clientOptions,
@@ -71,6 +70,7 @@ import {
   until,
   within,
 } from '../../support/naming/harness.ts';
+import type { LinkFrame } from '../../support/naming/memory-talk.ts';
 import {
   Instance,
   kv,
@@ -128,7 +128,7 @@ async function drain(phases: AsyncIterable<PhaseItem>): Promise<void> {
 }
 
 /** The extension an `EXTEND` frame carries (Dart's `TalkFrame.extension`). */
-function extension(frame: FakeFrame): { deadline: number | undefined; renew: number | undefined } {
+function extension(frame: LinkFrame): { deadline: number | undefined; renew: number | undefined } {
   if (frame.kind !== 'extend') {
     throw new Error(`not an EXTEND: ${frame.kind}`);
   }
@@ -952,7 +952,7 @@ describe('declared deadlines, no heartbeat', () => {
     h: Harness,
     id: number,
     handler: SlotHandler | undefined,
-    extends_: FakeFrame[],
+    extends_: LinkFrame[],
     options: {
       slotHandlerMaxDuration?: number;
       /** Makes the slot handler for the client, when [handler] is undefined (a slot gate). */
@@ -1001,7 +1001,7 @@ describe('declared deadlines, no heartbeat', () => {
       return loading.promise;
     });
     const sb = new Switchboard();
-    const extends_: FakeFrame[] = [];
+    const extends_: LinkFrame[] = [];
     let gate: SlotGate | undefined;
     const c = await start(clock, h, 1, undefined, extends_, {
       handlerFor: (client) => {
@@ -1048,7 +1048,7 @@ describe('declared deadlines, no heartbeat', () => {
     const handler = new RecordingHandler('A', log);
     const loading = new Deferred<AssignResult>();
     handler.assign = () => loading.promise;
-    const extends_: FakeFrame[] = [];
+    const extends_: LinkFrame[] = [];
     const c = await start(clock, h, 1, handler, extends_);
     let error: unknown;
     c.claim(zone, 2).then(
@@ -1089,7 +1089,7 @@ describe('declared deadlines, no heartbeat', () => {
       handler.contexts.get(`ASSIGN ${r.slot}`)?.extend({ deadline: 3_600_000 });
       return new Deferred<AssignResult>().promise;
     };
-    const extends_: FakeFrame[] = [];
+    const extends_: LinkFrame[] = [];
     const c = await start(clock, h, 1, handler, extends_, { slotHandlerMaxDuration: 120_000 });
     let error: unknown;
     c.claim(zone, 1).then(
@@ -1119,7 +1119,7 @@ describe('declared deadlines, no heartbeat', () => {
     const lifeA = new Keeper();
     let gateA: SlotGate | undefined;
     let gateB: SlotGate | undefined;
-    const extendsA: FakeFrame[] = [];
+    const extendsA: LinkFrame[] = [];
     const a = await start(clock, h, 1, undefined, extendsA, {
       handlerFor: (client) => {
         gateA = new SlotGate(sbA, client, zone, {
@@ -1212,7 +1212,7 @@ describe('declared deadlines, no heartbeat', () => {
       handlerA.contexts.get(`DRAIN ${r.slot}`)?.extend({ deadline: 180_000 });
       return draining.promise;
     };
-    const extendsA: FakeFrame[] = [];
+    const extendsA: LinkFrame[] = [];
     const a = await start(clock, h, 1, handlerA, extendsA);
     const b = await start(clock, h, 2, handlerB, []);
     void a.claim(zone, 2);

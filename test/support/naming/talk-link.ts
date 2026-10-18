@@ -6,15 +6,15 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 
 // A pair of real `TalkChannel`s for the naming tests, over an in-memory link
 // of whole Talk frames (the port of the Dart harness's `TalkChannel` over a
-// `StreamChannelController`). What the tests see of the wire is as the fake
-// pair (`fake-talk.ts`) shows it: every frame a side sends is recorded, as a
-// {@link FakeFrame}, and may be dropped by a filter; a test may also write a
+// `StreamChannelController`). What the tests see of the wire is as the memory
+// pair (`memory-talk.ts`) shows it: every frame a side sends is recorded, as a
+// {@link LinkFrame}, and may be dropped by a filter; a test may also write a
 // raw frame. Closing one side with a status ends both, the other side seeing
 // that status as its end, as a mux CLOSE carries it. Nothing is flow
 // controlled and bulk payloads cannot travel (as on any Talk channel that
 // is not a mux channel), and delivery goes through Web Streams, so it is
-// never synchronous: the tests that need the fake's synchronous bursts keep
-// the fake.
+// never synchronous: the tests that need the memory pair's synchronous bursts
+// keep it.
 
 import { Name } from '../../../src/core/name.ts';
 import { Status, StatusCode } from '../../../src/core/status.ts';
@@ -22,10 +22,10 @@ import type { TalkOptions } from '../../../src/core/talk/contract.ts';
 import { TalkChannel, type TalkFrameChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
-import type { FakeFrame, FrameFilter } from './fake-talk.ts';
+import type { FrameFilter, LinkFrame } from './memory-talk.ts';
 
-/** [frame] as the fake pair shows frames to the tests. */
-export function fakeFrameOf(frame: TalkFrame): FakeFrame {
+/** [frame] as the memory pair shows frames to the tests. */
+export function linkFrameOf(frame: TalkFrame): LinkFrame {
   switch (frame.kind) {
     case TalkKind.message:
     case TalkKind.streamItem:
@@ -62,7 +62,7 @@ export function fakeFrameOf(frame: TalkFrame): FakeFrame {
 }
 
 /** The wire bytes of [frame]; a `close` has none (it closes the link). */
-export function encodeFakeFrame(frame: FakeFrame): Uint8Array | undefined {
+export function encodeLinkFrame(frame: LinkFrame): Uint8Array | undefined {
   switch (frame.kind) {
     case 'message':
       return new TalkFrame({
@@ -96,7 +96,7 @@ class LinkEnd implements TalkFrameChannel {
   readonly readable: ReadableStream<Uint8Array>;
   readonly writable: WritableStream<Uint8Array>;
   /** Every frame this side sent, in order. */
-  readonly sent: FakeFrame[] = [];
+  readonly sent: LinkFrame[] = [];
   /** Drops a frame this side sends when it returns true. */
   drop: FrameFilter | undefined;
   #controller!: ReadableStreamDefaultController<Uint8Array>;
@@ -114,7 +114,7 @@ class LinkEnd implements TalkFrameChannel {
       },
     });
     this.writable = new WritableStream<Uint8Array>({
-      write: (chunk) => this.#send(chunk, fakeFrameOf(TalkFrame.decode(chunk))),
+      write: (chunk) => this.#send(chunk, linkFrameOf(TalkFrame.decode(chunk))),
       close: () => this.close(),
       abort: () => this.close(Status.of(StatusCode.cancelled)),
     });
@@ -124,7 +124,7 @@ class LinkEnd implements TalkFrameChannel {
     this.#peer = peer;
   }
 
-  #send(chunk: Uint8Array, frame: FakeFrame): void {
+  #send(chunk: Uint8Array, frame: LinkFrame): void {
     this.sent.push(frame);
     if (this.drop?.(frame) === true) {
       return;
@@ -142,8 +142,8 @@ class LinkEnd implements TalkFrameChannel {
   }
 
   /** Sends [frame] as this side's (unless the filter drops it); a `close` closes the link with its status. */
-  inject(frame: FakeFrame): void {
-    const bytes = encodeFakeFrame(frame);
+  inject(frame: LinkFrame): void {
+    const bytes = encodeLinkFrame(frame);
     if (bytes === undefined) {
       this.sent.push(frame);
       void this.close(frame.kind === 'close' ? frame.status : Status.ok);
@@ -190,7 +190,7 @@ export class LinkedTalkChannel extends TalkChannel {
   }
 
   /** Every frame this side sent, in order (for tests that check the wire). */
-  get sent(): FakeFrame[] {
+  get sent(): LinkFrame[] {
     return this.#end.sent;
   }
 
@@ -200,12 +200,12 @@ export class LinkedTalkChannel extends TalkChannel {
   }
 
   /** Sends the raw [frame] to the peer (unless the filter drops it), bypassing this channel. */
-  write(frame: FakeFrame): void {
+  write(frame: LinkFrame): void {
     this.#end.inject(frame);
   }
 }
 
-/** What {@link talkLink} takes: as `FakeTalkPairOptions`, without `sync`. */
+/** What {@link talkLink} takes: as `MemoryTalkPairOptions`, without `sync`. */
 export interface TalkLinkOptions {
   /** Options of the first channel. */
   readonly a?: Partial<TalkOptions>;

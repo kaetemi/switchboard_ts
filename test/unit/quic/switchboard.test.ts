@@ -59,8 +59,8 @@ import {
   FakeQuicNetwork,
   FakeQuicSession,
 } from '../../../src/testing/fake-quic-provider.ts';
-import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import { node as harnessNode, onCleanup, tagOf, useMux } from '../../support/node/harness.ts';
+import { issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
 import {
   bindingAndRaw,
   bytes,

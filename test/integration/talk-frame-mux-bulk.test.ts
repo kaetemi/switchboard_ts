@@ -14,7 +14,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Switchboard Talk", section "Bulk payloads") go on `_bulk` channels the
 // frame mux opens with `openAfter` and routes through the filter
 // `installBulkRouting` installs. test/unit/talk/talk-bulk.test.ts runs the
-// same tests over the fake mux pair; the rest of the Dart file is in
+// same tests over the memory mux pair; the rest of the Dart file is in
 // talk-frame-mux-bulk-rules.test.ts.
 
 import { describe, expect, onTestFinished, test } from 'vitest';
@@ -534,7 +534,7 @@ test("a request cancelled while it waits for the peer's LIMITS does not start it
 
 describe('idle timeout', () => {
   /**
-   * A Talk channel and its far end over a frame mux pair, in fake time,
+   * A Talk channel and its far end over a frame mux pair, on manual time,
    * the bulk channels of both sides routed; then a function closing both.
    */
   async function fakeTalk(

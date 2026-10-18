@@ -1233,7 +1233,7 @@ describe('ASSIGN backoff', () => {
 
   /**
    * Refuses the first [refusals] ASSIGNs, recording when each arrived (ms
-   * of fake time) in [at].
+   * of manual time) in [at].
    */
   function refusing(
     clock: ManualClock,
@@ -1486,7 +1486,7 @@ describe('ASSIGN backoff', () => {
 describe('RESUME after a rollback', () => {
   /**
    * Two zone instances, 1 owning slot 1, 2 refusing every ASSIGN, at 100 ms
-   * of fake time. The RESUMEs 1 gets are timed in [at] (ms); [answerFrom]
+   * of manual time. The RESUMEs 1 gets are timed in [at] (ms); [answerFrom]
    * is the attempt (1 = the first) from which it answers them.
    */
   async function zones(

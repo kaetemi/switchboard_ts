@@ -19,7 +19,6 @@ import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { until } from '../../support/talk/bulk-peers.ts';
-import { fakeMuxPair } from '../../support/talk/fake-channel.ts';
 import { frameLink, Pair, RawPeer } from '../../support/talk/frame-link.ts';
 import { credit, itemFrame, streamRequestFrame } from '../../support/talk/frames.ts';
 import {
@@ -34,6 +33,7 @@ import {
   rejectsStatus,
   serve,
 } from '../../support/talk/helpers.ts';
+import { memoryMuxPair } from '../../support/talk/memory-mux.ts';
 import { TimerClock } from '../../support/talk/timer-clock.ts';
 
 const empty = new Uint8Array(0);
@@ -827,7 +827,7 @@ describe('the responder', () => {
     // Every Talk channel installs bulk routing on its connection: the bulk
     // channels the peer opens go to their parent's Talk layer without a
     // listener on `incoming` adopting them.
-    const [client, server] = fakeMuxPair();
+    const [client, server] = memoryMuxPair();
     const talk = new TalkChannel(client.open(empty));
     const responder = new TalkChannel(await server.accept());
     const served = nextRequest(responder);

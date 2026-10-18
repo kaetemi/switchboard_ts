@@ -112,12 +112,12 @@ describe('handshake', () => {
 
   test('an option out of range is a RangeError before the request is touched', async () => {
     const { acceptWebSocket } = await import('../../../src/node/transport/ws-server.ts');
-    const fake = {} as never;
+    const untouched = {} as never;
     await expect(
-      acceptWebSocket(fake, fake, new Uint8Array(0), { maxFrameSize: -1 }),
+      acceptWebSocket(untouched, untouched, new Uint8Array(0), { maxFrameSize: -1 }),
     ).rejects.toBeInstanceOf(RangeError);
     await expect(
-      acceptWebSocket(fake, fake, new Uint8Array(0), { pingInterval: 0 }),
+      acceptWebSocket(untouched, untouched, new Uint8Array(0), { pingInterval: 0 }),
     ).rejects.toBeInstanceOf(RangeError);
   });
 });

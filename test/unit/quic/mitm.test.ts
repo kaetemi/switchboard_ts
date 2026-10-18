@@ -25,8 +25,8 @@ import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
 import type { Switchboard, SwitchboardOptions } from '../../../src/core/switchboard/switchboard.ts';
 import { FakeQuicNetwork } from '../../../src/testing/fake-quic-provider.ts';
-import { issueCredential, TestVerifier } from '../../support/node/fake-identity.ts';
 import { node as harnessNode, onCleanup, tagOf } from '../../support/node/harness.ts';
+import { issueCredential, TestVerifier } from '../../support/node/test-authority.ts';
 import { bytes, expectCode, fast } from './harness.ts';
 
 const npc = Name.of('npc');
