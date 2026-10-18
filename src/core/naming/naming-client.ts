@@ -225,6 +225,8 @@ export class NamingClient implements AsyncDisposable {
   #delayTimer: TimerHandle | undefined;
   #delay: Deferred<void> | undefined;
   #failedConnects = 0;
+  /** The events of the step running now, delivered once it is done; undefined between steps. */
+  #held: (() => void)[] | undefined;
 
   /**
    * Creates a client. Nothing happens until {@link start}.
@@ -258,7 +260,7 @@ export class NamingClient implements AsyncDisposable {
       closed: () => this.#closed,
       registeredOn: (session, type) => this.#registeredOn(session, type),
       registers: (type) => this.#registers(type),
-      emitSlotEvent: (event) => this.#emitter.emit('slotEvent', event),
+      emitSlotEvent: (event) => this.#deliver('slotEvent', event),
       client: this,
     });
   }
@@ -301,6 +303,11 @@ export class NamingClient implements AsyncDisposable {
    * only, when it disappears, including records found missing when a new
    * snapshot arrives after a reconnect), `slotEvent` for every change of the
    * mirrored slot tables. Returns the function that removes it.
+   *
+   * Listeners are called synchronously, once the step that made the change
+   * is done (the table and the slot tables updated, {@link isSynced} set
+   * after a snapshot), so they see what a Dart listener sees (design
+   * section 12, item 16).
    */
   on<K extends 'event' | 'slotEvent'>(
     event: K,
@@ -1521,6 +1528,10 @@ export class NamingClient implements AsyncDisposable {
 
   /** A one-way message from the naming service: an event of the subscription. Events before the `WATCH` reply belong to the snapshot. */
   #onEvent(session: ClientSession, event: TalkMessage): void {
+    this.#step(() => this.#applyEvent(session, event));
+  }
+
+  #applyEvent(session: ClientSession, event: TalkMessage): void {
     if (!session.alive) {
       return;
     }
@@ -1551,6 +1562,10 @@ export class NamingClient implements AsyncDisposable {
 
   /** The `WATCH` reply: the snapshot is complete. Records, spaces and slots it did not mention are gone. */
   #onSynced(session: ClientSession): void {
+    this.#step(() => this.#applySynced(session));
+  }
+
+  #applySynced(session: ClientSession): void {
     if (!session.alive || !session.syncing) {
       return;
     }
@@ -1587,7 +1602,40 @@ export class NamingClient implements AsyncDisposable {
 
   #emit(event: ServiceEvent): void {
     if (!this.#closed) {
-      this.#emitter.emit('event', event);
+      this.#deliver('event', event);
+    }
+  }
+
+  /**
+   * Runs [run] as one step: the events it emits reach the listeners once it
+   * is done, in order, so that a listener sees the state the step left, as
+   * a Dart listener (called by its broadcast stream after the step) does.
+   * Events emitted while they are delivered follow them.
+   */
+  #step(run: () => void): void {
+    if (this.#held !== undefined) {
+      run();
+      return;
+    }
+    const held: (() => void)[] = [];
+    this.#held = held;
+    try {
+      run();
+    } finally {
+      for (let i = 0; i < held.length; i++) {
+        held[i]?.();
+      }
+      this.#held = undefined;
+    }
+  }
+
+  /** Emits [value] as [name], once the step running now is done. */
+  #deliver<K extends keyof NamingClientEvents>(name: K, value: NamingClientEvents[K]): void {
+    const held = this.#held;
+    if (held === undefined) {
+      this.#emitter.emit(name, value);
+    } else {
+      held.push(() => this.#emitter.emit(name, value));
     }
   }
 }

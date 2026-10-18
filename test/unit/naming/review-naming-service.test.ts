@@ -17,7 +17,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { Name } from '../../../src/core/name.ts';
 import { SlotMode, SlotSpace } from '../../../src/core/naming/naming-protocol.ts';
-import { Harness } from '../../support/naming/harness.ts';
+import { Harness, register, until } from '../../support/naming/harness.ts';
 import { Instance } from '../../support/naming/sharding-harness.ts';
 
 const discord = Name.of('discord');
@@ -76,4 +76,33 @@ test('close publishes the slot its owner frees on the slotEvents iterable', asyn
   // The iteration ends with the service, after what the close published.
   await iterating;
   expect(items).toEqual(['discord/1 free holder 1 epoch 1']);
+});
+
+// Design 12.16: the service's listeners run synchronously but once the step
+// is done, so a DOWN's listener sees the slots of the record freed, as a
+// Dart listener (called after the step) does.
+test('a DOWN listener sees the slots of the record it is told about freed', async () => {
+  const a = await owner();
+  const seen: string[] = [];
+  h.service.on('event', (event) => {
+    if (!event.up) {
+      seen.push(`${event.record.address} ${h.service.slotTable(discord)?.get(1).isFree}`);
+    }
+  });
+  await a.channel.close();
+  await until(() => seen.length > 0);
+  expect(seen).toEqual(['discord/1 true']);
+});
+
+test('a DOWN listener sees every record of the channel that ended gone', async () => {
+  const [channel] = h.link();
+  await register(channel, 'npc', { instance: 1 });
+  await register(channel, 'npc', { instance: 2 });
+  const seen: number[] = [];
+  h.service.on('event', (event) => {
+    if (!event.up) seen.push(h.service.records('npc').length);
+  });
+  await channel.close();
+  await until(() => seen.length === 2);
+  expect(seen).toEqual([0, 0]);
 });

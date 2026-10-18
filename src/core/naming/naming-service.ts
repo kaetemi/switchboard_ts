@@ -235,6 +235,8 @@ export class NamingService implements AsyncDisposable {
   #holdTimer: TimerHandle | undefined;
   #holdEnd = 0;
   readonly #held: Held[] = [];
+  /** The events of the step running now, delivered once it is done; undefined between steps. */
+  #pendingEvents: (() => void)[] | undefined;
   /**
    * The sessions served over each connection, whose `IDENT`s are followed by
    * one listener per connection however many channels it carries. An entry
@@ -308,7 +310,7 @@ export class NamingService implements AsyncDisposable {
       publishItem: (type, procedure, payload) => this.#publishItem(type, procedure, payload),
       emitSlotItem: (item) => {
         // As #publish: the slot changes of the close itself still go out.
-        if (!this.#closedSignal.signal.aborted) this.#emitter.emit('slotEvent', item);
+        if (!this.#closedSignal.signal.aborted) this.#deliver('slotEvent', item);
       },
     });
     if (this.assignmentHold > 0) {
@@ -345,6 +347,9 @@ export class NamingService implements AsyncDisposable {
   /**
    * Adds a listener: `event` for every `UP` and `DOWN` the service publishes,
    * `slotEvent` for every `SLOT` event. Returns the function that removes it.
+   * Listeners are called synchronously, once the step that made the change
+   * is done (a `DOWN`'s listener sees the slots of the record freed), so
+   * they see what a Dart listener sees (design section 12, item 16).
    */
   on<K extends keyof NamingServiceEvents>(
     event: K,
@@ -585,8 +590,15 @@ export class NamingService implements AsyncDisposable {
   }
 
   async #close(): Promise<void> {
-    this.#closed = true;
     const goingAway = Status.of(StatusCode.goingAway, 'naming service closed');
+    const sessions = this.#step(() => this.#closeStep(goingAway));
+    await Promise.all(sessions.map((s) => s.channel.close(goingAway).catch(() => {})));
+    this.#closedSignal.abort();
+  }
+
+  /** What {@link close} does at once, in one step; returns the sessions it dropped. */
+  #closeStep(goingAway: Status): ServiceSession[] {
+    this.#closed = true;
     this.#slots.close();
     if (this.#holdTimer !== undefined) {
       this.clock.clearTimeout(this.#holdTimer);
@@ -606,8 +618,7 @@ export class NamingService implements AsyncDisposable {
       this.#drop(session);
     }
     this.#connections.clear();
-    await Promise.all(sessions.map((s) => s.channel.close(goingAway).catch(() => {})));
-    this.#closedSignal.abort();
+    return sessions;
   }
 
   // -------------------------------------------------------------------------
@@ -996,6 +1007,10 @@ export class NamingService implements AsyncDisposable {
    * records without `register`, and held `REGISTER`s without `register`.
    */
   #narrow(session: ServiceSession, credential: Credential): void {
+    this.#step(() => this.#narrowStep(session, credential));
+  }
+
+  #narrowStep(session: ServiceSession, credential: Credential): void {
     const ended: string[] = [];
     for (const [key, watch] of session.watches) {
       const granted =
@@ -1438,6 +1453,10 @@ export class NamingService implements AsyncDisposable {
 
   /** Answers the held requests, in arrival order. */
   #endHold(): void {
+    this.#step(() => this.#endHoldStep());
+  }
+
+  #endHoldStep(): void {
     this.#holdTimer = undefined;
     const held = this.#held.splice(0);
     if (held.length > 0) {
@@ -1520,7 +1539,12 @@ export class NamingService implements AsyncDisposable {
     return registration;
   }
 
+  /** Removes [registration], publishing `DOWN`, and frees its slots: one step. */
   #remove(registration: Registration): void {
+    this.#step(() => this.#removeStep(registration));
+  }
+
+  #removeStep(registration: Registration): void {
     const address = registration.address;
     this.#instances.delete(address.instance);
     this.#table.delete(address.key);
@@ -1553,12 +1577,50 @@ export class NamingService implements AsyncDisposable {
       );
     }
     if (!this.#closedSignal.signal.aborted) {
-      this.#emitter.emit('event', event);
+      this.#deliver('event', event);
     }
   }
 
-  /** Forgets a channel: ends its subscriptions and removes its records. Idempotent. */
+  /**
+   * Runs [run] as one step: the events it emits reach the listeners once it
+   * is done, in order, so that a listener sees the state the step left (a
+   * `DOWN`'s listener sees the slots of the record freed, and all the
+   * records of a channel that ended gone), as a Dart listener (called by
+   * its broadcast stream after the step) does. Events emitted while they
+   * are delivered follow them.
+   */
+  #step<T>(run: () => T): T {
+    if (this.#pendingEvents !== undefined) {
+      return run();
+    }
+    const pending: (() => void)[] = [];
+    this.#pendingEvents = pending;
+    try {
+      return run();
+    } finally {
+      for (let i = 0; i < pending.length; i++) {
+        pending[i]?.();
+      }
+      this.#pendingEvents = undefined;
+    }
+  }
+
+  /** Emits [value] as [name], once the step running now is done. */
+  #deliver<K extends keyof NamingServiceEvents>(name: K, value: NamingServiceEvents[K]): void {
+    const pending = this.#pendingEvents;
+    if (pending === undefined) {
+      this.#emitter.emit(name, value);
+    } else {
+      pending.push(() => this.#emitter.emit(name, value));
+    }
+  }
+
+  /** Forgets a channel: ends its subscriptions and removes its records, in one step. Idempotent. */
   #drop(session: ServiceSession): void {
+    this.#step(() => this.#dropStep(session));
+  }
+
+  #dropStep(session: ServiceSession): void {
     if (!this.#sessions.delete(session)) {
       return;
     }

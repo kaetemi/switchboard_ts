@@ -16,18 +16,18 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 //    leaves the queue, a sent LOCATE or CLAIM is cancelled, a sent RELEASE
 //    runs to its answer, and an unanswered REGISTER is withdrawn.
 //
-// 2. `NamingClient.on('event')` listeners run synchronously, inside the
-//    client's step (design section 5's Emitter), where Dart's broadcast
+// 2. Fixed: `NamingClient.on('event')` listeners ran synchronously, inside
+//    the client's step (design section 5's Emitter), where Dart's broadcast
 //    stream delivers after it. During a resync the DOWNs of the records the
-//    new snapshot no longer has reach a TS listener before the step marks
-//    the table synced, so the listener sees `isSynced` false (a Dart
-//    listener sees it true). Design section 12 lists this for PeerSet
-//    (item 16) and not for the naming client or service.
+//    new snapshot no longer has reached a TS listener before the step marked
+//    the table synced, so the listener saw `isSynced` false (a Dart listener
+//    sees it true). They still run synchronously, but once the step is done
+//    (design section 12, item 16).
 
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { Name } from '../../../src/core/name.ts';
 import { AssignResult, NamingClient } from '../../../src/core/naming/naming-client.ts';
-import { SlotMode } from '../../../src/core/naming/naming-protocol.ts';
+import { SlotMode, SlotSpace } from '../../../src/core/naming/naming-protocol.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import {
@@ -42,7 +42,7 @@ import {
   until,
   within,
 } from '../../support/naming/harness.ts';
-import { RecordingHandler, zone } from '../../support/naming/sharding-harness.ts';
+import { Instance, RecordingHandler, zone } from '../../support/naming/sharding-harness.ts';
 
 let h: Harness;
 const clients: NamingClient[] = [];
@@ -235,7 +235,7 @@ test('aborting a registration not answered yet withdraws it', async () => {
   }
 });
 
-test.fails('an event listener sees the resync it is told about as done, as a Dart listener does', async () => {
+test('an event listener sees the resync it is told about as done, as a Dart listener does', async () => {
   const connector = new Connector(h);
   const client = new NamingClient(connector.call, { reconnectDelay });
   clients.push(client);
@@ -280,4 +280,33 @@ test('control: the same DOWN read from events after the resync', async () => {
   expect(client.isSynced).toBe(true);
   await events.return?.();
   expect(Name.of('npc').equals(next.value?.record.address.type ?? Name.empty)).toBe(true);
+});
+
+test('a slot event listener sees the resync it is told about as done', async () => {
+  const discord = Name.of('discord');
+  const connector = new Connector(h);
+  const client = new NamingClient(connector.call, { reconnectDelay });
+  clients.push(client);
+  await client.start();
+  await within(client.synced);
+  // Another instance owns a slot, mirrored.
+  const owner = new Instance(h, discord, 1, []);
+  await owner.start({
+    space: new SlotSpace(discord, { count: 4, mode: SlotMode.static }),
+    capacity: 0,
+  });
+  expect(await owner.claim(1)).toBe(1);
+  await until(() => client.slotOwner(discord, 1) !== undefined);
+  // The naming service restarts without the space.
+  const old = h;
+  h = new Harness();
+  connector.harness = h;
+  const seen: string[] = [];
+  client.on('slotEvent', (event) => {
+    seen.push(`${event.slot} ${client.isSynced} ${client.slotTable(discord) === undefined}`);
+  });
+  await old.close();
+  await until(() => client.isSynced);
+  // The space it no longer has is gone from the mirror by then.
+  expect(seen).toEqual(['1 true true']);
 });
