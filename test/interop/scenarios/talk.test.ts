@@ -7,7 +7,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // Talk across the pairings (talk_test.dart, talk_window_test.dart): requests
 // in flight, stream requests and their item windows, aborts with their exact
 // status, timeouts on either side, EXTEND, cancels and plain messages. The
-// timeouts cannot be faked across processes, so they are short and real.
+// timeouts cannot run on virtual time across processes, so they are short
+// and real.
 
 import { expect, test } from 'vitest';
 import { hexString } from '../../../src/core/bytes.ts';

@@ -79,7 +79,7 @@ Each cell starts its server and client peers once, resets both after every test 
 
 A value the reference decides is found by running the Dart to Dart cell and asserting what it does in every cell, never by recording a snapshot per cell (each cell would record its own).
 
-Wait for events rather than sleeping: `peers.server.events.waitFor({ event: 'channel.closed', channel })`. Timeouts cannot be faked across a process boundary, so a scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
+Wait for events rather than sleeping: `peers.server.events.waitFor({ event: 'channel.closed', channel })`. Timeouts cannot run on virtual time across a process boundary, so a scenario that exercises one configures it short (100 to 500 ms) on the side that enforces it.
 
 ## Process protocol
 
