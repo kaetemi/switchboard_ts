@@ -529,6 +529,7 @@ describe('a graceful close before the payloads', () => {
       drained = true;
     });
     await raw.nextControlOf(MuxControlType.goAway);
+    await raw.answerPing();
     // The drain hold keeps the connection: GOAWAY waits for the payload.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(drained).toBe(false);
@@ -581,6 +582,7 @@ describe('_bulk continuations after GOAWAY', () => {
     serve(talk, (m) => delivered.resolve(m));
     void connection.goAway();
     await raw.nextControlOf(MuxControlType.goAway);
+    await raw.answerPing();
     // Not a continuation: refused.
     const other = await raw.openRaw(encodeOpenRecord(4, empty));
     const [records] = await RawPeer.drain(other);

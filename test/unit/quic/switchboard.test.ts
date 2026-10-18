@@ -788,6 +788,7 @@ describe("Talk's bulk routing on a QUIC connection", () => {
     const talk = new TalkChannel(atBinding[0] as MuxChannel);
     void connection.goAway();
     await raw.nextControlOf(MuxControlType.goAway);
+    await raw.answerPing();
     const late = await raw.openRaw(encodeOpenRecord(4, []));
     expect(await within(late.stopped)).toBe(StatusCode.goingAway);
     // The message, then its payload on a bulk stream opened after the GOAWAY.
@@ -836,6 +837,7 @@ describe("Talk's bulk routing on a QUIC connection", () => {
     expect(connection.retainedForDrain(2)).toBe(true);
     void connection.goAway();
     await raw.nextControlOf(MuxControlType.goAway);
+    await raw.answerPing();
     const bulk = await raw.openRaw(encodeOpenRecord(6, bulkOpen(2, 1)));
     await bulk.write(concat([encodeDataRecord(bytes('hello')), encodeCloseRecord(Status.ok)]));
     await bulk.finish();

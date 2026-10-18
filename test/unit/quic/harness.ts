@@ -4,7 +4,7 @@
 import { expect, onTestFinished } from 'vitest';
 import { bytesEqual } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
-import { MuxControlMessage } from '../../../src/core/mux/mux-frame.ts';
+import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import type { QuicSessionEnd, QuicStream } from '../../../src/core/quic/contract.ts';
 import { QuicStreamReset } from '../../../src/core/quic/contract.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
@@ -346,6 +346,18 @@ export class RawPeer {
         return message;
       }
     }
+  }
+
+  /**
+   * Reads the `PING` the binding writes right behind its GOAWAY (the PING
+   * barrier, design section 12, item 17; TS behaviour beyond Dart) and
+   * answers it, as a peer reading the control stream does: the binding's
+   * close waits for the `PONG`, else for `closeConfirmTimeout`.
+   */
+  async answerPing(): Promise<void> {
+    const ping = await this.nextControl();
+    expect(ping.type).toBe(MuxControlType.ping);
+    await this.sendControl(MuxControlMessage.pong(ping.payload));
   }
 
   /** Opens a stream and writes [data] on it. */
