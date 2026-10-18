@@ -14,7 +14,7 @@ native/
   build.mjs                `npm run build:native`: cargo build, then the copy to sbq-node.node
   sbq-vendor/              switchboard_quic's native/sbq at the pinned commit (see below)
   sbq-vendor.commit        that commit
-  npm/<target>/            the per-platform packages' manifests (optionalDependencies of the package)
+  npm/<target>/            the per-platform packages' manifests (optionalDependencies of the published package)
 ```
 
 ## Building locally
@@ -79,18 +79,21 @@ per row of the table above, the directory named as the loader names the package
 (`linux-x64-gnu`, `darwin-arm64`, `win32-x64-msvc`, ...). Each holds one file, `sbq-node.node`
 (its `main`, which the loader `require`s by the package name), and declares `os`, `cpu` and, on
 Linux, `libc: ["glibc"]`, so that npm installs only the one for the platform. Their version is the
-package's, and `package.json` lists all five as `optionalDependencies` pinned to it;
-`test/unit/quic/packages.test.ts` checks that the manifests, this table, the loader's prefix,
-`optionalDependencies` and the release workflow agree. To put an addon in place by hand:
+package's. The published package lists all five as `optionalDependencies` pinned to it, added to
+`package.json` by `node tool/prebuilt-deps.mjs --apply` in the release workflow's pack step; the
+repository's `package.json` does not list them, because `npm ci` cannot resolve packages that are
+not on the registry and npm 11 refuses a lock file that lacks them. `test/unit/quic/packages.test.ts`
+checks that the manifests, this table, the loader's prefix, the tool and the release workflow agree.
+To put an addon in place by hand:
 
 ```sh
 node native/build.mjs --target x86_64-unknown-linux-gnu --out native/npm/linux-x64-gnu/sbq-node.node
 ```
 
-Until the packages are on the registry, `npm ci` and `npm install` look them up and drop them (a
-failed optional dependency is not an error). Once they are published, run
-`npm install --package-lock-only` and commit the lock file, or `npm ci` refuses the lock that
-lacks them.
+Once the packages are on the registry, the list can move into the repository's `package.json`
+(`node tool/prebuilt-deps.mjs --apply`, then `npm install --package-lock-only` and commit the lock
+file), and the pack step's call becomes a no-op check; until then a consumer of the repository
+itself builds the addon (`npm run build:native`) or points `SWITCHBOARD_QUIC_ADDON` at one.
 
 ## Releases
 

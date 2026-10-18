@@ -15,7 +15,7 @@ This is the original assignment. The first phase went through pull requests #1 t
 | 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`, `claude/sharding`). Acceptance: the interop cells wait on the TS peer. |
 | 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`, and the `test/integration/sharding/` port on `claude/sharding`). Acceptance: interop with the Dart naming service waits on the TS peer. |
 | 5. QUIC | 1 to 5 | Done (#2, #8, #15, `claude/webtransport`, `claude/quic-identity`); publishing is the user's call. Acceptance: Chromium reaches a TS WebTransport listener (done); interop over raw QUIC and WebTransport waits on the TS peer. |
-| 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 in flight on `claude/ts-peer`. |
+| 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 done (`claude/ts-peer`, merged 2026-10-18); the remainder is `work-split-2.md`'s interop thread. |
 
 ## Ground rules for every thread
 
@@ -145,7 +145,7 @@ Branch suggestion: `claude/sb-ts-interop`. Your proposal in `notes/interop.md` i
 **Deliverables, in order**
 
 1. The Dart peer moved from the prototype into `test/interop/dart_peer/` with `dart_commits.txt`, the launcher, `tool/dart-peer.mjs`, the vectors JSON and extractor, the coverage test and the `test/support/vectors.ts` helper, the `interop` CI job (skips cleanly when Dart cannot be installed). The oracle test over the existing codecs (status, name, address) and the raw probe scripts as tests. **Done** (#7, #12).
-2. The TS peer and the scenario matrix for the mux and Talk scenarios (request, stream, abort, extend, bulk, close, GOAWAY, protocol-error injection), running as cells become available. **In flight** (`claude/ts-peer`), as are 3 and 4.
+2. The TS peer and the scenario matrix for the mux and Talk scenarios (request, stream, abort, extend, bulk, close, GOAWAY, protocol-error injection), running as cells become available. **Done** (`claude/ts-peer`: the TS peer, every cell of the matrix over TCP, WebSocket, raw QUIC and WebTransport), as are 3 and 4 (the identity, naming, sharding, proxy, relay and forwarding scenarios, the chains, the oracle for every codec, the Dart driver).
 3. Identity scenarios (NONCE/IDENT both directions, holder key and bearer, exporter-bound over QUIC), naming and sharding scenarios, relay and proxy, mixed-language meshes.
 4. A Dart driver that spawns the TS peer, so the Dart repositories' own interop scenarios can run against TS later (a tool under `test/interop/dart_driver/`, not a change to the Dart repositories).
 

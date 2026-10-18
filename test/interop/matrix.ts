@@ -11,6 +11,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // cannot run is a skipped suite whose name carries the reason.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect } from 'vitest';
+import { nativeQuicAvailability } from '../../src/node/quic/index.ts';
 import type { Peer, StartOptions } from './launcher.ts';
 import { startPeer, unavailable } from './peers.ts';
 import { type Implementation, type PeerConfig, type Transport, transports } from './protocol.ts';
@@ -26,17 +27,21 @@ export const pairings: readonly Pairing[] = [
   ['ts', 'ts'],
 ];
 
+const quic = nativeQuicAvailability();
+if (!quic.available && process.env['SWITCHBOARD_NATIVE'] === 'required') {
+  throw new Error(`SWITCHBOARD_NATIVE=required, but ${quic.reason}`);
+}
+const noQuic = quic.available
+  ? undefined
+  : 'the native QUIC addon, which does not load here (`npm run build:native`, or SWITCHBOARD_QUIC_ADDON)';
+
 /**
- * What the TS side cannot do yet, by transport: the reason its cells skip
- * even once the TS peer exists. Each porting thread clears its entry as it
- * lands.
+ * What the TS side cannot do here, by transport: the reason its cells skip
+ * even though the TS peer exists. TCP and WebSocket always run; raw QUIC and
+ * WebTransport need the native addon (`nativeQuic()`).
  */
-export const tsTransportGaps: Readonly<Partial<Record<Transport, string>>> = {
-  tcp: 'the TCP transport and the frame mux (thread 1)',
-  ws: 'the WebSocket transport and the frame mux (thread 1)',
-  quic: 'the QUIC binding on Node (thread 5)',
-  webtransport: 'the WebTransport binding on Node (thread 5)',
-};
+export const tsTransportGaps: Readonly<Partial<Record<Transport, string>>> =
+  noQuic === undefined ? {} : { quic: noQuic, webtransport: noQuic };
 
 /** One cell of the matrix. */
 export interface Cell {

@@ -18,6 +18,8 @@ import 'package:switchboard_quic/switchboard_quic.dart';
 import 'package:switchboard_quic/switchboard_quic_native.dart';
 
 import 'context.dart';
+import 'identity.dart';
+import 'mesh.dart';
 import 'protocol.dart';
 import 'services.dart' show pattern;
 
@@ -47,13 +49,32 @@ class Client {
     'connection.ping',
     'connection.goAway',
     'connection.close',
+    'connection.identify',
     'request',
   ];
 
-  Switchboard get _client => _node ??= Switchboard(
+  NodeIdentity? _identity;
+
+  /// Sets the identity the client node is made with; before its first use.
+  Future<void> identify(NodeIdentity identity) async {
+    _identity = identity;
+  }
+
+  Switchboard get _client => _node ??= _newNode(null);
+
+  late final NamingCommands _naming = NamingCommands(ctx, _newNode);
+
+  /// A client node, as [_client] is, resolving with [resolver].
+  Switchboard _newNode(Resolver? resolver) => Switchboard(
+    resolver: resolver,
     localConnections: false,
     muxOptions: ctx.config.mux,
     talkOptions: ctx.config.talk,
+    credential: _identity?.credential,
+    holderKey: _identity?.holderKey,
+    verifier: _identity?.verifier,
+    identifyOutgoing: ctx.config.identity.identifyOutgoing,
+    identityTimeout: ctx.config.identity.identityTimeout,
     bindings: [
       QuicSwitchboardBinding(
         NativeQuicProvider(),
@@ -62,15 +83,37 @@ class Client {
     ],
   );
 
+  /// Whether [command] answers [op].
+  static bool answers(String op) =>
+      ops.contains(op) || NamingCommands.ops.contains(op);
+
   /// Runs the client command [op].
   Future<Object?> command(String op, Map<String, Object?> cmd) async {
     final h = ctx.handles;
+    if (NamingCommands.ops.contains(op)) {
+      return _naming.command(op, cmd, (channel) async {
+        final node = channel.connection;
+        return _adoptTalk(channel, ctx.trackConnection(node));
+      });
+    }
     switch (op) {
       case 'connect':
+        final intent = cmd['intent'];
         final c = await _client.dial(
           Uri.parse(requiredString(cmd, 'endpoint')),
+          intent: intent == null ? null : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
         );
-        return {'connection': ctx.trackConnection(c)};
+        return {'connection': ctx.trackConnection(c, _client)};
+      case 'connection.identify':
+        final c = h.get<MuxConnection>(cmd['connection'], 'connection');
+        final intent = cmd['intent'];
+        await (ctx.ownerOf(c) ?? _client).identifyOn(
+          c,
+          intent: intent == null ? null : bytesOf(intent),
+          receiver: stringArg(cmd, 'receiver'),
+        );
+        return null;
       case 'open':
         final ch = h
             .get<MuxConnection>(cmd['connection'], 'connection')
@@ -79,19 +122,35 @@ class Client {
       case 'talk.open':
         return _talkOpen(cmd);
       case 'talk.request':
-        final t = h.get<TalkChannel>(cmd['talk'], 'talk channel');
-        final reply = await t.request(
+        final handle = requiredString(cmd, 'talk');
+        final t = h.get<TalkChannel>(handle, 'talk channel');
+        final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
+        late final TalkRequest r;
+        r = t.startRequest(
           requiredString(cmd, 'procedure'),
-          _payload(cmd),
+          payload,
+          bulk: bulk,
+          bulkLength: bulkLength,
           timeout: msArg(cmd, 'timeoutMs'),
+          onExtend: (deadline, renew) => ctx.out.event('talk.extend', {
+            'talk': handle,
+            'requestId': r.requestId,
+            ..._extensionJson(deadline, renew),
+          }),
         );
-        return _messageJson(reply, digest: boolArg(cmd, 'digest'));
+        return _messageJson(await r.response, digest: boolArg(cmd, 'digest'));
       case 'talk.stream':
         return _talkStream(cmd);
       case 'talk.send':
+        final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
         await h
             .get<TalkChannel>(cmd['talk'], 'talk channel')
-            .send(requiredString(cmd, 'procedure'), _payload(cmd));
+            .send(
+              requiredString(cmd, 'procedure'),
+              payload,
+              bulk: bulk,
+              bulkLength: bulkLength,
+            );
         return null;
       case 'talk.close':
         await h
@@ -138,6 +197,13 @@ class Client {
     }
   }
 
+  /// A Talk channel to [openPayload]'s service at [endpoint], on a pooled
+  /// connection: what a `forward` service forwards to.
+  Future<TalkChannel> openTalk(String endpoint, Uint8List openPayload) async {
+    final c = await _client.connect(Uri.parse(endpoint));
+    return TalkChannel(c.open(openPayload), options: ctx.config.talk);
+  }
+
   /// Closes the client node.
   Future<void> close() async {
     await _node?.close();
@@ -165,6 +231,42 @@ class Client {
     ).encode();
   }
 
+  /// A command's payload, and with `bulkPattern` (`{length, chunk,
+  /// declared}`) instead an empty payload and the `BIG` pattern of
+  /// `length` bytes as a bulk source in pieces of `chunk` (default 1000),
+  /// its length declared unless `declared` is false.
+  static (Uint8List, Stream<List<int>>?, int?) _payloadAndBulk(
+    Map<String, Object?> cmd,
+  ) {
+    final spec = objectArg(cmd, 'bulkPattern');
+    if (spec == null) {
+      return (_payload(cmd), null, null);
+    }
+    final length = intArg(spec, 'length') ?? 0;
+    final chunk = intArg(spec, 'chunk') ?? 1000;
+    final bytes = pattern(length);
+    Stream<List<int>> pieces() async* {
+      for (var at = 0; at < length; at += chunk) {
+        yield bytes.sublist(at, at + chunk < length ? at + chunk : length);
+      }
+    }
+
+    return (
+      Uint8List(0),
+      pieces(),
+      boolArg(spec, 'declared', fallback: true) ? length : null,
+    );
+  }
+
+  /// An `EXTEND` as the `talk.extend` event reports it, in milliseconds.
+  static Map<String, Object?> _extensionJson(
+    Duration? deadline,
+    Duration? renew,
+  ) => {
+    'deadlineMs': deadline?.inMilliseconds,
+    'renewMs': renew?.inMilliseconds,
+  };
+
   /// A command's payload: `payload` (hex), `text` (UTF-8) or
   /// `patternLength` (the `BIG` pattern of that many bytes).
   static Uint8List _payload(Map<String, Object?> cmd) {
@@ -184,11 +286,18 @@ class Client {
     String? connection = stringArg(cmd, 'connection');
     if (connection == null) {
       final c = await _client.dial(Uri.parse(requiredString(cmd, 'endpoint')));
-      connection = ctx.trackConnection(c);
+      connection = ctx.trackConnection(c, _client);
     }
     final ch = h
         .get<MuxConnection>(connection, 'connection')
         .open(_openPayload(cmd));
+    return _adoptTalk(ch, connection);
+  }
+
+  /// [ch] as a Talk channel handle on [connection]'s, its messages reported
+  /// and its requests refused.
+  Map<String, Object?> _adoptTalk(MuxChannel ch, String connection) {
+    final h = ctx.handles;
     final channel = ctx.trackChannel(ch, listen: false);
     final talk = TalkChannel(ch, options: ctx.config.talk);
     final handle = h.add('t', talk);
@@ -207,13 +316,21 @@ class Client {
 
   Map<String, Object?> _talkStream(Map<String, Object?> cmd) {
     final t = ctx.handles.get<TalkChannel>(cmd['talk'], 'talk channel');
+    final (payload, bulk, bulkLength) = _payloadAndBulk(cmd);
+    String? handle;
     final s = t.streamRequest(
       requiredString(cmd, 'procedure'),
-      _payload(cmd),
+      payload,
+      bulk: bulk,
+      bulkLength: bulkLength,
       timeout: msArg(cmd, 'timeoutMs'),
       window: intArg(cmd, 'window'),
+      onExtend: (deadline, renew) => ctx.out.event('talk.extend', {
+        'stream': handle,
+        ..._extensionJson(deadline, renew),
+      }),
     );
-    final handle = ctx.handles.add('s', s);
+    handle = ctx.handles.add('s', s);
     final digest = boolArg(cmd, 'digest');
     unawaited(() async {
       var index = 0;

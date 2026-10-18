@@ -9,26 +9,50 @@ library;
 
 import 'package:switchboard/core.dart';
 
+import 'identity.dart';
+import 'mesh.dart';
 import 'protocol.dart';
 
 /// The transports a peer can listen on.
 const List<String> transports = ['tcp', 'ws', 'quic', 'webtransport'];
 
 /// One registered service: a type, an instance id, and the behaviour that
-/// serves it (`echo`, `raw` or `sink`, README "Services").
+/// serves it (`echo`, `raw`, `sink` or `forward`, README "Services").
 class ServiceSpec {
   /// A service of [type] at [instance] behaving as [behaviour].
-  const ServiceSpec(this.type, this.behaviour, {this.instance = 0});
+  const ServiceSpec(
+    this.type,
+    this.behaviour, {
+    this.instance = 0,
+    this.anyInstance = false,
+    this.targetEndpoint,
+    this.targetType,
+    this.targetInstance = 0,
+  });
 
   /// The service type.
   final String type;
 
-  /// `echo` (the interop procedures), `raw` (channels as handles) or
-  /// `sink` (channels never read).
+  /// `echo` (the interop procedures), `raw` (channels as handles), `sink`
+  /// (channels never read) or `forward` (Talk forwarded to a target).
   final String behaviour;
 
   /// The instance id; 0 registers the type's default handler.
   final int instance;
+
+  /// Whether it also serves every instance of its type no other
+  /// registration serves (an instance the naming service assigned).
+  final bool anyInstance;
+
+  /// `forward`: the endpoint forwarded to; null for this peer's first
+  /// listener.
+  final String? targetEndpoint;
+
+  /// `forward`: the service type forwarded to; null for `echo`.
+  final String? targetType;
+
+  /// `forward`: the instance forwarded to.
+  final int targetInstance;
 }
 
 /// Everything the command line configures.
@@ -41,7 +65,9 @@ class PeerConfig {
     this.mux = const MuxOptions(),
     this.talk = const TalkOptions(),
     this.services = defaultServices,
-  });
+    IdentityConfig? identity,
+    this.mesh = const MeshConfig.none(),
+  }) : identity = identity ?? IdentityConfig.none();
 
   /// `echo`, `raw` and `sink` at instance 1.
   static const List<ServiceSpec> defaultServices = [
@@ -67,15 +93,15 @@ class PeerConfig {
       path: stringArg(json, 'path') ?? '/sb',
       mux: _mux(objectArg(json, 'mux') ?? const {}),
       talk: _talk(objectArg(json, 'talk') ?? const {}),
+      identity: objectArg(json, 'identity') == null
+          ? null
+          : IdentityConfig.fromJson(objectArg(json, 'identity')!),
+      mesh: MeshConfig.fromJson(json),
       services: services == null
           ? defaultServices
           : [
               for (final s in services as List<Object?>)
-                ServiceSpec(
-                  requiredString(s as Map<String, Object?>, 'type'),
-                  stringArg(s, 'behaviour') ?? 'echo',
-                  instance: intArg(s, 'instance') ?? 0,
-                ),
+                _service(s as Map<String, Object?>),
             ],
     );
   }
@@ -94,6 +120,25 @@ class PeerConfig {
 
   /// The services the node registers.
   final List<ServiceSpec> services;
+
+  /// What the peer presents and verifies.
+  final IdentityConfig identity;
+
+  /// The naming service, proxy and relay the node serves.
+  final MeshConfig mesh;
+
+  static ServiceSpec _service(Map<String, Object?> s) {
+    final target = objectArg(s, 'target') ?? const {};
+    return ServiceSpec(
+      requiredString(s, 'type'),
+      stringArg(s, 'behaviour') ?? 'echo',
+      instance: intArg(s, 'instance') ?? 0,
+      anyInstance: boolArg(s, 'anyInstance'),
+      targetEndpoint: stringArg(target, 'endpoint'),
+      targetType: stringArg(target, 'type'),
+      targetInstance: intArg(target, 'instance') ?? 0,
+    );
+  }
 
   static MuxOptions _mux(Map<String, Object?> j) {
     const d = MuxOptions();
