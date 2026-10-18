@@ -515,7 +515,7 @@ function endedParentsOf(connection: MuxConnection): EndedParents {
 class EndedParents {
   readonly #connection: MuxConnection;
   readonly #targets = new Map<number, BulkTarget>();
-  // Insertion ordered: the oldest goes first.
+  // Both insertion ordered: the oldest goes first.
   readonly #deciding = new Map<number, HeldBulk[]>();
   readonly #failed = new Set<number>();
   #ended = false;
@@ -550,6 +550,7 @@ class EndedParents {
     this.#deciding.set(parentId, []);
   }
 
+  /** Whether bulk channels naming [parentId] are held for its owner's decision. */
   isDeciding(parentId: number): boolean {
     return this.#deciding.has(parentId);
   }
