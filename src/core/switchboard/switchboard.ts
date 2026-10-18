@@ -1609,7 +1609,7 @@ export class Switchboard implements AsyncDisposable {
    * connection.
    */
   #connectLocal(own: OwnListener): FrameTransport {
-    const [local, accepted] = this.#runtime.transportPair();
+    const [local, accepted] = this.#runtime.transportPair(this.clock);
     this.adoptTransport(accepted, { isInitiator: false, remote: localRemote, policy: own.policy });
     return local;
   }
@@ -1633,7 +1633,7 @@ export class Switchboard implements AsyncDisposable {
     // Every frame goes through the event queue, as from a socket: a request
     // loop between nodes of the process would otherwise never let a timer
     // run.
-    const [local, remote] = this.#runtime.transportPair();
+    const [local, remote] = this.#runtime.transportPair(this.clock);
     const first = this.#memoryIds[0];
     acceptor(remote, first === undefined ? 'memory peer' : `${memoryScheme}://${first}`);
     return local;
