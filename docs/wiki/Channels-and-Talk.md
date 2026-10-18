@@ -121,7 +121,7 @@ node.registerService('demo', (incoming) =>
 
 `serve(handler)` takes every message and calls the handler for each without waiting between them, and resolves when the channel ends. It is the guarded form: a handler that throws or rejects has its request answered `ABORT INTERNAL`. A `for await (const message of talk.messages)` loop works too, but takes one message at a time, and an exception in its body leaves the request unanswered until the responder timeout. `messages` has one consumer and is iterated once; stopping the iteration answers the requests not taken, and every later one, `ABORT UNIMPLEMENTED`.
 
-A received `TalkMessage` has `procedure` (a `Name`) and `procedureName`, `payload`, `text()`, `json()`, `bytes()`, `expectsReply`, `expectsStream`, `isCancelled`, `signal` (aborted when the requester cancels, the responder timeout passes or the channel closes: pass it to what the handler awaits) and the reply family: `reply`, `replyItem`, `replyStream`, `replyAbort`, `extend`, the chained `replyRequest`, `startReplyRequest`, `replyStreamRequest` and their item forms, and `setReplyTimeout`.
+A received `TalkMessage` has `procedure` (a `Name`) and `procedureName`, `payload`, `text()`, `json()`, `bytes()`, `expectsReply`, `expectsStream`, `isCancelled`, `signal` (a request's is aborted when the requester cancels, the responder timeout passes or the channel closes: pass it to what the handler awaits; a plain message's never aborts) and the reply family: `reply`, `replyItem`, `replyStream`, `replyAbort`, `extend`, the chained `replyRequest`, `startReplyRequest`, `replyStreamRequest` and their item forms, and `setReplyTimeout`.
 
 ### Requests
 
@@ -206,7 +206,7 @@ Call it inside a `serve` handler, as above, so the message's frame credit is pas
 | `minExtension`, `maxExtension` | 1000, 3 600 000 | the clamp on declared extensions |
 | `extendBuffer` | 5000 | added on the wire by `extend()` |
 | `maxIncomingRequests`, `maxOutgoingRequests` | 1024, 1024 | beyond: `RESOURCE_EXHAUSTED` |
-| `bulkThreshold`, `bulkChunkSize` | the channel's `maxSubframeLength`, 64 KiB | when a payload goes bulk, and its chunks |
+| `bulkThreshold`, `bulkChunkSize` | the channel's `maxSubframeLength`, 64 KiB | when a payload goes bulk, and its chunks (a positive integer, else `RangeError`) |
 | `maxInlinePayload`, `reassemblyBudget` | 16 MiB, 16 MiB | reassembly bounds |
 | `bulkWindow`, `maxUnclaimedBulk` | 1 MiB, 16 | the window of a bulk channel, and bulk channels ahead of their messages |
 | `bulkOpenTimeout`, `bulkIdleTimeout` | 10 000, 30 000 | waiting for a bulk channel, and a stalled one |

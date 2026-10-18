@@ -17,6 +17,7 @@ import {
   markBulkChannel,
   maxHeldBulk,
   registerBulkTarget,
+  releaseBulkTarget,
 } from '../talk/index.ts';
 import { TalkBulkOpen } from '../talk/talk-bulk.ts';
 import { TalkFrame } from '../talk/talk-frame.ts';
@@ -606,6 +607,11 @@ function forward(from: PipeEnd, to: PipeEnd, options: ForwardOptions): void {
     // Independent streams: bulk channels referenced before the close may
     // arrive after it, and are forwarded before it goes on.
     const settling = forwarded.isOk ? bulkOrder?.settle() : undefined;
+    if (settling === undefined && bulkOrder !== undefined) {
+      // Not lingering: a late bulk channel for [from] is refused at once,
+      // not held for a decision.
+      releaseBulkTarget(bulkOrder.from.mux, bulkOrder.open);
+    }
     let left: number | undefined;
     if (settling !== undefined) {
       const wait = twinWait(to);

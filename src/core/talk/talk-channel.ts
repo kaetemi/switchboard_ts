@@ -35,6 +35,7 @@ import {
   lingerBulkTarget,
   markBulkChannel,
   registerBulkTarget,
+  releaseBulkTarget,
   routeBulk,
 } from './talk-bulk-routes.ts';
 import { type Awaited, BulkIn, BulkOut, BulkPayload, Lane } from './talk-bulk-transfer.ts';
@@ -150,6 +151,9 @@ export interface StartRequestInit {
 
 const closedChannel = (): SwitchboardError =>
   SwitchboardError.of(StatusCode.failedPrecondition, 'channel closed');
+
+/** The smallest frame that carries a BULK reference: the flags, a response id and the reference (14 bytes). */
+const minBulkFrameLength = 1 + 3 + TalkBulkReference.encodedLength;
 
 /**
  * Talk message chains over one channel: plain messages, requests,
@@ -294,6 +298,9 @@ export class TalkChannel implements TalkChannelContract {
 
   /** The reassemblies in progress, by bulk payload: a graceful end waits for those that arrived whole ({@link #peerEnded}). */
   readonly #collecting = new Map<BulkIn, Promise<void>>();
+
+  /** Set while a graceful end waits for the readers of the bulk channels that ended ({@link #drainBulk}). */
+  #draining: Deferred<void> | undefined;
 
   /** @internal Messages whose bulk channel was not adopted yet, by bulk number. */
   readonly _bulkAwaited = new Map<number, Awaited>();
@@ -665,7 +672,7 @@ export class TalkChannel implements TalkChannelContract {
    * the payload is that byte source, read in chunks of `bulkChunkSize` as
    * the bulk channel's window takes them. Cancelling the request, or its
    * failing locally, stops the transfer CANCELLED. Needs a mux channel:
-   * over any other channel a bulk payload rejects UNIMPLEMENTED.
+   * over any other channel a bulk payload throws UNIMPLEMENTED.
    *
    * Pacing: the frame is handed to the channel without waiting for the
    * peer's window; await {@link whenWritable} before each request to pace
@@ -673,8 +680,10 @@ export class TalkChannel implements TalkChannelContract {
    *
    * @throws {SwitchboardError} RESOURCE_EXHAUSTED if `maxOutgoingRequests`
    * is reached, FAILED_PRECONDITION if the channel is closed, CANCELLED if
-   * `signal` is aborted already; {@link TypeError} for a payload with
-   * `bulk`; {@link RangeError} for an invalid name, timeout or bulk length.
+   * `signal` is aborted already, UNIMPLEMENTED for a bulk payload over a
+   * channel that is not a mux channel; {@link TypeError} for a payload
+   * with `bulk`; {@link RangeError} for an invalid name, timeout or bulk
+   * length.
    */
   startRequest(procedure: NameLike, payload?: PayloadLike, options?: RequestOptions): TalkRequest {
     const name = options?.name ?? toName(procedure);
@@ -802,6 +811,11 @@ export class TalkChannel implements TalkChannelContract {
       ),
       { keepOutgoingBulk: status.isOk },
     );
+    const mux = this.#mux;
+    if (mux !== undefined) {
+      // Closed here: nothing is kept for the bulk channels that come after.
+      releaseBulkTarget(mux, this.#bulkTarget);
+    }
     if (status.isOk && this._bulkOuts.size > 0) {
       await this.#awaitBulkOuts();
     }
@@ -1814,13 +1828,19 @@ export class TalkChannel implements TalkChannelContract {
     // them as they arrive): buffered in the mux channel, or delivered
     // toward the reader and not read (a step behind the mux, two through a
     // slot channel). The references among them claim bulk channels ahead
-    // of this one. Beyond the bound, the count waits for them.
+    // of this one. Beyond the bound, the count waits for them; where this
+    // channel reads on, those beyond it hold no more than the reassembly
+    // budget together.
     const max = this.options.maxUnclaimedBulk;
-    if (this.#bulkUnclaimed.size >= max + this.#unreadReferences()) {
-      this.#refuseUnclaimed(b, number);
-      return;
-    }
     if (this.#bulkUnclaimed.size >= max) {
+      if (
+        this.#bulkUnclaimed.size >= max + this.#unreadReferences() ||
+        (!this.#orderedBulk &&
+          this.#unclaimedExtraHold() + streamHold(b, undefined) > this.options.reassemblyBudget)
+      ) {
+        this.#refuseUnclaimed(b, number);
+        return;
+      }
       this.#unclaimedRecount = true;
     }
     this.#bulkUnclaimed.set(number, b);
@@ -1860,7 +1880,8 @@ export class TalkChannel implements TalkChannelContract {
    * parent is read a frame at a time, so their references are usually
    * there, unread; a bulk channel beyond `maxUnclaimedBulk` is refused once
    * the frames that could carry its reference were read, or could not be.
-   * Each costs at least what a message frame of a bare reference does.
+   * Each costs at least what the smallest BULK frame does
+   * ({@link minBulkFrameLength}).
    */
   #unreadReferences(): number {
     const mux = this.#mux;
@@ -1872,7 +1893,32 @@ export class TalkChannel implements TalkChannelContract {
     if (room !== undefined && room > this.#readHeld) {
       unread += room - this.#readHeld;
     }
-    return unread > 0 ? Math.floor(unread / mux.sendCost(TalkBulkReference.encodedLength + 1)) : 0;
+    return unread > 0 ? Math.floor(unread / mux.sendCost(minBulkFrameLength)) : 0;
+  }
+
+  /**
+   * What the bulk channels waiting unclaimed beyond the first
+   * `maxUnclaimedBulk` may hold together (each what arrived, and its
+   * window while open: {@link streamHold}). Where this channel reads on
+   * ({@link #readOn}), those are admitted on an allowance that counts
+   * frames which may never come ({@link #unreadReferences}: a parent that
+   * sends nothing still has a window to read on), so what they hold
+   * together is bounded by `reassemblyBudget`, as what the payloads
+   * waiting for the budget hold is ({@link #attachBulk}); with no budget
+   * (0), nothing that may hold a byte is admitted beyond the bound, as in
+   * Dart. What an unclaimed channel may hold never grows (nothing consumes
+   * it or grants it more), so the bound holds once checked at admission.
+   */
+  #unclaimedExtraHold(): number {
+    const max = this.options.maxUnclaimedBulk;
+    let index = 0;
+    let hold = 0;
+    for (const b of this.#bulkUnclaimed.values()) {
+      if (index++ >= max) {
+        hold += streamHold(b, undefined);
+      }
+    }
+    return hold;
   }
 
   /**
@@ -2213,6 +2259,7 @@ export class TalkChannel implements TalkChannelContract {
     this.#collecting.set(b, collecting);
     const collected = (): void => {
       this.#collecting.delete(b);
+      this._checkLinger();
     };
     collecting.then(collected, collected);
   }
@@ -2559,21 +2606,9 @@ export class TalkChannel implements TalkChannelContract {
     const error = new SwitchboardError(status);
     if (graceful && !this.#orderedBulk) {
       await this.#linger(error);
-    } else if (graceful) {
-      // The bulk channels of the messages that arrived before the close
-      // arrived whole before it too, but their bytes are read
-      // asynchronously here (the Dart mux delivers them as they arrive):
-      // the reassemblies of those that ended finish before the channel
-      // ends, as there.
-      const arrived: Promise<void>[] = [];
-      for (const [b, collecting] of this.#collecting) {
-        if (b.channel.state === 'closed') {
-          arrived.push(collecting);
-        }
-      }
-      if (arrived.length > 0) {
-        await Promise.allSettled(arrived);
-      }
+    }
+    if (graceful) {
+      await this.#drainBulk();
     }
     this.#terminate(error);
     // What waited for the peer's LIMITS goes nowhere: after the requests it
@@ -2625,17 +2660,25 @@ export class TalkChannel implements TalkChannelContract {
       }
     }
     const mux = this.#mux;
-    if (mux === undefined || this.#bulkSettled) {
+    if (mux === undefined) {
+      return;
+    }
+    if (this.#bulkSettled) {
+      // What was routed for it since the end is not wanted.
+      releaseBulkTarget(mux, this.#bulkTarget);
       return;
     }
     const settled = new Deferred<void>();
+    // Lingering before the target takes what was routed for this channel
+    // since it ended ({@link lingerBulkTarget}).
+    this._lingering = settled;
+    this._lingerProgress = this._clock.now();
     if (!lingerBulkTarget(mux, this.#bulkTarget, settled.promise)) {
+      this._lingering = undefined;
       this._log('debug', 'too many channels waiting for bulk payloads; not waiting');
       settled.resolve();
       return;
     }
-    this._lingering = settled;
-    this._lingerProgress = this._clock.now();
     let limit = this.options.bulkIdleTimeout;
     if (limit <= 0) {
       limit = 30_000;
@@ -2668,12 +2711,69 @@ export class TalkChannel implements TalkChannelContract {
     await new Promise<void>((resolve) => this._clock.setTimeout(resolve, 0));
   }
 
-  /** @internal Ends the wait for bulk payloads after the peer's close once nothing it waits for is left. */
+  /** @internal Ends the waits for bulk payloads after the peer's close once nothing they wait for is left. */
   _checkLinger(): void {
     const settled = this._lingering;
     if (settled !== undefined && !settled.isSettled && this.#bulkSettled) {
       settled.resolve();
     }
+    const drained = this.#draining;
+    if (drained !== undefined && !drained.isSettled && this.#bulkDrained) {
+      drained.resolve();
+    }
+  }
+
+  /**
+   * The peer closed the channel gracefully, and the bulk channels of the
+   * messages that arrived before the close ended before it (over
+   * unordered channels: while {@link #linger} waited), but this side reads
+   * their bytes asynchronously, where the Dart mux delivers them as they
+   * arrive: waits until the reader of every bulk channel that ended has
+   * reached its end and the reassemblies of those have finished, so that
+   * a payload that arrived whole is delivered (a streamed one readable from
+   * `bulk`, a reassembled one with its message), as there. They read what
+   * the mux holds already, without waiting for anyone; at most
+   * `bulkIdleTimeout` (30 s when that is 0) all the same. Payloads still in
+   * transfer, or waiting for the reassembly budget, end with the channel,
+   * as in Dart.
+   */
+  async #drainBulk(): Promise<void> {
+    if (this.#bulkDrained) {
+      return;
+    }
+    const drained = new Deferred<void>();
+    this.#draining = drained;
+    let limit = this.options.bulkIdleTimeout;
+    if (limit <= 0) {
+      limit = 30_000;
+    }
+    const timer = this._clock.setTimeout(
+      () => {
+        if (!drained.isSettled) {
+          this._log('debug', `bulk channels not read to their end within ${limit} ms of the close`);
+          drained.resolve();
+        }
+      },
+      limit > maxTimerDelay ? maxTimerDelay : limit,
+    );
+    await drained.promise;
+    this._clock.clearTimeout(timer);
+    this.#draining = undefined;
+  }
+
+  /** Every bulk channel that ended was read to its end, and the reassemblies of those finished. */
+  get #bulkDrained(): boolean {
+    for (const b of this._bulkIns) {
+      if (b.channel.state === 'closed') {
+        return false;
+      }
+    }
+    for (const b of this.#collecting.keys()) {
+      if (b.channel.state === 'closed') {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** No bulk channel is awaited, and every one attached arrived whole or failed. */

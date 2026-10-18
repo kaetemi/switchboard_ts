@@ -14,6 +14,7 @@ export {
   markBulkChannel,
   maxHeldBulk,
   registerBulkTarget,
+  releaseBulkTarget,
   routeBulk,
   routeBulkChannel,
 } from './talk-bulk-routes.ts';
