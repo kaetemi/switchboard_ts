@@ -94,3 +94,16 @@ connection. `BulkRoutes` is not exported from the barrel; import from
   it.
 - `test/support/talk/frame-mux-peers.ts`: Talk over the real frame mux
   (`frameMuxPair`, `FrameMuxPeers`, `WireLog`, `RawMuxPeer`).
+
+## Unverified after the Talk review
+
+Left as the review found them (`docs/notes/review-talk.md`): `#admission`
+keeps entries that left it (failed RESOURCE_EXHAUSTED, or dropped) until
+they reach its head, so behind a head that a full budget stalls it may
+grow without bound (Dart's `_admission` has the same shape; observing it
+needs a heap measurement); `#mustDefer` skips the flush when a carrier's
+mux channel is replaced while frames wait for the old one's LIMITS, and
+later frames then defer without listening on the new one (unreachable
+over the frame mux, where MOVED follows LIMITS); and whether Dart's QUIC
+delivery can route a bulk channel between a parent's end and `_linger`,
+as TS could before its routes kept the parent's target, is not known.
