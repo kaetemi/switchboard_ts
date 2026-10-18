@@ -75,7 +75,9 @@ Test parity, by Dart file:
 | `web_provider_test`, `web_binding_test` | `test/browser/webtransport.test.ts` (and `webtransport-provider.test.ts`) |
 | `build_hook_test` | the reason in `not-ported.test.ts`: Dart's native-assets hook, which `native/build.mjs` stands in for |
 
-**Left:** interop with the Dart peer over raw QUIC and WebTransport in both directions comes with the TS peer (`claude/ts-peer`; the Dart peer already listens and dials on `quic` and `webtransport`, its certificate hash in READY); musl prebuilds; the first publish (the user's call); Firefox's exporter path and Chromium 143+'s `protocols`, which need browsers newer than CI's.
+**Left:** interop with the Dart peer over raw QUIC and WebTransport in both directions comes with the TS peer (`claude/ts-peer`; the Dart peer already listens and dials on `quic` and `webtransport`, its certificate hash in READY); the first publish (the user's call); Firefox's departures, above all its exporter, which makes a node refuse a Firefox page's `IDENT` (design section 13, item 7).
+
+**Since (`claude/packaging-runtimes`):** musl prebuilds for Linux x64 and arm64 (`build-musl` in `release.yml`, an Alpine container; seven targets in all), a `deno` CI job (the unit project, and the built package from its tarballs through `test/runtime/smoke.mjs`), and Playwright 1.64.1 with a project per browser: Chromium 156 (the `protocols` negotiation) and Firefox 157 (the exporter path), the departures of Firefox checked as such (`departures` in `test/browser/webtransport.test.ts`).
 
 ## Known gaps and decisions
 

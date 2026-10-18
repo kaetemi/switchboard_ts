@@ -206,6 +206,8 @@ async function serve(session: NativeQuicSession, record: Recorder): Promise<void
     event: 'session',
     case: kind,
     protocol: session.protocol ?? null,
+    protocols: session.requestProtocols ?? null,
+    draft: session.requestDraft ?? null,
     origin: session.requestOrigin ?? null,
   });
   let exporter: Uint8Array | undefined;

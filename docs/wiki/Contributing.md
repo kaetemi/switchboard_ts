@@ -4,7 +4,7 @@
 
 - TypeScript 7, `tsc` for the build, `module: NodeNext`, `.ts` import extensions (rewritten on emit), strict with `exactOptionalPropertyTypes` and `noUncheckedIndexedAccess`, `verbatimModuleSyntax`, `erasableSyntaxOnly`.
 - Vitest 5 for tests, Biome 2 for lint and format (single quotes, 100 columns, no `any`, `type` imports).
-- Rust (1.88 or later; CI uses 1.99.0) only for the native QUIC addon (`npm run build:native`); a Dart SDK and Rust for the interop peer; Playwright's Chromium for the browser tests.
+- Rust (1.88 or later; CI uses 1.99.0) only for the native QUIC addon (`npm run build:native`); a Dart SDK and Rust for the interop peer; Playwright's Chromium and Firefox for the browser tests.
 
 Before every push:
 

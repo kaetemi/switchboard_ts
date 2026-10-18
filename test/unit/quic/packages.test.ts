@@ -40,20 +40,24 @@ function suffixOf(os: string, cpu: string, libc: string | undefined): string {
 }
 
 describe('the per-platform packages', () => {
-  test("the five targets of switchboard_quic's release, as the README lists them", () => {
+  test("the five targets of switchboard_quic's release and the two musl Linux ones, as the README lists them", () => {
     expect([...table.keys()].sort()).toEqual([
       'darwin-arm64',
       'darwin-x64',
       'linux-arm64-gnu',
+      'linux-arm64-musl',
       'linux-x64-gnu',
+      'linux-x64-musl',
       'win32-x64-msvc',
     ]);
     expect([...table.values()].sort()).toEqual([
       'aarch64-apple-darwin',
       'aarch64-unknown-linux-gnu',
+      'aarch64-unknown-linux-musl',
       'x86_64-apple-darwin',
       'x86_64-pc-windows-msvc',
       'x86_64-unknown-linux-gnu',
+      'x86_64-unknown-linux-musl',
     ]);
     expect(directories).toEqual([...table.keys()].sort());
   });
@@ -78,7 +82,9 @@ describe('the per-platform packages', () => {
       expect(os).toHaveLength(1);
       expect(cpu).toHaveLength(1);
       expect(suffixOf(os[0] as string, cpu[0] as string, libc?.[0])).toBe(directory);
-      expect(libc).toEqual(os[0] === 'linux' ? ['glibc'] : undefined);
+      expect(libc).toEqual(
+        os[0] === 'linux' ? [directory.endsWith('-musl') ? 'musl' : 'glibc'] : undefined,
+      );
       const repository = manifest['repository'] as Record<string, string>;
       expect(repository['url']).toBe((main['repository'] as Record<string, string>)['url']);
       expect(repository['directory']).toBe(`native/npm/${directory}`);
@@ -122,6 +128,14 @@ describe('the per-platform packages', () => {
     expect(lists).toHaveLength(2);
     for (const list of lists) {
       expect((list[1] as string).trim().split(/\s+/).sort()).toEqual(directories);
+    }
+    // The pack job waits for both build jobs; a musl addon is a cdylib only
+    // with the C runtime linked dynamically.
+    expect(workflow).toContain('needs: [check, build, build-musl]');
+    for (const [target, triple] of table) {
+      if (!target.endsWith('-musl')) continue;
+      const variable = `CARGO_TARGET_${triple.toUpperCase().replaceAll('-', '_')}_RUSTFLAGS`;
+      expect(workflow).toContain(`${variable}="-C target-feature=-crt-static"`);
     }
     // Only workflow_dispatch triggers it; publishing needs its input.
     const on = workflow.slice(workflow.indexOf('\non:'), workflow.indexOf('\npermissions:'));
