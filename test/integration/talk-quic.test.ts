@@ -606,7 +606,8 @@ describe('_bulk continuations after GOAWAY', () => {
 });
 
 // The session-gone hold of the binding under Talk (design section 13, item
-// 8): a case of the Dart review (switchboard_quic wip/shutdown-races).
+// 8), beyond the cases of switchboard_quic d509a42: a message waiting for
+// its payload, its parent and its bulk channel both reset.
 describe('a WebTransport session going while Talk waits', () => {
   test("a Talk channel and the bulk channel it waits for, reset without a code before the session's close, end GOING_AWAY", async () => {
     const [connection, raw] = await bindingAndRaw({ isWebTransport: true });

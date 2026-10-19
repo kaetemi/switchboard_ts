@@ -354,9 +354,9 @@ export class RawPeer {
 
   /**
    * Reads the `PING` the binding writes right behind its GOAWAY (the PING
-   * barrier, design section 12, item 17; TS behaviour beyond Dart) and
-   * answers it, as a peer reading the control stream does: the binding's
-   * close waits for the `PONG`, else for `closeConfirmTimeout`.
+   * barrier of design section 13, item 8) and answers it, as a peer
+   * reading the control stream does: the binding's close waits for the
+   * `PONG`, else for `closeConfirmTimeout`.
    */
   async answerPing(): Promise<void> {
     const ping = await this.nextControl();

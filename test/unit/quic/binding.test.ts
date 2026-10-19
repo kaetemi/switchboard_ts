@@ -1383,10 +1383,9 @@ class OpenedChannel {
 }
 
 // The binding page's "GOAWAY and connection close", "Closing" and "Errors"
-// (Sway ae8c2a7d, 89778e18 and d8ae49c4; design section 13, item 8): a port
-// of the two groups `switchboard_quic` added on its branch with the same
-// fix (f8babf6, not yet at the pinned commit; design section 12, item 17
-// until it is).
+// (Sway 1947ac37; design section 13, item 8): a port of the two groups of
+// `switchboard_quic`'s `binding_test.dart` at the pinned d509a42, which has
+// the same fix, with a few cases of the TS side's own.
 describe('the PING barrier after GOAWAY', () => {
   // The cases the review of the Dart fix added (switchboard_quic d509a42).
   test('a second GOAWAY shares the wait and sends no second barrier', async () => {

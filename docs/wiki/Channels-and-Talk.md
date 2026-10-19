@@ -87,7 +87,7 @@ A write to a channel that can no longer send rejects with `FAILED_PRECONDITION` 
 
 ### Lifetimes
 
-Connections and channels are `AsyncDisposable`: `await using channel = ...` closes the channel at the end of the block. `connection.goAway(status?)` sends GOAWAY and waits for the open channels up to `goAwayGrace` before closing; over QUIC and WebTransport a PING follows the GOAWAY, and the close also waits for its PONG (or the end of the connection, at most `closeConfirmTimeout` after the GOAWAY), so that the peer reads the GOAWAY before the session goes. `connection.close()` closes the transport now, without waiting for either. `connection.ping(payload?, { signal })` resolves with the round trip in milliseconds.
+Connections and channels are `AsyncDisposable`: `await using channel = ...` closes the channel at the end of the block. `connection.goAway(status?)` sends GOAWAY and waits for the open channels up to `goAwayGrace` before closing; over QUIC and WebTransport a PING follows the GOAWAY, and the close also waits for its PONG (or the end of the connection, at most `closeConfirmTimeout` after the GOAWAY), so that the peer reads the GOAWAY before the session goes. Against a peer that reads nothing on the connection, `goAway()`, and so a node's `close()`, can therefore take up to `closeConfirmTimeout` (30 s) rather than `goAwayGrace`, unless the keep-alive ends the connection first; with `closeConfirmTimeout` at 0 it waits until the keep-alive or the peer ends it. `connection.close()` closes the transport now, without waiting for either. `connection.ping(payload?, { signal })` resolves with the round trip in milliseconds.
 
 ## Talk
 

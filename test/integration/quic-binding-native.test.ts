@@ -513,8 +513,8 @@ describe.skipIf(!availability.available)(
         });
 
         // The PING barrier and the session-gone hold (design section 13,
-        // item 8): ported from switchboard_quic's branch with the same fix
-        // (f8babf6), not yet at the pinned commit.
+        // item 8): ported from switchboard_quic's native_integration_test.dart
+        // at the pinned d509a42, which has the same fix.
         test('GOAWAY with no channel open, sixteen times, from either side: the peer reads the record before the close', async () => {
           // Without channels the GOAWAY's sender closes once the PONG of the
           // PING it sent right after the record is back (or the peer's own
