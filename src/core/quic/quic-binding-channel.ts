@@ -173,12 +173,12 @@ function header(command: QuicRecordCommand, length: number): Uint8Array {
  *   full status, which is the one reported. Over WebTransport a reset or
  *   `STOP_SENDING` without an application code (the `WT_SESSION_GONE` of
  *   a session's end) is held for the session's end, up to
- *   `QuicBindingConnection.webTransportSessionGoneGrace`: within it the
- *   channel ends as the connection's channels do, after it the reset reads
- *   as `UNKNOWN`. A close not answered within
- *   `MuxOptions.closeConfirmTimeout` sends `STOP_SENDING`
- *   `DEADLINE_EXCEEDED`, resets this side's direction if its CLOSE record
- *   is still queued behind data (an `OK` close becoming
+ *   `QuicBindingConnection.webTransportSessionGoneGrace`, delivering and
+ *   sending nothing meanwhile: within it the channel ends as the
+ *   connection's channels do, after it the signal reads as `UNKNOWN`. A
+ *   close not answered within `MuxOptions.closeConfirmTimeout` sends
+ *   `STOP_SENDING` `DEADLINE_EXCEEDED`, resets this side's direction if its
+ *   CLOSE record is still queued behind data (an `OK` close becoming
  *   `DEADLINE_EXCEEDED`), and ends the channel with its first status.
  * - Flow control: the stack's stream window is the channel's window. The
  *   binding reads the next record only once the layer above has taken the
@@ -246,8 +246,11 @@ export class QuicBindingChannel implements MuxChannel {
   #heldReset = false;
   #heldStop = false;
   #sessionGoneTimer: TimerHandle | undefined;
-  // Wakes the read loop once the hold is decided.
+  // Wakes the read loop once the hold is decided, or a reset joins it.
   #goneDecided: Deferred<void> | undefined;
+  // This side's close confirmation timed out during the hold: applied once
+  // the hold is decided, unless the session's end decides the status.
+  #confirmExpired = false;
   #openingResult: Deferred<QuicStream | undefined> | undefined;
   // Settles once this side's direction is acknowledged, or will never be:
   // what a graceful close of the connection waits for.
@@ -663,6 +666,8 @@ export class QuicBindingChannel implements MuxChannel {
   #attach(stream: QuicStream, reader: RecordReader, openWritten: boolean): void {
     this.#stream = stream;
     this.#reader = reader;
+    // A STOP_SENDING held for the session's end holds the reads back.
+    reader.gate = () => this.#holdingReads();
     this.#openWritten = openWritten;
     stream.priority = this.#priorityClass;
     this.#watch(
@@ -930,6 +935,9 @@ export class QuicBindingChannel implements MuxChannel {
     }
     this.#stopSent = true;
     this.#stream?.stop(code);
+    // Whatever waits for a hold or for consumption stops reading.
+    this.#wakeHold();
+    this.#signalConsumed();
   }
 
   /**
@@ -1064,9 +1072,15 @@ export class QuicBindingChannel implements MuxChannel {
       return;
     }
     if (code === undefined && !this.#stopSent && this.#holdForSessionEnd()) {
-      // The peer's direction has ended: nothing more is delivered (a
-      // partial record is discarded); how the channel ends waits.
+      // The peer's direction has ended: nothing more is delivered, the
+      // records not delivered yet and a partial record are discarded, and
+      // a reader paused on consumption or on the hold wakes to stop; how
+      // the channel ends waits.
       this.#heldReset = true;
+      this.#queue.length = 0;
+      this.#queuedCost = 0;
+      this.#signalConsumed();
+      this.#wakeHold();
       this.#endIncoming();
       return;
     }
@@ -1103,12 +1117,18 @@ export class QuicBindingChannel implements MuxChannel {
    * with the close's status, `GOING_AWAY` for a graceful one); only a
    * session that outlives it has the signal read as the peer's own close,
    * `UNKNOWN`, taken as any reset or `STOP_SENDING` (the `STOP_SENDING`
-   * first). Meanwhile nothing more is delivered (a held reset ends the
-   * incoming direction, discarding a partial record; a held `STOP_SENDING`
-   * pauses reading) and nothing is sent in answer: no status is noted, no
-   * close in turn is queued, and the channel does not end on its own (a
-   * close of the application is written as usual). Raw QUIC has no such
-   * reset and holds nothing.
+   * first; then a close confirmation timeout that expired meanwhile).
+   * Meanwhile nothing more is delivered and nothing is sent in answer: a
+   * held reset ends the incoming direction (the records not delivered yet
+   * and a partial one are discarded, the receive window is 0, a grant
+   * changes nothing); a held `STOP_SENDING` pauses delivery and holds the
+   * provider's reads back (a read already issued may settle), so that the
+   * peer gets no credit, and what it paused is dropped with the session or
+   * delivered after the grace. No status is noted, no close in turn is
+   * queued, and the channel ends only as the hold is decided, unless this
+   * side closes with a failure (its own `STOP_SENDING`); a close of the
+   * application is written as usual. Raw QUIC has no such reset and holds
+   * nothing.
    */
   #holdForSessionEnd(): boolean {
     const host = this.#host;
@@ -1123,33 +1143,77 @@ export class QuicBindingChannel implements MuxChannel {
     return true;
   }
 
-  /** The session outlived the grace: what was held is the peer's own close. */
+  /**
+   * The session outlived the grace: what was held is the peer's own close,
+   * the `STOP_SENDING` first, then the reset; a confirmation timeout that
+   * expired meanwhile applies after them.
+   */
   #releaseHeld(): void {
     const stop = this.#heldStop;
     const reset = this.#heldReset;
-    this.#clearSessionGone();
+    this.#sessionGoneTimer = undefined;
+    this.#heldStop = false;
+    this.#heldReset = false;
+    this.#wakeHold();
+    // Delivery resumes after a STOP_SENDING.
+    this.#drain();
     if (this.#ended || this.#host.closing) {
       return;
     }
     if (stop) {
       this.#peerStopped(undefined);
     }
-    if (reset && !this.#ended && !this.#peerEnded) {
+    if (reset) {
       this.#resetBy(undefined);
+    }
+    if (this.#confirmExpired) {
+      this.#confirmExpired = false;
+      if (!this.#ended) {
+        this.#onConfirmTimeout();
+      }
     }
   }
 
+  /** Whether a reset or `STOP_SENDING` is held for the session's end: its timer runs. */
+  get #holding(): boolean {
+    return this.#sessionGoneTimer !== undefined;
+  }
+
+  /**
+   * While a `STOP_SENDING` (and no reset) is held, a promise that settles
+   * once the hold is decided or a reset joins it: the reads of the peer's
+   * direction wait for it, so that the peer's credit stays where it is.
+   */
+  #holdingReads(): Promise<void> | undefined {
+    if (!this.#heldStop || this.#heldReset || this.#ended || this.#stopSent) {
+      return undefined;
+    }
+    this.#goneDecided ??= new Deferred<void>();
+    return this.#goneDecided.promise;
+  }
+
+  /** Wakes what waits on the hold to look again. */
+  #wakeHold(): void {
+    const decided = this.#goneDecided;
+    this.#goneDecided = undefined;
+    decided?.resolve();
+  }
+
   #clearSessionGone(): void {
+    const paused = this.#heldStop;
     this.#heldStop = false;
     this.#heldReset = false;
+    this.#confirmExpired = false;
     const timer = this.#sessionGoneTimer;
     this.#sessionGoneTimer = undefined;
     if (timer !== undefined) {
       this.#host.options.clock.clearTimeout(timer);
     }
-    const decided = this.#goneDecided;
-    this.#goneDecided = undefined;
-    decided?.resolve();
+    this.#wakeHold();
+    if (paused) {
+      // Delivery resumes.
+      this.#drain();
+    }
   }
 
   /**
@@ -1158,7 +1222,7 @@ export class QuicBindingChannel implements MuxChannel {
    */
   #startConfirmTimer(): void {
     const timeout = this.#host.options.closeConfirmTimeout;
-    if (!(timeout > 0) || this.#confirmTimer !== undefined) {
+    if (!(timeout > 0) || this.#confirmTimer !== undefined || this.#confirmExpired) {
       return;
     }
     this.#confirmTimer = this.#host.options.clock.setTimeout(
@@ -1185,6 +1249,13 @@ export class QuicBindingChannel implements MuxChannel {
         const close = this.#pendingClose ?? this.#closeInFlight;
         this.#resetDirection(close === undefined || close.isOk ? deadline : quicErrorCode(close));
       }
+      return;
+    }
+    if (this.#holding && !this.#stopSent) {
+      // The held signal may be the session's close: the session's end
+      // decides the status, or, once it outlived the grace, the expired
+      // confirmation applies after the signal.
+      this.#confirmExpired = true;
       return;
     }
     this.#host.log(
@@ -1220,7 +1291,10 @@ export class QuicBindingChannel implements MuxChannel {
       !this.#ended &&
       this.#sendEnded &&
       this.#closeQueued &&
-      (this.#peerEnded || this.#stopSent)
+      (this.#peerEnded || this.#stopSent) &&
+      // A hold for the session's end decides, unless this side closed with
+      // a failure (its STOP_SENDING), whose status stands.
+      (!this.#holding || this.#stopSent)
     ) {
       this.#end();
     }
@@ -1244,6 +1318,11 @@ export class QuicBindingChannel implements MuxChannel {
   }
 
   #connectionLost(status: Status): void {
+    if (this.#holding) {
+      // What the hold kept back: the session's end discards it.
+      this.#queue.length = 0;
+      this.#queuedCost = 0;
+    }
     // What was held for the session's end: it came.
     this.#clearSessionGone();
     this.#noteStatus(status);
@@ -1309,9 +1388,8 @@ export class QuicBindingChannel implements MuxChannel {
       }
       // A STOP_SENDING without a code is held for the session's end:
       // nothing more is read until that is decided.
-      while (this.#heldStop && !this.#heldReset && !this.#ended) {
-        this.#goneDecided ??= new Deferred<void>();
-        await this.#goneDecided.promise;
+      for (let hold = this.#holdingReads(); hold !== undefined; hold = this.#holdingReads()) {
+        await hold;
       }
       if (this.#peerGone || this.#stopSent || host.closing) {
         return;
@@ -1329,9 +1407,8 @@ export class QuicBindingChannel implements MuxChannel {
       }
       // A record read while a STOP_SENDING came to be held waits for the
       // decision: delivered once the grace passed, dropped with the session.
-      while (this.#heldStop && !this.#heldReset && !this.#ended) {
-        this.#goneDecided ??= new Deferred<void>();
-        await this.#goneDecided.promise;
+      for (let hold = this.#holdingReads(); hold !== undefined; hold = this.#holdingReads()) {
+        await hold;
       }
       if (this.#stopSent || this.#peerGone || host.closing) {
         // This side stopped reading meanwhile, the peer's reset is held, or
@@ -1464,6 +1541,10 @@ export class QuicBindingChannel implements MuxChannel {
   #deliver(): boolean {
     if (this.#readableClosed) {
       return true;
+    }
+    if (this.#heldStop && !this.#heldReset && !this.#ended) {
+      // Paused while a STOP_SENDING is held for the session's end.
+      return false;
     }
     const data = this.#queue.shift();
     if (data !== undefined) {

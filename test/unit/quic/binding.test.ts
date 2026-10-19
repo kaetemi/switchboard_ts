@@ -7,16 +7,24 @@
 // limits of the binding page, and identification at the connection level.
 import { beforeAll, describe, expect, onTestFinished, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
-import { hexBytes, hexString, readU48, writeU32, writeU48 } from '../../../src/core/bytes.ts';
+import {
+  bytesEqual,
+  hexBytes,
+  hexString,
+  readU48,
+  writeU32,
+  writeU48,
+} from '../../../src/core/bytes.ts';
 import type { HolderKey } from '../../../src/core/identity/contract.ts';
 import { Ed25519HolderKey } from '../../../src/core/identity/holder-key.ts';
-import type { MuxChannel } from '../../../src/core/mux/contract.ts';
+import type { MuxChannel, MuxOptions } from '../../../src/core/mux/contract.ts';
 import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import { MuxIdent, verifyIdent } from '../../../src/core/mux/mux-protocol.ts';
 import { MovedStatus } from '../../../src/core/naming/naming-protocol.ts';
 import {
   type QuicStream,
   QuicStreamReset,
+  QuicStreamStopped,
   rawQuicExporterLabel,
 } from '../../../src/core/quic/contract.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
@@ -34,11 +42,16 @@ import {
   encodeCloseRecord,
   encodeDataRecord,
   encodeOpenRecord,
+  type QuicRecord,
   QuicRecordCommand,
   quicDefaultRecordLimit,
   writeQuicRecordHeader,
 } from '../../../src/core/quic/records.ts';
-import { Status, StatusCode } from '../../../src/core/status.ts';
+import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
+import { TalkBulkOpen, TalkBulkReference } from '../../../src/core/talk/talk-bulk.ts';
+import { TalkChannel } from '../../../src/core/talk/talk-channel.ts';
+import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
+import { type Clock, systemClock, type TimerHandle } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
 import {
   MemoryQuicNetwork,
@@ -1253,6 +1266,50 @@ async function completed(promise: Promise<unknown>): Promise<boolean> {
   return done;
 }
 
+/**
+ * Real time that records the timers set on it and not yet fired or
+ * cleared: what an end of the connection left behind (Dart's
+ * `timersLeftBehind`, which records the timers of a zone).
+ */
+class TimerRecordingClock implements Clock {
+  /** The durations of the timers still to fire, by handle. */
+  readonly active = new Map<TimerHandle, number>();
+
+  now(): number {
+    return systemClock.now();
+  }
+
+  setTimeout(callback: () => void, ms: number): TimerHandle {
+    const handle = systemClock.setTimeout(() => {
+      this.active.delete(handle);
+      callback();
+    }, ms);
+    this.active.set(handle, ms);
+    return handle;
+  }
+
+  clearTimeout(handle: TimerHandle): void {
+    this.active.delete(handle);
+    systemClock.clearTimeout(handle);
+  }
+}
+
+/**
+ * Runs [body] with a {@link TimerRecordingClock} for the binding and the
+ * in-memory network, lets [ms] pass once it completed, and returns the
+ * durations of the timers still active then.
+ */
+async function timersLeftBehind(
+  body: (clock: Clock, network: MemoryQuicNetwork) => Promise<void>,
+  ms = 100,
+): Promise<number[]> {
+  const clock = new TimerRecordingClock();
+  const network = new MemoryQuicNetwork({ clock });
+  await body(clock, network);
+  await settle(ms);
+  return [...clock.active.values()];
+}
+
 /** A channel a raw peer opened on an acceptor binding, delivered and read. */
 class OpenedChannel {
   readonly connection: QuicBindingConnection;
@@ -1288,9 +1345,19 @@ class OpenedChannel {
    * after its OPEN record.
    */
   static async start(
-    init: { data?: Uint8Array; isWebTransport?: boolean; id?: number } = {},
+    init: {
+      data?: Uint8Array;
+      isWebTransport?: boolean;
+      id?: number;
+      options?: Partial<MuxOptions>;
+      network?: MemoryQuicNetwork;
+    } = {},
   ): Promise<OpenedChannel> {
-    const [connection, raw] = await bindingAndRaw({ isWebTransport: init.isWebTransport ?? true });
+    const [connection, raw] = await bindingAndRaw({
+      isWebTransport: init.isWebTransport ?? true,
+      ...(init.options === undefined ? {} : { options: init.options }),
+      ...(init.network === undefined ? {} : { network: init.network }),
+    });
     return OpenedChannel.#open(connection, raw, init.id ?? 2, init.data ?? empty);
   }
 
@@ -1321,6 +1388,193 @@ class OpenedChannel {
 // fix (f8babf6, not yet at the pinned commit; design section 12, item 17
 // until it is).
 describe('the PING barrier after GOAWAY', () => {
+  // The cases the review of the Dart fix added (switchboard_quic d509a42).
+  test('a second GOAWAY shares the wait and sends no second barrier', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, closeConfirmTimeout: 0 } });
+    const going = connection.goAway();
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    expect(connection.goAway()).toBe(going);
+    const user = connection.ping(bytes('next'));
+    user.catch(() => {});
+    expect(text((await raw.nextControl()).payload)).toBe('next');
+    await raw.sendControl(MuxControlMessage.pong(bytes('next')));
+    await within(user);
+    expect(await completed(going)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
+    await within(going);
+    await within(connection.goAway());
+  });
+
+  test('keep-alive PONG is not the barrier; expiry ends an unbounded wait', async () => {
+    const [connection, raw] = await bindingAndRaw({
+      options: { ...fast, closeConfirmTimeout: 0, keepAliveInterval: 100, keepAliveTimeout: 1000 },
+    });
+    const going = connection.goAway();
+    const barrier = await raw.nextControlOf(MuxControlType.ping);
+    const probe = await raw.nextControlOf(MuxControlType.ping);
+    expect(bytesEqual(probe.payload, barrier.payload)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(probe.payload));
+    await settle();
+    expect(await completed(going)).toBe(false);
+    await within(going);
+    expect((await raw.end).code).toBe(StatusCode.deadlineExceeded);
+  });
+
+  test('a pending OPEN that arrives during the barrier is drained too', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, goAwayGrace: 5000 } });
+    const going = connection.goAway();
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await settle();
+    const open = encodeOpenRecord(2, []);
+    const stream = await raw.openRaw(open.subarray(0, 1));
+    await settle(50);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
+    await settle(50);
+    expect(await completed(going)).toBe(false);
+    await stream.write(open.subarray(1));
+    const [records] = await RawPeer.drain(stream);
+    expect(records).toHaveLength(1);
+    expectStatus(decodeCloseBody(records[0]?.body ?? empty), StatusCode.goingAway);
+    await within(going);
+  });
+
+  test('a drain hold added while the PONG is pending still delays close', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, goAwayGrace: 5000 } });
+    const going = connection.goAway();
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await settle();
+    const hold = new Deferred<void>();
+    connection.retainForDrain(2, hold.promise);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
+    await settle(100);
+    expect(await completed(going)).toBe(false);
+    expect(raw.session.ended).toBe(false);
+    hold.resolve();
+    await within(going);
+  });
+
+  test('the barrier payload differs from an outstanding explicit PING', async () => {
+    const [connection, raw] = await bindingAndRaw();
+    const user = connection.ping(new Uint8Array(4));
+    user.catch(() => {});
+    const first = await raw.nextControlOf(MuxControlType.ping);
+    const going = connection.goAway();
+    const barrier = await raw.nextControlOf(MuxControlType.ping);
+    expect(bytesEqual(barrier.payload, first.payload)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(first.payload));
+    await within(user);
+    expect(await completed(going)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(barrier.payload));
+    await within(going);
+  });
+
+  test('the barrier PING evicts no application PING and counts toward no cap; it fails as the oldest when a later PING evicts, which ends an unbounded wait', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, closeConfirmTimeout: 0 } });
+    const cap = QuicBindingConnection.maxPendingPings;
+    // The application's PINGs evicted; the connection's end fails the rest
+    // with its own status.
+    let evicted = 0;
+    const ping = (payload: string): void => {
+      connection.ping(bytes(payload)).then(
+        () => {},
+        (e: unknown) => {
+          if (e instanceof SwitchboardError && e.code === StatusCode.deadlineExceeded) {
+            evicted++;
+          }
+        },
+      );
+    };
+    for (let i = 0; i < cap; i++) {
+      ping(`app ${i}`);
+    }
+    const going = connection.goAway();
+    await raw.nextControlOf(MuxControlType.goAway);
+    expect((await raw.nextControl()).type).toBe(MuxControlType.ping);
+    await settle();
+    expect(evicted).toBe(0);
+    // The application's PINGs keep their own cap: one more evicts one.
+    ping('more 0');
+    await settle();
+    expect(evicted).toBe(1);
+    expect(await completed(going)).toBe(false);
+    // Once the barrier is the oldest, the next eviction takes it too.
+    for (let i = 1; i < cap; i++) {
+      ping(`more ${i}`);
+    }
+    await settle();
+    expect(evicted).toBe(cap);
+    expect(await completed(going)).toBe(false);
+    ping('last');
+    await within(going);
+    expect(evicted).toBe(cap + 1);
+    expect((await raw.end).code).toBe(0);
+  });
+
+  test('an expired barrier leaves no pending PING while the drain continues', async () => {
+    const [connection, raw] = await bindingAndRaw({
+      options: { ...fast, closeConfirmTimeout: 100, goAwayGrace: 5000 },
+    });
+    const hold = new Deferred<void>();
+    connection.retainForDrain(2, hold.promise);
+    const user = connection.ping(bytes('user'));
+    user.catch(() => {});
+    await raw.nextControlOf(MuxControlType.ping);
+    const going = connection.goAway();
+    const barrier = await raw.nextControlOf(MuxControlType.ping);
+    await settle(200);
+    for (let i = 0; i < QuicBindingConnection.maxPendingPings - 1; i++) {
+      connection.ping(bytes(`user ${i}`)).catch(() => {});
+    }
+    expect(await completed(user)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(barrier.payload));
+    await raw.sendControl(MuxControlMessage.pong(bytes('user')));
+    await within(user);
+    hold.resolve();
+    await within(going);
+  });
+
+  test('a goAwayGrace of zero and a drain hold that never releases skip the drain, not the barrier', async () => {
+    const [connection, raw] = await bindingAndRaw({ options: { ...fast, goAwayGrace: 0 } });
+    const arriving = nextChannel(connection);
+    await raw.openRaw(encodeOpenRecord(2, []));
+    const channel = await arriving;
+    listen(channel);
+    const never = new Deferred<void>();
+    onTestFinished(() => {
+      never.resolve();
+    });
+    connection.retainForDrain(2, never.promise);
+    const going = connection.goAway();
+    const ping = await raw.nextControlOf(MuxControlType.ping);
+    await settle(200);
+    expect(raw.session.ended).toBe(false);
+    expect(await completed(going)).toBe(false);
+    await raw.sendControl(MuxControlMessage.pong(ping.payload));
+    await within(going);
+    expect((await raw.end).code).toBe(0);
+    expectStatus(await within(channel.done), StatusCode.goingAway);
+  });
+
+  // TS beyond the Dart group, mirroring `tool/native_smoke.dart`: a GOAWAY
+  // without channels over raw QUIC (its reason reaches the peer), and over
+  // a channel left open over WebTransport (GOING_AWAY both sides).
+  test('between two bindings over raw QUIC with no channel, the reason of the GOAWAY reaches the peer; over WebTransport with a channel open, it ends GOING_AWAY on both sides', async () => {
+    const [a, b] = await connectionPair();
+    const bye = Status.of(StatusCode.goingAway, 'smoke');
+    await within(a.goAway(bye));
+    expect((await within(b.peerGoAwayStatus)).equals(bye)).toBe(true);
+    const [c, d] = await connectionPair({ isWebTransport: true });
+    const arriving = nextChannel(d);
+    const channel = c.open(empty);
+    const far = await arriving;
+    listen(channel);
+    listen(far);
+    await within(c.goAway());
+    expectStatus(await within(channel.done), StatusCode.goingAway);
+    expectStatus(await within(far.done), StatusCode.goingAway);
+    expectStatus(await within(d.done), StatusCode.goingAway);
+  });
+
   test('with no channel open, the session closes only once the PONG of the PING sent right after the GOAWAY record is back', async () => {
     const [connection, raw] = await bindingAndRaw();
     const going = connection.goAway();
@@ -1513,6 +1767,197 @@ describe('the PING barrier after GOAWAY', () => {
 });
 
 describe('resets and STOP_SENDING without a code over WebTransport', () => {
+  // The cases the review of the Dart fix added (switchboard_quic d509a42).
+  for (const reset of [true, false]) {
+    test(`a short confirmation timeout waits for a held ${reset ? 'reset' : 'STOP_SENDING'}`, async () => {
+      const c = await OpenedChannel.start({ options: { ...fast, closeConfirmTimeout: 100 } });
+      if (reset) {
+        c.rawStream.resetWithoutCode();
+      } else {
+        c.rawStream.stopWithoutCode();
+      }
+      await settle(50);
+      const closing = c.channel.close();
+      await settle(200);
+      expect(await completed(closing)).toBe(false);
+      const local = bindingEnd(c.connection, c.stream);
+      expect(local.stops).toEqual([]);
+      expect(local.resets).toEqual([]);
+      await c.raw.session.close(0, '');
+      await within(closing);
+      expectStatus(await c.channel.done, StatusCode.goingAway);
+    });
+  }
+
+  test('an expired confirmation is applied once a STOP_SENDING hold expires', async () => {
+    const c = await OpenedChannel.start({ options: { ...fast, closeConfirmTimeout: 100 } });
+    c.rawStream.stopWithoutCode();
+    await settle(50);
+    const start = Date.now();
+    await within(c.channel.close());
+    expect(Date.now() - start).toBeGreaterThan(1000);
+    expectStatus(await c.channel.done, StatusCode.unknown);
+    expect(bindingEnd(c.connection, c.stream).stops).toEqual([StatusCode.deadlineExceeded]);
+  });
+
+  for (const heldParent of [true, false]) {
+    test(`Talk waits for the session status with a held ${heldParent ? 'parent' : 'bulk stream'}`, async () => {
+      const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+      const arrived = new Deferred<TalkChannel>();
+      collect(connection, [], (channel) => {
+        if (TalkBulkOpen.isBulk(ChannelAddress.decode(channel.openPayload))) {
+          TalkChannel.adoptBulk(channel);
+        } else {
+          arrived.resolve(new TalkChannel(channel));
+        }
+      });
+      const parent = (await raw.openRaw(
+        encodeOpenRecord(2, new ChannelAddress({ type: 'echo' }).encode()),
+      )) as MemoryQuicStream;
+      const talk = await within(arrived.promise);
+      const response = talk.request('REQ', empty);
+      response.catch(() => {});
+      const request = await within(new RecordReader(parent).next(quicDefaultRecordLimit));
+      const requestId = TalkFrame.decode((request as QuicRecord).body).requestId;
+      await parent.write(
+        encodeDataRecord(
+          new TalkFrame({ kind: TalkKind.message, responseId: requestId, payload: empty })
+            .withBulk(new TalkBulkReference(1, 3))
+            .encode(),
+        ),
+      );
+      const bulk = (await raw.openRaw(
+        encodeOpenRecord(4, new TalkBulkOpen(2, 1).encode()),
+      )) as MemoryQuicStream;
+      await until(() => connection.channelWithId(4) !== undefined);
+      const held = connection.channelWithId(heldParent ? 2 : 4) as MuxChannel;
+      (heldParent ? parent : bulk).resetWithoutCode();
+      await settle(50);
+      expect(await completed(held.done)).toBe(false);
+      expect(await completed(response)).toBe(false);
+      await raw.session.close(0, '');
+      expectStatus(await within(held.done), StatusCode.goingAway);
+      await expectCode(response, StatusCode.goingAway);
+    });
+  }
+
+  test('STOP_SENDING pauses provider reads inside a record until the grace', async () => {
+    const [connection, raw] = await bindingAndRaw({
+      isWebTransport: true,
+      bindingEnd: { streamWindow: 32 },
+    });
+    const arriving = nextChannel(connection);
+    const stream = (await raw.openRaw(encodeOpenRecord(2, []))) as MemoryQuicStream;
+    const channel = await arriving;
+    const received = listen(channel);
+    stream.stopWithoutCode();
+    await settle(50);
+    const writing = stream.write(encodeDataRecord(new Uint8Array(128)));
+    writing.catch(() => {});
+    await settle(100);
+    expect(await completed(writing)).toBe(false);
+    expect(received).toEqual([]);
+    await within(writing);
+    await until(() => received.length > 0);
+    expect(received.map((r) => r.length)).toEqual([128]);
+    await stream.write(encodeCloseRecord(Status.ok));
+    await stream.finish();
+    expectStatus(await within(channel.done), StatusCode.unknown);
+  });
+
+  test('a held reset after STOP_SENDING releases a paused record and credit', async () => {
+    const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+    const arriving = nextChannel(connection);
+    const stream = (await raw.openRaw(encodeOpenRecord(2, []))) as MemoryQuicStream;
+    const channel = await arriving;
+    channel.manualCredit = true;
+    const received = listen(channel);
+    await stream.write(encodeDataRecord(bytes('first')));
+    await until(() => channel.heldBytes > 0);
+    stream.stopWithoutCode();
+    await settle(50);
+    channel.consumed(5);
+    await stream.write(encodeDataRecord(bytes('discarded')));
+    await settle(50);
+    stream.resetWithoutCode();
+    await until(() => channel.receiveWindow === 0);
+    await settle(20);
+    expect(received.map(text)).toEqual(['first']);
+    expect(channel.receiveWindow).toBe(0);
+    channel.grant(0xffffffff);
+    expect(channel.receiveWindow).toBe(0);
+    await raw.session.close(0, '');
+    expectStatus(await within(channel.done), StatusCode.goingAway);
+    expect(channel.heldBytes).toBe(0);
+  });
+
+  for (const path of ['read', 'write', 'FIN'] as const) {
+    test(`a codeless ${path} failure is held until the session ends`, async () => {
+      const c = await OpenedChannel.start();
+      const local = bindingEnd(c.connection, c.stream);
+      await settle();
+      switch (path) {
+        case 'read':
+          local.failRead(new QuicStreamReset(undefined));
+          break;
+        case 'write':
+          local.writeFailure = new QuicStreamStopped(undefined);
+          await expectCode(c.channel.send(bytes('x')), StatusCode.failedPrecondition);
+          break;
+        case 'FIN':
+          local.finishFailure = new QuicStreamStopped(undefined);
+          c.channel.close().catch(() => {});
+          break;
+      }
+      await settle(50);
+      expect(await completed(c.channel.done)).toBe(false);
+      expect(local.resets).toEqual([]);
+      expect(local.stops).toEqual([]);
+      await c.raw.session.close(0, '');
+      expectStatus(await within(c.channel.done), StatusCode.goingAway);
+    });
+  }
+
+  test('an application failure close during a hold keeps its own status', async () => {
+    const c = await OpenedChannel.start();
+    c.rawStream.resetWithoutCode();
+    await within(c.incomingDone);
+    const status = Status.of(StatusCode.cancelled, 'local');
+    await within(c.channel.close(status));
+    expect((await c.channel.done).equals(status)).toBe(true);
+    expect(c.connection.isOpen).toBe(true);
+    // The cancelled hold sends no UNKNOWN later, nor ends the session.
+    await settle(2100);
+    expect((await c.channel.done).equals(status)).toBe(true);
+    expect(bindingEnd(c.connection, c.stream).resets).toEqual([]);
+    expect(c.connection.isOpen).toBe(true);
+  });
+
+  for (const reset of [true, false]) {
+    test(`buffered DATA is not delivered during a held ${reset ? 'reset' : 'STOP_SENDING'}`, async () => {
+      const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+      const arriving = nextChannel(connection);
+      const stream = (await raw.openRaw(
+        concat([encodeOpenRecord(2, []), encodeDataRecord(bytes('buffered'))]),
+      )) as MemoryQuicStream;
+      const channel = await arriving;
+      await until(() => channel.bufferedBytes > 0);
+      if (reset) {
+        stream.resetWithoutCode();
+      } else {
+        stream.stopWithoutCode();
+      }
+      await settle(50);
+      const received = listen(channel);
+      await settle(50);
+      expect(received).toEqual([]);
+      expect(await completed(channel.done)).toBe(false);
+      await raw.session.close(0, '');
+      expectStatus(await within(channel.done), StatusCode.goingAway);
+      expect(received).toEqual([]);
+    });
+  }
+
   test("a reset is held: nothing more is delivered, a partial record is discarded, nothing is sent; the session's graceful close within the grace ends the channel GOING_AWAY", async () => {
     const c = await OpenedChannel.start({
       data: concat([encodeDataRecord(bytes('whole')), hexBytes('05 00 00 00 01 02')]),
@@ -1593,6 +2038,25 @@ describe('resets and STOP_SENDING without a code over WebTransport', () => {
     expectStatus(await c.channel.done, StatusCode.goingAway);
   });
 
+  test("a reset held after this side's close went: the session's close ends the channel GOING_AWAY, the grace UNKNOWN", async () => {
+    for (const sessionEnds of [true, false]) {
+      const c = await OpenedChannel.start();
+      const closing = c.channel.close();
+      const [records, end] = await RawPeer.drain(c.stream);
+      expect(records.map((r) => r.command)).toEqual([QuicRecordCommand.close]);
+      expect(end).toBe('fin');
+      c.rawStream.resetWithoutCode();
+      await settle(100);
+      expect(await completed(closing)).toBe(false);
+      if (sessionEnds) {
+        await c.raw.session.close(0, '');
+      }
+      await within(closing);
+      expectStatus(await c.channel.done, sessionEnds ? StatusCode.goingAway : StatusCode.unknown);
+      expect(bindingEnd(c.connection, c.stream).resets).toEqual([]);
+    }
+  });
+
   test("a STOP_SENDING is held too: nothing more is read, nothing sent in answer; the session's close ends the channel GOING_AWAY", async () => {
     const c = await OpenedChannel.start();
     c.rawStream.stopWithoutCode();
@@ -1638,6 +2102,22 @@ describe('resets and STOP_SENDING without a code over WebTransport', () => {
     expect((await c.channel.done).equals(Status.of(StatusCode.cancelled, 'no'))).toBe(true);
   });
 
+  test("with closeConfirmTimeout zero, a held reset still ends with the session, or after the grace with this side's close in turn", async () => {
+    const unbounded = { ...fast, goAwayGrace: 200, closeConfirmTimeout: 0 };
+    const closed = await OpenedChannel.start({ options: unbounded });
+    const expiring = await OpenedChannel.start({ options: unbounded });
+    closed.rawStream.resetWithoutCode();
+    expiring.rawStream.resetWithoutCode();
+    await settle(100);
+    expect(await completed(closed.channel.done)).toBe(false);
+    await closed.raw.session.close(0, '');
+    expectStatus(await within(closed.channel.done), StatusCode.goingAway);
+    expectStatus(await within(expiring.channel.done), StatusCode.unknown);
+    const [records, end] = await RawPeer.drain(expiring.stream);
+    expect(records.map((r) => r.command)).toEqual([QuicRecordCommand.close]);
+    expect(end).toBe('fin');
+  });
+
   test('a reset with a code is not held; over raw QUIC (whose resets always carry one) neither is one without', async () => {
     const coded = await OpenedChannel.start();
     coded.stream.reset(StatusCode.permissionDenied);
@@ -1648,4 +2128,159 @@ describe('resets and STOP_SENDING without a code over WebTransport', () => {
     raw.rawStream.resetWithoutCode();
     expect((await within(raw.channel.done, 1000)).known).toBe(StatusCode.unknown);
   });
+
+  // TS beyond the Dart group: a reset and a STOP_SENDING arriving together
+  // (the session's WT_SESSION_GONE), and the delivery a held STOP_SENDING
+  // paused resuming after the grace.
+  test('a reset and a STOP_SENDING together share the hold: the close ends the channel GOING_AWAY; past the grace, the STOP_SENDING, then the reset, read UNKNOWN', async () => {
+    const c = await OpenedChannel.start();
+    c.rawStream.resetWithoutCode();
+    c.rawStream.stopWithoutCode();
+    await settle(100);
+    expect(await completed(c.channel.done)).toBe(false);
+    const local = bindingEnd(c.connection, c.stream);
+    expect(local.resets).toEqual([]);
+    await c.raw.session.close(0, '');
+    expectStatus(await within(c.channel.done), StatusCode.goingAway);
+
+    const late = await OpenedChannel.start();
+    const start = Date.now();
+    late.rawStream.stopWithoutCode();
+    late.rawStream.resetWithoutCode();
+    const status = await within(late.channel.done);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(
+      QuicBindingConnection.webTransportSessionGoneGrace - 50,
+    );
+    expect(status.equals(Status.of(StatusCode.unknown, 'no application error code'))).toBe(true);
+    // The STOP_SENDING taken: this side's direction reset with the status.
+    expect(bindingEnd(late.connection, late.stream).resets).toEqual([StatusCode.unknown]);
+    expect(late.connection.isOpen).toBe(true);
+  });
+
+  test('a held STOP_SENDING pauses the records not delivered yet until the grace passed, then delivers them', async () => {
+    const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+    const arriving = nextChannel(connection);
+    const stream = await raw.openRaw(
+      concat([encodeOpenRecord(2, []), encodeDataRecord(bytes('one'))]),
+    );
+    const channel = await arriving;
+    await until(() => channel.bufferedBytes > 0);
+    const start = Date.now();
+    (stream as MemoryQuicStream).stopWithoutCode();
+    await settle(20);
+    const reading = listen(channel);
+    await until(() => reading.length > 0);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(
+      QuicBindingConnection.webTransportSessionGoneGrace - 50,
+    );
+    expect(reading.map(text)).toEqual(['one']);
+  });
 });
+
+test('no timer outlives the connection after any end of the PING barrier or of a held reset or STOP_SENDING', async () => {
+  const short = 100;
+  const barrier = (
+    end: (
+      connection: QuicBindingConnection,
+      raw: RawPeer,
+      ping: MuxControlMessage,
+    ) => Promise<unknown>,
+    options: Partial<MuxOptions> = fast,
+  ): Promise<number[]> =>
+    timersLeftBehind(async (clock, network) => {
+      const [connection, raw] = await bindingAndRaw({ options: { ...options, clock }, network });
+      const going = connection.goAway();
+      const ping = await raw.nextControlOf(MuxControlType.ping);
+      await end(connection, raw, ping);
+      await within(going);
+      await within(connection.done);
+      await raw.end;
+    });
+  const hold = (
+    end: (c: OpenedChannel) => Promise<unknown>,
+    init: { reset?: boolean; closeFirst?: boolean; options?: Partial<MuxOptions> } = {},
+  ): Promise<number[]> =>
+    timersLeftBehind(async (clock, network) => {
+      const c = await OpenedChannel.start({
+        options: { ...(init.options ?? fast), clock },
+        network,
+      });
+      if (init.closeFirst === true) {
+        // The peer's close, then this side's close in turn meets the hold.
+        await c.stream.write(encodeCloseRecord(Status.ok));
+        await until(() => c.channel.state !== 'open');
+      }
+      if (init.reset ?? true) {
+        c.rawStream.resetWithoutCode();
+      } else {
+        c.rawStream.stopWithoutCode();
+      }
+      await settle(50);
+      await end(c);
+      await within(c.channel.done);
+      if (c.connection.isOpen) {
+        await c.connection.close();
+      }
+      await c.raw.end;
+    });
+  const never = new Deferred<void>();
+  onTestFinished(() => {
+    never.resolve();
+  });
+  // Each end is checked on its own, soon after it: a timer left behind
+  // would still be active then.
+  const left = await Promise.all([
+    // The barrier: its PONG, the peer's close, its bound with a drain that
+    // never ends, close(), a lost session, a failure close.
+    barrier((_, raw, ping) => raw.sendControl(MuxControlMessage.pong(ping.payload))),
+    barrier((_, raw) => raw.session.close(0, '')),
+    barrier(
+      async (connection) => {
+        connection.retainForDrain(2, never.promise);
+      },
+      { ...fast, closeConfirmTimeout: short },
+    ),
+    barrier((connection) => connection.close()),
+    barrier(async (_, raw) => raw.session.lose()),
+    barrier((_, raw) =>
+      raw.sendControl(new MuxControlMessage(MuxControlType.limits, new Uint8Array(12))),
+    ),
+    // The hold: the session's close, its loss, this side's close, the
+    // grace, an application failure close, a confirmation expiring within
+    // the hold, then the session's close or the grace, and the close in
+    // turn after the peer's CLOSE record.
+    hold((c) => c.raw.session.close(0, '')),
+    hold(async (c) => c.raw.session.lose(), { reset: false }),
+    hold((c) => c.connection.close()),
+    hold(async () => {}),
+    hold(
+      async (c) => {
+        // The STOP_SENDING is the peer's close once the grace passed; its
+        // direction then ends with its CLOSE record.
+        await until(() => !c.channel.canSend);
+        await c.stream.write(encodeCloseRecord(Status.ok));
+        await c.stream.finish();
+      },
+      { reset: false },
+    ),
+    hold((c) => c.channel.close(Status.of(StatusCode.cancelled))),
+    hold(
+      async (c) => {
+        c.channel.close().catch(() => {});
+        await settle(200);
+        await c.raw.session.close(0, '');
+      },
+      { reset: false, options: { ...fast, closeConfirmTimeout: short } },
+    ),
+    hold(
+      async (c) => {
+        c.channel.close().catch(() => {});
+      },
+      { reset: false, options: { ...fast, closeConfirmTimeout: short } },
+    ),
+    hold((c) => c.raw.session.close(0, ''), { reset: false, closeFirst: true }),
+  ]);
+  expect(
+    left.map((timers, i) => [i, timers]).filter(([, timers]) => (timers as number[]).length > 0),
+  ).toEqual([]);
+}, 20_000);

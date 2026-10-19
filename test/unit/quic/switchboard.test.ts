@@ -36,7 +36,7 @@ import {
   encodeDataRecord,
   encodeOpenRecord,
 } from '../../../src/core/quic/records.ts';
-import { Status, StatusCode } from '../../../src/core/status.ts';
+import { Status, StatusCode, SwitchboardError } from '../../../src/core/status.ts';
 import { ChannelPolicies } from '../../../src/core/switchboard/channel-policy.ts';
 import type { ChannelHandler } from '../../../src/core/switchboard/contract.ts';
 import { pipeChannels, proxyHandler } from '../../../src/core/switchboard/proxy.ts';
@@ -58,6 +58,7 @@ import {
   type MemoryQuicEndConfig,
   MemoryQuicNetwork,
   MemoryQuicSession,
+  type MemoryQuicStream,
 } from '../../../src/testing/memory-quic-provider.ts';
 import { node as harnessNode, onCleanup, tagOf, useMux } from '../../support/node/harness.ts';
 import { issueCredential, TestVerifier } from '../../support/node/seeded-identity.ts';
@@ -71,7 +72,9 @@ import {
   expectStatus,
   fast,
   limit,
+  nextChannel,
   pattern,
+  listen as readAway,
   settle,
   text,
   until,
@@ -911,6 +914,58 @@ describe('the end of a connection', () => {
 });
 
 describe('review cases', () => {
+  // The cases the review of the Dart fix of the end-of-session races added
+  // (switchboard_quic d509a42; design section 13, item 8).
+  test('a proxy waits for a held far side and forwards GOING_AWAY', async () => {
+    const [front, raw] = await bindingAndRaw({ isWebTransport: true });
+    const arriving = nextChannel(front);
+    const stream = (await raw.openRaw(encodeOpenRecord(2, []))) as MemoryQuicStream;
+    const source = await arriving;
+    const [back, destination] = await connectionPair();
+    const receiving = nextChannel(destination);
+    const target = back.open(new Uint8Array(0));
+    const remote = await receiving;
+    readAway(remote);
+    const piping = pipeChannels(source, target);
+    stream.resetWithoutCode();
+    await settle(100);
+    expect(source.state).toBe('open');
+    expect(target.state).toBe('open');
+    expect(remote.state).toBe('open');
+    await raw.session.close(0, '');
+    await within(piping);
+    expectStatus(await within(remote.done), StatusCode.goingAway);
+    expect(back.isOpen).toBe(true);
+  });
+
+  test('a channel in the identity hold ends with its WebTransport session', async () => {
+    const server = node();
+    let checked = false;
+    let dispatched = false;
+    server.registerService('held', () => {
+      dispatched = true;
+    });
+    const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+    await server.adopt(connection, {
+      policy: () => {
+        checked = true;
+        throw SwitchboardError.of(StatusCode.unauthenticated);
+      },
+    });
+    const stream = (await raw.openRaw(
+      encodeOpenRecord(2, new ChannelAddress({ type: 'held' }).encode()),
+    )) as MemoryQuicStream;
+    await until(() => checked);
+    const channel = connection.channelWithId(2) as MuxChannel;
+    stream.resetWithoutCode();
+    await settle(100);
+    expect(channel.state).toBe('open');
+    expect(dispatched).toBe(false);
+    await raw.session.close(0, '');
+    expectStatus(await within(channel.done), StatusCode.goingAway);
+    expect(dispatched).toBe(false);
+  });
+
   test('closing the listener while a session starts keeps it from being adopted', async () => {
     const server = node();
     const network = new MemoryQuicNetwork();

@@ -42,6 +42,7 @@ import { TalkFrame, TalkKind } from '../../src/core/talk/talk-frame.ts';
 import { Deferred } from '../../src/core/util/deferred.ts';
 import {
   MemoryQuicNetwork,
+  type MemoryQuicStream,
   type MemoryQuicStreamInfo,
 } from '../../src/testing/memory-quic-provider.ts';
 import { collect, generated, pattern } from '../support/talk/bulk-peers.ts';
@@ -601,5 +602,39 @@ describe('_bulk continuations after GOAWAY', () => {
     await parent.write(encodeDataRecord(note(1, 3)));
     expect([...(await within(delivered.promise)).payload]).toEqual([4, 5, 6]);
     expect(talk.isOpen).toBe(true);
+  });
+});
+
+// The session-gone hold of the binding under Talk (design section 13, item
+// 8): a case of the Dart review (switchboard_quic wip/shutdown-races).
+describe('a WebTransport session going while Talk waits', () => {
+  test("a Talk channel and the bulk channel it waits for, reset without a code before the session's close, end GOING_AWAY", async () => {
+    const [connection, raw] = await bindingAndRaw({ isWebTransport: true });
+    installBulkRouting(connection);
+    const arrived = nextChannel(connection);
+    const parent = await raw.openRaw(
+      concat([encodeOpenRecord(2, empty), encodeDataRecord(note(1, 3))]),
+    );
+    const talk = new TalkChannel(await arrived);
+    const delivered = new Deferred<TalkMessage>();
+    serve(talk, (m) => delivered.resolve(m));
+    // Part of the payload: the message waits for the rest.
+    const bulk = await raw.openRaw(
+      concat([encodeOpenRecord(4, new TalkBulkOpen(2, 1).encode()), encodeDataRecord([1])]),
+    );
+    await until(() => connection.channelWithId(4) !== undefined);
+    const bulkChannel = connection.channelWithId(4) as MuxChannel;
+    // The session's WT_SESSION_GONE, read before its close.
+    (parent as MemoryQuicStream).resetWithoutCode();
+    (bulk as MemoryQuicStream).resetWithoutCode();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const ended = (p: Promise<unknown>) =>
+      Promise.race([p.then(() => true), new Promise((resolve) => setTimeout(resolve, 0, false))]);
+    expect(await ended(talk.done)).toBe(false);
+    expect(await ended(bulkChannel.done)).toBe(false);
+    await within(raw.session.close(0, ''));
+    expect((await within(talk.done)).known).toBe(StatusCode.goingAway);
+    expect((await within(bulkChannel.done)).known).toBe(StatusCode.goingAway);
+    await expect(within(delivered.promise, 200)).rejects.toThrow();
   });
 });
