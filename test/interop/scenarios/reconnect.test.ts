@@ -226,12 +226,7 @@ describeCells('reconnecting client', {}, (peers) => {
 
     await peers.server.rpc('connection.close', { connection: far.connection });
     const lost = lostOnClose(peers);
-    expectEndedWith(
-      await nthOf(peers, 'persistent.closed', persistent),
-      lost,
-      peers.cell.transport,
-      peers.cell.client,
-    );
+    expectEndedWith(await nthOf(peers, 'persistent.closed', persistent), lost);
     expect(
       await peers.client.events.waitFor({
         event: 'connection.closed',
@@ -414,12 +409,7 @@ describeCells('reconnecting client', {}, (peers) => {
 
     // The server closes the new connection: the same on the next one.
     await peers.server.rpc('accepted.close');
-    expectEndedWith(
-      await nthOf(peers, 'persistent.closed', persistent, 2),
-      lostOnClose(peers),
-      peers.cell.transport,
-      peers.cell.client,
-    );
+    expectEndedWith(await nthOf(peers, 'persistent.closed', persistent, 2), lostOnClose(peers));
     const third = await opened(peers, persistent, 3);
     expect([first.connection, second.connection]).not.toContain(third.connection);
     expect(await nthOf(peers, 'persistent.reply', persistent, 3)).toMatchObject({

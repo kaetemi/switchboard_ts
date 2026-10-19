@@ -129,19 +129,12 @@ describeCells('close', {}, (peers) => {
       // before the capsule is read (the far connection is then lost,
       // "shutdown"; close() sends no GOAWAY that would say otherwise). The
       // binding page holds such a reset for the session's end, so that the
-      // far channel ends as the far connection does: a TS reader does
-      // (design section 12, item 17). A Dart reader at its pinned commit
-      // ends the channel UNKNOWN when it reads the reset first. The Dart to
-      // Dart cell shows both, a few times in a hundred under load.
-      const unknown = [StatusCode.unknown, 'no application error code'];
+      // far channel ends as the far connection does, as both
+      // implementations do (design section 13, item 8).
       const shutdown = [StatusCode.connectionLost, 'shutdown'];
       const graceful = [StatusCode.goingAway, ''];
       expect([graceful, shutdown]).toContainEqual(farEnd);
-      if (peers.cell.server === 'ts') {
-        expect(farChannel).toEqual(farEnd);
-      } else {
-        expect([farEnd, unknown]).toContainEqual(farChannel);
-      }
+      expect(farChannel).toEqual(farEnd);
       return;
     }
     // Over raw QUIC the close is an application close of the connection,

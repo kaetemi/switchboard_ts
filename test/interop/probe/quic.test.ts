@@ -820,10 +820,8 @@ for (const server of servers) {
               // WT_SESSION_GONE, which carries no code, only once its close
               // is acknowledged; such a reset reads as UNKNOWN "unless the
               // connection is ending". The binding page holds it for the
-              // session's end, so the channel ends with the close's status;
-              // the TS peer does, the Dart peer at its pinned commit may
-              // still read the reset first and end the channel UNKNOWN
-              // (expectEndedWith).
+              // session's end, so the channel ends with the close's status,
+              // as both peers do (expectEndedWith).
               test('after an application close the open channel ends GOING_AWAY', async () => {
                 for (const code of [0, StatusCode.unavailable, 300]) {
                   const { s } = await open();
@@ -832,8 +830,6 @@ for (const server of servers) {
                   expectEndedWith(
                     await peerOf().events.waitFor({ event: 'channel.closed', channel }),
                     StatusCode.goingAway,
-                    transport,
-                    server,
                   );
                 }
               });
@@ -1125,51 +1121,36 @@ for (const server of servers) {
             // PONG arrived (the peer read the GOAWAY), the connection ended
             // (the peer's own close), or the close confirmation timeout
             // passed: an application close discards what is in flight, and
-            // with no channel open nothing else holds the close back. The TS
-            // peer does so (design section 13, item 8); the Dart peer at its
-            // pinned commit closes at once and loses the GOAWAY about every
-            // other time. Its fix (switchboard_quic f8babf6, on a branch)
-            // runs here once it is merged and the interop pin moves.
-            const goAwayLost =
-              server === 'dart'
-                ? ' (skipped: the pinned Dart closes before its GOAWAY record is read, which loses it; until the Dart fix, switchboard_quic f8babf6, is merged and the pin moves)'
-                : '';
-            test.skipIf(server === 'dart')(
-              `with no channel open, the client's GOAWAY and the PING behind it arrive before its close, which follows the PONG${goAwayLost}`,
-              async () => {
-                const { s, c, connection } = await accept();
-                const going = peerOf().rpc('connection.goAway', {
-                  connection,
-                  code: StatusCode.unavailable,
-                  reason: 'x',
-                });
-                expect((await c.recordMatching((r) => r.type === control.goAway)).hex).toBe(
-                  controlHex(control.goAway, status(StatusCode.unavailable, 'x')),
-                );
-                const ping = await c.record();
-                expect(ping.type).toBe(control.ping);
-                await c.write(record.control(control.pong, ping.body.subarray(1)));
-                await expectClosedBy(
-                  s,
-                  await wireCode(peerOf(), transport, StatusCode.unavailable),
-                );
-                await going;
-              },
-            );
+            // with no channel open nothing else holds the close back. Both
+            // peers do so (design section 13, item 8; the Dart one since
+            // switchboard_quic d509a42).
+            test("with no channel open, the client's GOAWAY and the PING behind it arrive before its close, which follows the PONG", async () => {
+              const { s, c, connection } = await accept();
+              const going = peerOf().rpc('connection.goAway', {
+                connection,
+                code: StatusCode.unavailable,
+                reason: 'x',
+              });
+              expect((await c.recordMatching((r) => r.type === control.goAway)).hex).toBe(
+                controlHex(control.goAway, status(StatusCode.unavailable, 'x')),
+              );
+              const ping = await c.record();
+              expect(ping.type).toBe(control.ping);
+              await c.write(record.control(control.pong, ping.body.subarray(1)));
+              await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.unavailable));
+              await going;
+            });
 
-            test.skipIf(server === 'dart')(
-              `with no channel open and no PONG, the client closes once its close confirmation timeout (500 ms) passed${goAwayLost}`,
-              async () => {
-                const { s, c, connection } = await accept();
-                const start = Date.now();
-                const going = peerOf().rpc('connection.goAway', { connection });
-                await c.recordMatching((r) => r.type === control.goAway);
-                expect((await c.record()).type).toBe(control.ping);
-                await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.ok));
-                expect(Date.now() - start).toBeGreaterThanOrEqual(450);
-                await going;
-              },
-            );
+            test('with no channel open and no PONG, the client closes once its close confirmation timeout (500 ms) passed', async () => {
+              const { s, c, connection } = await accept();
+              const start = Date.now();
+              const going = peerOf().rpc('connection.goAway', { connection });
+              await c.recordMatching((r) => r.type === control.goAway);
+              expect((await c.record()).type).toBe(control.ping);
+              await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.ok));
+              expect(Date.now() - start).toBeGreaterThanOrEqual(450);
+              await going;
+            });
 
             test('an application close from the probe counts as a GOAWAY with its status at the client', async () => {
               const { s, connection } = await accept();
