@@ -120,4 +120,4 @@ The returned `PersistentChannel` or `PersistentTalk` has `address`, `current` (t
 
 ## Closing
 
-`close()` stops, closes every persistent channel for good, rejects pending opens with `CANCELLED`, ends `states` and `incoming`, and resolves once every connection has closed (after GOAWAY, when the channels the application opened are done, at most `muxOptions.goAwayGrace`). `await using client = new ReconnectingClient(...)` closes it at the end of the block.
+`close()` stops, closes every persistent channel for good, rejects pending opens with `CANCELLED`, ends `states` and `incoming`, and resolves once every connection has closed (after GOAWAY, when the channels the application opened are done, at most `muxOptions.goAwayGrace`; over QUIC and WebTransport also once the peer answered the PING behind the GOAWAY, at most `closeConfirmTimeout` after it, see [Channels and Talk](Channels-and-Talk)). `await using client = new ReconnectingClient(...)` closes it at the end of the block.

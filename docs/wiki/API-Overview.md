@@ -81,7 +81,7 @@ await node.close();
 | `accept(transport, { policy })`, `adopt(connection, { policy })` | connections accepted elsewhere |
 | `identifyOn(connection)`, `updateCredential(credential)`, `broker(address)` | identity and brokering ([Identity](Identity)) |
 | `connections`, `listeningEndpoints`, `isOwnEndpoint(endpoint)` | state |
-| `close()` | stops listening, sends GOAWAY on every connection and waits for their channels (up to `goAwayGrace`); never rejects |
+| `close()` | stops listening, sends GOAWAY on every connection and waits for their channels (up to `goAwayGrace`; over QUIC and WebTransport also for the peer to answer the PING behind the GOAWAY, up to `closeConfirmTimeout`); never rejects |
 
 Options (durations in ms): `resolver`, `defaultPayload`, `muxOptions`, `talkOptions`, `connectTimeout` (10 000), `maxConnectionsPerEndpoint` (4), `selection` (`'roundRobin'` or `'random'`), `slotRefreshTimeout`, `outgoingPolicy` and `endpointPolicy` (the policy of the connections the node initiates), `credentialFor`, `credential`, `holderKey`, `verifier`, `identifyOutgoing`, `identifyFor`, `identityTimeout`, `expectedIdentityFor`, `relay`, `brokerEndpoint`, `allowHostHint`, `localConnections` (connections to its own listeners are made in-process; default true), `bindings`, `clock`, `logger`; the node and web entries add `quic` (a QUIC provider) and `quicBinding`.
 
