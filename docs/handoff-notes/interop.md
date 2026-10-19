@@ -51,7 +51,8 @@ skipped, with the native addon.
 
 Section 12 of `../notes/interop.md` has the detail. 4540 interop tests
 pass in required mode and 4 are skipped with their reason; the Dart driver
-passes 59 tests. Nothing in `src/**` changed.
+passes 59 tests. Nothing in `src/**` changed. (Since the fourth round's race
+fix the project passes 4548 with none skipped.)
 
 * **Sharding** (`scenarios/sharding.test.ts`): managed and lazy spaces,
   refused hand-overs (RESUME, roll-back), an owner going down mid-hand-over,
@@ -115,8 +116,9 @@ node tool/dart-peer.mjs status   # what the build uses and whether the peer is f
   * sibling checkouts `../switchboard` and `../switchboard_quic`
   * `node tool/dart-peer.mjs fetch`, which clones the pinned commits into
     `test/interop/dart_peer/.deps/`
-* **Pins:** in `test/interop/dart_peer/dart_commits.txt` (core `3816e6f`,
-  QUIC `c5b3265`). A checkout at another commit only warns locally.
+* **Pins:** in `test/interop/dart_peer/dart_commits.txt` (core `6ed87b4`,
+  QUIC `d509a42` since the fourth round; `3816e6f` and `c5b3265` before). A
+  checkout at another commit only warns locally.
 * **Without Dart:** the interop files skip, with one line saying why.
 * **Environment variables:**
   * `SWITCHBOARD_INTEROP=required` fails the run instead of skipping.
