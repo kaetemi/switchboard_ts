@@ -19,7 +19,7 @@ These pages document the TypeScript package. The protocol itself is specified in
 
 ## Status
 
-Version 3.0.0-dev.1, not published yet. Every layer of the protocol is ported and tested against the Dart test suites, on Node 22, 24 and 26 and Bun in CI, with browser tests in Chromium and Firefox, and the Dart reference and this port as interop peers of each other in every pairing over TCP, WebSocket, QUIC and WebTransport.
+Version 3.0.0-dev.1, not published yet. Every layer of the protocol is ported and tested against the Dart test suites, on Node 22, 24 and 26, Bun and Deno in CI, with browser tests in Chromium and Firefox, and the Dart reference and this port as interop peers of each other in every pairing over TCP, WebSocket, QUIC and WebTransport. Each layer has also had an independent adversarial review against the Dart sources, with its findings fixed ([Testing and Interop](Testing-and-Interop), [Contributing](Contributing)).
 
 ## Where things are
 

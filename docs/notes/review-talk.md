@@ -5,6 +5,8 @@ sections 5, 6.5, 7 and 12, and the Talk section of `dart-design.md`, on the head
 `test/unit/talk/review-*.test.ts` written as `test.fails`, so `npm run check` stays green; flipping one to `test` shows its
 failure, and is what its fix does. Each was checked flipped and run 10 times. No source was changed.
 
+**Status after the fixes (`claude/review-talk`):** findings 1 to 4 are dealt with (1 to 3 fixed, 4 settled by the documentation), and with the `bulkChunkSize` validation and `startRequest`'s corrected JSDoc they are the five of the merge; their cases are plain tests (no `test.fails` is left). The two other unverified suspicions stayed open and are recorded in `docs/notes/talk.md`. Each finding says how below.
+
 The port renders Dart closely: the request and responder state machines, the timeout regime, item windows and credits, the
 lanes, bulk admission and `forwardMessage` match function by function. The defects are where TS reads asynchronously what Dart's
 mux delivers in wire order, and in the read-on allowance added for QUIC bursts. Ranked by realistic impact: finding 1 reproduces
@@ -32,6 +34,7 @@ microtask granularity, as the native QUIC provider's batched event dispatch can 
 - **Dart:** refuses beyond 16. Design 12 item 14 lists "the frames it may still read on", but not that with nothing on the
   parent this lifts the bound about 270 times; 13.6 says such a peer "is refused once the parent's unread frames can no longer
   carry them", which an idle parent never reaches. The tests assert Dart's bound; if the lead picks another, the count changes.
+- **Resolved:** the allowance counts references at the smallest BULK frame (14 bytes, not 11), and where Talk reads on, the unclaimed bulk channels beyond `maxUnclaimedBulk` are admitted only while those beyond it hold no more than `reassemblyBudget` together: 272 per idle parent at the defaults (16 + 16 MiB / 64 KiB), 16 with no budget, as Dart; the bursts of `talk-quic.test.ts` still pass. Design section 12, item 14 and section 13, item 6 state the bound, and the tests assert it.
 
 ### 2. A graceful close of the parent loses payloads that arrived whole before it
 
@@ -53,6 +56,7 @@ microtask granularity, as the native QUIC provider's batched event dispatch can 
   has run `#onEnd` and its reassembly has finished; make `#bulkSettled` test that instead of `channel.state`.
 - **Dart:** not affected: its mux delivers in wire order, so a bulk channel that ended before the parent's CLOSE has already
   left `_bulkIns` when Talk sees that CLOSE.
+- **Resolved:** a graceful end waits, under both orderings and after the linger, until the reader of every bulk channel that ended has reached its end and the reassemblies of those have finished, at most `bulkIdleTimeout`; payloads still in transfer or waiting for the budget end with the channel, as in Dart.
 
 ### 3. A bulk channel routed between the parent's end and `#linger` is lost
 
@@ -70,6 +74,7 @@ microtask granularity, as the native QUIC provider's batched event dispatch can 
   declines, and have `lingerBulkTarget` dispatch what `PendingParents` holds for that id.
 - **Dart:** the same structure (`_peerEnded` awaits `done` before `_linger`, `talk_channel.dart:2562-2582`); whether Dart's QUIC
   delivery can hit the window is unverified.
+- **Resolved:** over unordered connections a graceful end of a parent with a bulk target keeps the target until its owner lingers or declines (`releaseBulkTarget`), holding what is routed for the parent meanwhile (bounded per parent and per connection); the lingering target takes what was held. A proxy pipe that does not linger releases its parent's target, so that a late `_bulk` channel for it is refused `FAILED_PRECONDITION` at once and not after `heldBulkTimeout`.
 
 ### 4. A plain message's `signal` never aborts, though the wiki says closing the channel aborts it
 
@@ -82,17 +87,18 @@ microtask granularity, as the native QUIC provider's batched event dispatch can 
 - **Fix:** say "of a request" in the wiki, or abort every delivered message's signal when the channel ends. contract.ts and
   `onCancel` ("never for non-requests") side with the code.
 - **Dart:** has no signal, and `onCancel` never completes for non-requests. The wiki does not rule on it.
+- **Resolved by the documentation:** the Channels and Talk wiki page says a received message's `signal` is a request's and that a plain message's never aborts; the code and `onCancel` stay as they are.
 
 ## Unverified suspicions
 
 - `#admission` keeps entries that have left it (failed RESOURCE_EXHAUSTED, or dropped) until they reach its head. Behind a head
   that a full budget stalls (the items of a stream request nobody reads, kept alive by EXTEND), bulk messages on `messages`
   fail and return their credit at once, so the array grows without bound. Dart's `_admission` has the same shape. Observing it
-  needs a heap measurement.
+  needs a heap measurement. **Open:** recorded in `docs/notes/talk.md`.
 - `#mustDefer` (`talk-channel.ts:983`): if a carrier's mux channel were replaced while frames wait for the old one's LIMITS,
   the flush is skipped (`this.#mux !== mux`) and later frames defer without listening on the new one. Unreachable over the frame
-  mux, where MOVED follows LIMITS.
-- `bulkChunkSize` 0 makes `BulkOut.#pump` send empty subframes forever. `TalkOptions` is not validated, as in Dart.
+  mux, where MOVED follows LIMITS. **Open:** recorded in `docs/notes/talk.md`.
+- `bulkChunkSize` 0 makes `BulkOut.#pump` send empty subframes forever. `TalkOptions` is not validated, as in Dart. **Resolved:** `talkOptions` (and so every `TalkChannel`) throws a `RangeError` for a `bulkChunkSize` that is not a positive integer (design section 12, item 14). Dart's sender loops on it (`_pieces` in `talk_bulk_transfer.dart`): a finding for the Dart repository.
 
 ## Fine, but surprising
 
@@ -109,6 +115,6 @@ microtask granularity, as the native QUIC provider's batched event dispatch can 
   payloads, aborts and ordered answers.
 - The `ordered` guarantee lasts one microtask hop: code awaiting `response` directly runs before the next message, a wrapping
   async function does not (Dart has the same caveat).
-- `#unreadReferences` divides by `sendCost(11)`, but the smallest BULK frame is 14 bytes: the allowance is about 25% generous.
+- `#unreadReferences` divides by `sendCost(11)`, but the smallest BULK frame is 14 bytes: the allowance is about 25% generous. **Resolved** with finding 1: references are counted at 14 bytes.
 - `startRequest`'s JSDoc says a bulk payload over a non-mux channel "rejects UNIMPLEMENTED"; it throws synchronously, as in Dart
-  and as `send` documents.
+  and as `send` documents. **Resolved:** the JSDoc and its `@throws` say so.

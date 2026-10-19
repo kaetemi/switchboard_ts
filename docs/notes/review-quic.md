@@ -2,6 +2,8 @@
 
 _An independent review of `src/core/quic/**`, `src/node/quic/**`, `src/web/quic/**`, `src/testing/memory-quic-provider.ts` and `native/src/lib.rs` against the Dart sources of `switchboard_quic`, `docs/design.md` (3.1, 6.10, 12, 13.7, 13.8) and the QUIC parts of `dart-design.md`. The two end-of-session races of design 13.8 (GOAWAY acknowledgement, the codeless-reset grace) are another thread's and not covered. Each finding has a `test.fails` case on this branch that passes once it is fixed (each was checked against a candidate fix, then reverted): `npm run check` stays green, and the fix turns `test.fails` into `test`._
 
+**Status after the fixes (`claude/review-quic`, one commit per finding):** the five findings are fixed and their cases are plain tests (no `test.fails` is left); beside them the exporter label names were changed to Dart's, the suspicion about a provider that throws on `stop` or `reset` was fixed, and the doc example was corrected, which makes the eight of the merge. The verifier-only initiator became design section 13, item 9, a question for the user. Each finding says how below. The counts at the end are the baseline before the fixes.
+
 The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the record reader, HELLO, `QuicIdentityRules`) is a function-by-function port of the Dart and matched it everywhere I compared; what follows is in the TypeScript-only surface (Web Streams, Node Buffers, signals) and the providers.
 
 ## Findings, most severe first
@@ -13,6 +15,7 @@ The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the 
 - **Test:** `test/integration/review-quic-native.test.ts`, "a Node Buffer written while the stream window is full may be reused at once, as a Uint8Array may" (runs with `SWITCHBOARD_QUIC_ADDON`). The existing case of `quic-native.test.ts` writes a Uint8Array, whose `slice` copies.
 - **Fix:** `w.bytes = Uint8Array.prototype.slice.call(w.bytes, w.offset)`.
 - **Dart:** no; `Uint8List.sublist` copies.
+- **Resolved:** `Stream.write` copies what the stack did not take yet with `Uint8Array.prototype.slice`; the provider's other slices copy arrays it made itself, and the WebTransport provider's write copied already.
 
 ### 2. A channel's `writable` sends a string as zero bytes, and an ArrayBuffer wedges the channel
 - **Severity:** wire or data loss (string); hang (ArrayBuffer).
@@ -21,6 +24,7 @@ The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the 
 - **Test:** `test/unit/quic/review-writable-chunks.test.ts`, both cases.
 - **Fix:** the frame mux's `instanceof Uint8Array` check in the writable's `write`; also check (or catch) in `send()` before the item joins `#out`.
 - **Dart:** not applicable (typed `Uint8List`).
+- **Resolved:** a channel's `writable` refuses such a chunk with the frame mux's `TypeError`, and `send()`, `open()` and `openAfter()` check the same way before anything is queued or an id is taken (the shared `checkMuxBytes` of `mux-protocol.ts`, which the mux review's helper and these checks were folded into on merge).
 
 ### 3. The binding keeps Buffers it says it copies: OPEN payloads reach the wire as the caller later changed them
 - **Severity:** wire or data loss.
@@ -29,6 +33,7 @@ The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the 
 - **Test:** `test/unit/quic/review-buffer-copies.test.ts`, all three cases (OPEN payload, PING, in-memory provider write).
 - **Fix:** copy with `Uint8Array.prototype.slice.call(x)` (or `new Uint8Array(x)`) at those four places.
 - **Dart:** no (`Uint8List.fromList` copies). Outside this layer: the frame mux has the same `.slice()` (`frame-mux-connection.ts:591` intent, `:773` OPEN payload); it encodes the OPEN at once, so only `openPayload` and the intent alias there. For the mux reviewer.
+- **Resolved:** the OPEN payload, the PING payload, the `identify` intent and the in-memory provider's write are copied with `Uint8Array.prototype.slice.call`; the pending PING payload of the barrier's shared bookkeeping too (96018f6, after the shutdown fix). The frame mux's copies were fixed in the mux review.
 
 ### 4. Binding options out of range are refused only after the dial, and the dialled session is left open
 - **Severity:** hang or leak.
@@ -37,6 +42,7 @@ The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the 
 - **Test:** `test/unit/quic/review-dial.test.ts`, "binding options out of range are refused without leaving a session open" and "listenQuic refuses binding options out of range at once, as connectQuic should".
 - **Fix:** validate the binding options (a shared helper of `start`) in `connectQuic` and `QuicBindingListener`'s constructor before anything is dialled or accepted; at least close the session when `start` throws.
 - **Dart:** the same (validated in `start`, after the connect); the wiki does not rule on it.
+- **Resolved:** the options are checked before anything is dialled or accepted: `connectQuic` rejects with the `RangeError` without dialling, `listenQuic` and `QuicBindingListener`'s constructor throw it, `QuicSwitchboardListener.start` rejects before it declares the endpoint, and the dial closes the session should `start` throw all the same. Design section 12, item 18.
 
 ### 5. `connectQuic`'s signal is not watched while the binding starts
 - **Severity:** wrong behaviour (a promise that settles late).
@@ -45,18 +51,19 @@ The binding itself (`QuicBindingConnection`, `QuicBindingChannel`, records, the 
 - **Test:** `test/unit/quic/review-dial.test.ts`, "an abort while the binding starts rejects the dial at once and closes the session".
 - **Fix:** race `start` with the signal as the connect is (`withAbort`), closing the session (and the connection when it arrives) on the abort.
 - **Dart:** not applicable (no signals).
+- **Resolved:** `start` is raced against the signal as the connect is: an abort rejects with its reason at once and closes the session (and the connection when it arrives), and a signal that aborted between the two waits is honoured.
 
 ## Unverified suspicions
-- **Provider throws escape from the channel.** `QuicBindingChannel` calls `stream.stop`/`stream.reset` unguarded (`#stopReceiving` `:917`, `#resetDirection` `:900`, `#attach`); only the connection's `#release` catches. The contract lets `reset` throw RangeError for a code the stack cannot carry, and the WebTransport provider does for a browser without a constructible `WebTransportError` (`maxCode` 0): `close(failure)` would then throw, and `#onConfirmTimeout` would throw out of a timer. Not reachable in Chromium or Firefox (`maxCode` 255 or 2^32 - 1, the binding sends 0 to 38), so not tested.
+- **Provider throws escape from the channel.** `QuicBindingChannel` calls `stream.stop`/`stream.reset` unguarded (`#stopReceiving` `:917`, `#resetDirection` `:900`, `#attach`); only the connection's `#release` catches. The contract lets `reset` throw RangeError for a code the stack cannot carry, and the WebTransport provider does for a browser without a constructible `WebTransportError` (`maxCode` 0): `close(failure)` would then throw, and `#onConfirmTimeout` would throw out of a timer. Not reachable in Chromium or Firefox (`maxCode` 255 or 2^32 - 1, the binding sends 0 to 38), so not tested. **Resolved:** the three calls catch the provider's error and log it through the connection's logger.
 
 ## Fine, but surprising
-- **Exporter labels:** the values on the wire match Dart and the wiki (`EXPORTER-Channel-Binding` with an empty context on raw QUIC; `switchboard-ident` as the application label over WebTransport, to which the shim adds `EXPORTER-WebTransport` and the session-ID context; the vectors and the interop oracle check both). Only the names are swapped: TS `webTransportExporterLabel` (`contract.ts:247`) is Dart's `webTransportIdentLabel`, TS `webTransportTlsExporterLabel` (`exporter.ts:30`) is Dart's `webTransportExporterLabel`. Code ported from Dart under the same name gets the other value. Rename them to Dart's names, or list the rename in design section 12.
-- **A verifier-only initiator cannot talk to a default listener.** `QuicIdentityRules.initiator` sets `awaitPeerIdentity` when the dialler only verifies (`verifiesCredentials`, no credential), `#mutualIdentification` resolves only at the end of this side's own `identify()`, and the listener identifies only to a peer that identified first: every open waits `identityTimeout` and ends UNAUTHENTICATED. It follows the rules as Dart and the Identity page state them; worth a sentence there.
+- **Exporter labels:** the values on the wire match Dart and the wiki (`EXPORTER-Channel-Binding` with an empty context on raw QUIC; `switchboard-ident` as the application label over WebTransport, to which the shim adds `EXPORTER-WebTransport` and the session-ID context; the vectors and the interop oracle check both). Only the names are swapped: TS `webTransportExporterLabel` (`contract.ts:247`) is Dart's `webTransportIdentLabel`, TS `webTransportTlsExporterLabel` (`exporter.ts:30`) is Dart's `webTransportExporterLabel`. Code ported from Dart under the same name gets the other value. Rename them to Dart's names, or list the rename in design section 12. **Resolved:** the TS constants take Dart's names (the contract's is `webTransportIdentLabel`, `exporter.ts`'s `webTransportExporterLabel`), values unchanged.
+- **A verifier-only initiator cannot talk to a default listener.** `QuicIdentityRules.initiator` sets `awaitPeerIdentity` when the dialler only verifies (`verifiesCredentials`, no credential), `#mutualIdentification` resolves only at the end of this side's own `identify()`, and the listener identifies only to a peer that identified first: every open waits `identityTimeout` and ends UNAUTHENTICATED. It follows the rules as Dart and the Identity page state them; worth a sentence there. **Open question:** design section 13, item 9.
 - `maxChannels` counts this side's own channels too when admitting the peer's (both bindings, Dart alike), while HELLO's `channels` reads as "channels opened by the peer". `peerMaxChannels` is advisory over QUIC (opens wait for stream credit) where the frame mux's `open()` refuses at the peer's LIMITS; both documented.
 - Breaking out of `incoming` refuses later `_bulk` channels for live Talk channels too (`UNAVAILABLE` is checked before the adopters), in the frame mux the same way.
 - The addon mirrors the C ABI faithfully: the lock order cannot deadlock (`ring` holds the shim's bell lock then `BELLS`; `init` holds `BELLS` across `sbq_init`, which takes no bell lock; `shutdown_ctx` calls `sbq_shutdown` without `BELLS`); the doorbell is a weak thread-safe function referenced only while a session or listener lives, and dropped by `shutdown`; handles come from the shim's process-wide counter and are never reused; `poll` fills exactly the events returned; results beyond 2^53 come back as BigInt. Event fields `a` and `b` are f64, so a STOP_SENDING or close code above 2^53 rounds (documented in the provider's header). The event pump stops a batch only when the context shut down, which happens once no session or listener is live (or on `NativeQuicProvider.shutdown()`).
 - `quinnPriority` puts ordinary and bulk streams on one quinn level (round robin), as Dart does; bulk is not after ordinary on the wire.
-- The doc example of `QuicSwitchboardListener` (`quic-switchboard.ts:256`) awaits `selfSignedCertificate`, which is synchronous (design 6.10); harmless.
+- The doc example of `QuicSwitchboardListener` (`quic-switchboard.ts:256`) awaits `selfSignedCertificate`, which is synchronous (design 6.10); harmless. **Resolved:** the example no longer awaits it.
 - The WebTransport provider takes the server's streams from the browser only while someone waits, but the binding always waits, so the browser's stream backlog never holds anything back; and `incomingBidirectionalStreams` ending without the session leaves a waiting `next()` pending until the session ends, as in Dart.
 
 Tests: 3174 passed, 2 skipped, 1 todo before; 9 `test.fails` added (`review-writable-chunks` 2, `review-buffer-copies` 3, `review-dial` 3, `review-quic-native` 1), each run 10 times, stable.

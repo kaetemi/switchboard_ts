@@ -659,7 +659,9 @@ Landed on the branch, every cell green in required mode
 (`SWITCHBOARD_INTEROP=required`, `SWITCHBOARD_NATIVE=required`):
 4540 interop tests pass in about 3.5 minutes here, and 4 are skipped: the
 probe's GOAWAY-lost case in its four cells, with the reason (below). The
-Dart driver passes 59 tests. Nothing in `src/**` changed.
+Dart driver passes 59 tests. Nothing in `src/**` changed. (The fourth round
+closed the races behind those skips, below: the four cells run, and the
+project passes 4548 with none skipped.)
 
 * **Sharding (scenario 21)**, `scenarios/sharding.test.ts`, 23 tests in the
   16 cells. The server peer serves the naming service; the client peer's
@@ -840,8 +842,8 @@ and checked the peer really ran under Bun):
 * **The whole interop project**, since the addon loads in Bun (N-API) and the
   QUIC and WebTransport cells could run too: 4540 passed and 4 skipped (the
   GOAWAY-lost case of the QUIC probe in its four cells, section 12, design
-  section 13 item 8), in 151 s and again in 141 s, both runs green; about
-  4 minutes on Node. The close races of section 12 did not show differently
+  section 13 item 8; run since the races were closed), in 151 s and again in
+  141 s, both runs green; about 4 minutes on Node. The close races of section 12 did not show differently
   under Bun.
 * **Nothing needed fixing** in the peer, the Node entry or the tests: the peer
   runs under Bun as it is (as the header of `main.ts` already said).

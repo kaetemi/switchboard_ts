@@ -1,6 +1,6 @@
 # Work split and integration process
 
-_Owned by the lead thread. v1, 2026-10-14; status marks added on 2026-10-14 after the continuation's merges. Line counts are the Dart sources being ported, as a size guide._
+_Owned by the lead thread. v1, 2026-10-14; status marks added on 2026-10-14 after the continuation's merges and refreshed on 2026-10-19 after the fourth round. Line counts are the Dart sources being ported, as a size guide._
 
 Six threads port the package in parallel. Each owns directories and their tests, programs against the contracts in `src/core/*/contract.ts`, and opens pull requests into the integration branch. The lead reviews, merges in dependency order, runs the full suite including interop, and keeps `docs/design.md`, `docs/work-split.md` and `docs/wiki/` in step.
 
@@ -10,12 +10,12 @@ This is the original assignment. The first phase went through pull requests #1 t
 
 | Thread | Deliverables | State |
 | --- | --- | --- |
-| 1. Protocol core | 1 to 5 | Done: transports (#5, `claude/transports`), codecs and binding base (#9), frame mux (#14) with every Dart mux suite (`claude/mux-tests`), identity (`claude/identity`). Acceptance: the raw probe against a TS server waits on the TS peer. |
-| 2. Talk | 1 to 4 | Done (#1, #4, #11), with the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`). Acceptance: the Talk scenarios wait on the TS peer. |
-| 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`, `claude/sharding`). Acceptance: the interop cells wait on the TS peer. |
-| 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`, and the `test/integration/sharding/` port on `claude/sharding`). Acceptance: interop with the Dart naming service waits on the TS peer. |
-| 5. QUIC | 1 to 5 | Done (#2, #8, #15, `claude/webtransport`, `claude/quic-identity`); publishing is the user's call. Acceptance: Chromium reaches a TS WebTransport listener (done); interop over raw QUIC and WebTransport waits on the TS peer. |
-| 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 done (`claude/ts-peer`, merged 2026-10-18); the remainder is `work-split-2.md`'s interop thread. |
+| 1. Protocol core | 1 to 5 | Done: transports (#5, `claude/transports`), codecs and binding base (#9), frame mux (#14) with every Dart mux suite (`claude/mux-tests`), identity (`claude/identity`). Acceptance met: the raw probe runs against the TS server in the interop project. Reviewed and fixed in the fourth round (`docs/notes/review-mux.md`). |
+| 2. Talk | 1 to 4 | Done (#1, #4, #11), with the integration tests over the frame mux, TCP and the QUIC binding (`claude/talk-integration`). Acceptance met: the Talk scenarios pass in every pairing. Reviewed and fixed in the fourth round (`docs/notes/review-talk.md`). |
+| 3. Node and client | 1 to 5 | Done (#6, #10, #16, #17, `claude/node-talk`, `claude/mesh`, `claude/transports`, `claude/slot-routing`, `claude/sharding`). Acceptance met: the node cells pass in every pairing and transport. Reviewed and fixed in the fourth round (`docs/notes/review-node.md`). |
+| 4. Naming and sharding | 1 to 4 | Done (#3, #13, `claude/slot-routing`, and the `test/integration/sharding/` port on `claude/sharding`). Acceptance met: a TS naming service serves the Dart peer's registrations, watches and slot requests, and the reverse, in the matrix. Reviewed and fixed in the fourth round (`docs/notes/review-naming.md`). |
+| 5. QUIC | 1 to 5 | Done (#2, #8, #15, `claude/webtransport`, `claude/quic-identity`); publishing is the user's call. Acceptance met: Chromium and Firefox reach a TS WebTransport listener, and the interop matrix runs over raw QUIC and WebTransport in every pairing; the musl prebuilds are done (seven targets) and the two end-of-session races are closed together with Dart (`claude/wt-races`, design section 13, item 8). Reviewed and fixed in the fourth round (`docs/notes/review-quic.md`). |
+| 6. Interop | 1 to 4 | 1 done (#7, #12); 2 to 4 done (`claude/ts-peer`, merged 2026-10-18); the TS peer also runs on Bun (`claude/runtimes`); what remains is listed in `docs/handoff.md`, sections 4 and 7. |
 
 ## Ground rules for every thread
 
@@ -126,14 +126,14 @@ Branch suggestion: `claude/sb-ts-quic`. Dart: `switchboard_quic/lib/src/binding/
 1. `records.ts`, `hello.ts`, vectors; the in-memory provider. **Done** (#2).
 2. The binding over the in-memory provider: `QuicBindingConnection`, `QuicBindingChannel`, control stream, HELLO, GOAWAY and drain holds, exporter-bound identity, the Dart binding test ports. **Done** (#8).
 3. The native provider and addon for Linux x64 (CI), then macOS and Windows targets; `connectQuic` and `listenQuic`; the loopback integration test; the `native` CI job building the addon with cargo and running the integration test. **Done** (#8, #15; node-level native tests on `claude/quic-identity`). CI builds Linux x64; the other targets are built by the release workflow.
-4. The WebTransport provider and the browser test; the `browser` CI job. **Done** (`claude/webtransport`: 34 browser tests in Chromium 141, the `browser` job, the man-in-the-middle group).
-5. Prebuilt packaging: the per-target optional dependencies and a `release` workflow building them (a draft is enough; publishing is the user's call). **Done** (`claude/quic-identity`: `native/npm/<target>/`, `optionalDependencies`, `.github/workflows/release.yml`). Musl prebuilds are open.
+4. The WebTransport provider and the browser test; the `browser` CI job. **Done** (`claude/webtransport`, the `browser` job and the man-in-the-middle group; since `claude/packaging-runtimes` 35 browser tests in each of Chromium 156 and Firefox 157).
+5. Prebuilt packaging: the per-target optional dependencies and a `release` workflow building them (a draft is enough; publishing is the user's call). **Done** (`claude/quic-identity`: `native/npm/<target>/`, `optionalDependencies`, `.github/workflows/release.yml`). The musl prebuilds are **Done** too (`claude/packaging-runtimes`: seven targets).
 
 **Acceptance:** every `switchboard_quic` test has a TS counterpart over the in-memory provider or a documented reason; a TS node over the native provider interoperates with the Dart peer over raw QUIC and WebTransport in both directions; Chromium reaches a TS WebTransport listener.
 
 ## Thread 6: Dart interop test harness (existing thread)
 
-Branch suggestion: `claude/sb-ts-interop`. Your proposal in `notes/interop.md` is adopted as written, with these answers: Vitest; `test/interop/` and `test/vectors/` as proposed; QUIC on Node is the native N-API provider (thread 5), Bun runs the Node entry, Deno is manual for now; order as you proposed (codec differential first, scenarios as the node lands, meshes last).
+Branch suggestion: `claude/sb-ts-interop`. Your proposal in `notes/interop.md` is adopted as written, with these answers: Vitest; `test/interop/` and `test/vectors/` as proposed; QUIC on Node is the native N-API provider (thread 5), Bun runs the Node entry, Deno is manual for now (it has its own CI job since `claude/packaging-runtimes`); order as you proposed (codec differential first, scenarios as the node lands, meshes last).
 
 **Owns**
 

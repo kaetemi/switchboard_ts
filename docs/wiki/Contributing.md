@@ -24,11 +24,13 @@ and, where the change touches them, `npm run test:browser`, `npm run test:intero
 - `const` objects instead of enums; options objects with frozen defaults and a merge helper; `RangeError` and `TypeError` for misuse, plain `Error` where Dart has `StateError`; `process.env['X']` (bracket access to index signatures).
 - No `console`; use the `logger` option. No global timers; use the `clock` option.
 - Test doubles are named by what they are or do, never by their status as stand-ins: `Memory*` for an in-memory implementation of a contract (`MemoryQuicNetwork`, `MemoryMuxConnection`), an adjective for a double defined by one behaviour (`HeldVerifier`, `ScriptedEndpoint`, `GatedTransport`). Catch-all labels for test doubles are not used in code, comments or documents ("stub" is fine); time a test controls is virtual time. Third-party names stay as they are. The Dart repositories share the rule and the names (`docs/design.md`, section 9).
-- Internal promises a caller may drop are pre-caught so nothing is an unhandled rejection.
+- Internal promises a caller may drop are pre-caught so nothing is an unhandled rejection. Bytes a caller hands in are copied with the `Uint8Array` constructor, never with `slice()` (on a Node `Buffer` it is a view of the caller's memory), and every call that waits takes an `AbortSignal`.
 - Every observable difference from Dart is listed in `docs/design.md`, section 12.
 
 ## Branches and reviews
 
 `main` is the integration branch. Work happens on topic branches and lands on `main` with real merge commits (no squash, no rebase), after `npm run check` and the test typecheck pass on the merged tree; keep a branch's history granular, one commit per milestone, and continue a merged branch from `main` with a merge. Commit messages explain what and why, and carry the co-author attribution the project uses; nothing about hosts or credentials goes in them. The Dart repositories are read-only from this project: findings about them are reported, not patched here.
+
+Layers are reviewed adversarially: the reviewer, who did not write the layer, writes each finding as a failing test marked `test.fails` (the suite stays green) and a report under `docs/notes/review-<layer>.md`, and the fixes follow on the same branch, one commit per finding, turning each case into a plain test and listing any difference from Dart in `docs/design.md`, section 12. See [Testing and Interop](Testing-and-Interop).
 
 The documentation lives in the repository: `docs/design.md` (the design and its decisions), `docs/handoff.md` (the state of the port), and these pages under `docs/wiki/`, written as GitHub wiki Markdown so they can be pushed to the wiki as they are.

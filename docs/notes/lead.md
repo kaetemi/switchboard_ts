@@ -52,3 +52,30 @@ The Talk thread's planned contract changes (talk.md, "Planned contract changes")
 - 2026-10-14: the package is `@kaetemi/switchboard` (the user's npm scope); prebuilt QUIC addons as `@kaetemi/switchboard-quic-<target>`. Renamed on the integration branch in package.json, the docs, the wiki pages and the doc comments. Threads: use the new name in doc comments and examples; imports inside the package are relative and unaffected.
 
 - 2026-10-14: the QUIC shim is duplicated (vendored copy with the `rlib` line), no upstream change; a dedicated shim repository shared by the Dart and TS packages is the intended later direction, so the copy stays separable.
+
+## Fourth round (2026-10-18 to 2026-10-19): integration log
+
+Start: `main` at f61c3e1 (the hand-off with the naming rule). End: 96018f6. Topic branches `claude/<topic>`, merge commits only; each merge was verified by the lead with `npm run check`, `npx tsc -p tsconfig.test.json --noEmit` and the native QUIC files, and the race merge also with the interop matrix. CI is green on `main`.
+
+Merged, in order:
+
+- `claude/runtimes` (e9976a9): the integration project in the `deno` CI job (the exit test spawns a module file instead of `node --input-type=module -e`), `SWITCHBOARD_TS_PEER_RUNTIME` and the interop matrix with the TS peer on Bun, also in the `interop` CI job. Origin's #24 (the Dart core's in-process binding rename, in the documents) was merged in right after (49d8ef9).
+- The five reviews, each a reviewer agent writing failing tests as `test.fails` and a report, then a fix agent on the same branch (`docs/notes/review-*.md`):
+  - `claude/review-node` (f9f92b0): 9 findings fixed; contract changes `MuxOptions.wallTime` and `SwitchboardRuntime.transportPair(clock)`.
+  - `claude/review-quic` (3913921): 8 fixed; the exporter label constants renamed to Dart's names (a public export rename); the verifier-only dialler became design 13.9.
+  - `claude/review-mux` (0af63eb): 7 fixed, one documented (design 12.20, the lazy writable); the receive-pause concern is design 13.10.
+  - `claude/review-naming` (715f0de): 7 fixed.
+  - `claude/review-talk` (519966a): 5 fixed, and the proxy declines the held bulk channels of a pipe that will not linger.
+- `claude/wt-races` (cf9997d): the two shutdown races closed per the final specification (Sway `1947ac37`), matching the merged Dart fix (switchboard_quic d509a42, now the interop pin; the vendored shim pin `c5b3265` is unchanged, `native/sbq` did not move). The probe's GOAWAY cases run in all four cells, so the 4 skips are gone, and every reader asserts the strict status.
+- The lead's fix-up 96018f6: the pending PING payload (the barrier's shared ping bookkeeping) is copied, not a view of a caller's `Buffer`.
+
+Conflicts resolved:
+
+- **Design item numbers.** The node and QUIC branches each added a section 12 item 17 and the mux branch two items of its own; renumbered on merge to 17 (the reconnecting client's synchronous `on('state')`), 18 (binding options checked before dialling), 19 (`close()` of an ended unread channel) and 20 (the lazy writable's ordering), the naming branch's `leave()` bound became 21, and the open questions are 13.9 (the QUIC branch) and 13.10 (the mux branch). Cross references in the design were renumbered with them; two stayed behind and were corrected by the documentation pass (`leave()` is 12.21, the unread-channel close is 12.19), and every other `item N` reference in `docs/`, `src/` and `test/` was checked against the final numbering.
+- **Duplicate bytes checks.** The QUIC branch refused non-`Uint8Array` chunks inline in the binding's `writable`, `send` and `open`; the mux branch did the same for the frame mux through one helper. Folded into the shared `checkMuxBytes` (`mux-protocol.ts`), used by both bindings.
+- **The barrier over the review fixes.** The race branch changed the same QUIC binding code the QUIC review had touched: the guarded `stop` and `reset` keep the hold's wake-up, `ping()` keeps the barrier's uncounted bookkeeping, and the binding's two remaining plain rejections (an aborted `ping`, a second consumer of `incoming`) were made pre-caught like the frame mux's.
+- **The PING payload copy.** The barrier's bookkeeping took the pending payload with `slice()`, which on a Node `Buffer` is a view; copied in 96018f6 under the review's copy rule.
+
+Numbers on the final `main`: the unit and integration projects 3316 passed, 2 skipped, 1 todo (with the native addon built; 3174 after the third round); the native QUIC files 205 passed, 2 skipped; the interop project 4548 passed in 16 files, none skipped (4540 and 4 skipped before the race fix), and the Dart driver 59 in six files.
+
+Left for the user: the GitHub wiki push (the proxy's credentials serve only the main repository; `git ls-remote` of `switchboard_ts.wiki.git` asks for a username), the Firefox exporter (design 13.7), design 13.9 and 13.10, and the first publish. For the Dart repositories, to report upstream: a `bulkChunkSize` of 0 loops forever in `_pieces` of `talk_bulk_transfer.dart` (found by the Talk review). The worktrees of the earlier rounds under `/home/user/wt` are merged and removable. The documentation pass (`claude/handoff-4`) rewrote `docs/handoff.md`, added the changelog entries and design sections 9 and 11, refreshed `docs/work-split.md` and gave the three review reports that lacked one a status for each finding.
