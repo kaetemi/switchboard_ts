@@ -1445,7 +1445,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    */
   #startPing(message: MuxControlMessage, counted: boolean): PendingPing {
     const pending: PendingPing = {
-      payload: message.payload.slice(),
+      payload: Uint8Array.prototype.slice.call(message.payload),
       done: new Deferred<number>(),
       start: this.options.clock.now(),
       counted,
