@@ -263,6 +263,7 @@ describe('review regressions', () => {
       if (sentGoAway) {
         void connection.goAway();
         await raw.nextControlOf(MuxControlType.goAway);
+        await raw.answerPing();
       } else {
         await raw.sendControl(MuxControlMessage.goAway(Status.of(StatusCode.goingAway)));
         await connection.peerGoAwayStatus;

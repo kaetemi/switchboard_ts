@@ -36,6 +36,7 @@ import {
   delay,
   isSessionEnd,
   quicLoggerName,
+  sessionGoneGrace,
   withTimeout,
 } from './binding-util.ts';
 import {
@@ -94,6 +95,8 @@ interface PendingPing {
   readonly payload: Uint8Array;
   readonly done: Deferred<number>;
   readonly start: number;
+  /** Whether it counts toward `maxPendingPings`: every PING but the GOAWAY barrier's. */
+  readonly counted: boolean;
   cleanup: (() => void) | undefined;
 }
 
@@ -142,9 +145,11 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   /**
    * How long a reset or `STOP_SENDING` without an application code on the
    * control stream of a WebTransport session waits for the session's end
-   * before it counts as a protocol error, in milliseconds.
+   * before it counts as a protocol error, in milliseconds; on a channel's
+   * stream, how long such a reset or `STOP_SENDING` waits for it before the
+   * channel ends `UNKNOWN`.
    */
-  static readonly webTransportSessionGoneGrace = 2000;
+  static readonly webTransportSessionGoneGrace = sessionGoneGrace;
 
   /** PINGs awaiting their PONG; one more fails the oldest. */
   static readonly maxPendingPings = 1024;
@@ -198,6 +203,10 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   #pingCounter = 0;
   #closing = false;
   #goAwaySent = false;
+  // The PING barrier after this side's GOAWAY: settles once the record is
+  // known to be read, the connection ended, or the bound passed.
+  #goAwayBarrier: Promise<void> | undefined;
+  #goingAway: Promise<void> | undefined;
   #ownGoAway: Status | undefined;
   #peerGoAway: Status | undefined;
   #peerGoAwayReceived: Status | undefined;
@@ -248,6 +257,7 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       get closing() {
         return self.#closing;
       },
+      isWebTransport,
       get peerRecordLimit() {
         return self.peerRecordLimit;
       },
@@ -1231,7 +1241,9 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       return Promise.resolve({ value: undefined, done: true });
     }
     if (this.#incomingWaiter !== undefined) {
-      return Promise.reject(new Error('incoming channels have one consumer'));
+      const refused = new Deferred<IteratorResult<MuxChannel>>();
+      refused.reject(new Error('incoming channels have one consumer'));
+      return refused.promise;
     }
     this.#incomingWaiter = new Deferred<IteratorResult<MuxChannel>>();
     return this.#incomingWaiter.promise;
@@ -1306,7 +1318,9 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
     const idle = this.#idle;
     this.#idle = undefined;
     idle?.resolve();
-    if (this.#peerGoAway !== undefined) {
+    if (this.#peerGoAway !== undefined && !this.#goAwaySent) {
+      // A side that sent a GOAWAY of its own closes from #goAwayWait, once
+      // its PING barrier is passed as well.
       this.#log('debug', `${this}: idle after the peer's GOAWAY, closing`);
       void this.close();
     }
@@ -1399,52 +1413,81 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
 
   ping(payload?: Uint8Array, options?: { signal?: AbortSignal }): Promise<number> {
     const message = MuxControlMessage.ping(payload ?? this.#nextPingPayload());
-    const done = new Deferred<number>();
     const signal = options?.signal;
-    if (this.#closing) {
-      done.reject(SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'));
-      return done.promise;
+    if (signal?.aborted && !this.#closing) {
+      // Pre-caught: a dropped ping is never an unhandled rejection.
+      const refused = new Deferred<number>();
+      refused.reject(signal.reason);
+      return refused.promise;
     }
-    if (signal?.aborted) {
-      done.reject(signal.reason);
-      return done.promise;
-    }
-    if (this.#pings.length >= QuicBindingConnection.maxPendingPings) {
-      const oldest = this.#pings.shift() as PendingPing;
-      oldest.cleanup?.();
-      oldest.done.reject(
-        SwitchboardError.of(
-          StatusCode.deadlineExceeded,
-          `no PONG before ${QuicBindingConnection.maxPendingPings} later PINGs`,
-        ),
-      );
-    }
-    const pending: PendingPing = {
-      payload: Uint8Array.prototype.slice.call(message.payload),
-      done,
-      start: this.options.clock.now(),
-      cleanup: undefined,
-    };
-    if (signal !== undefined) {
+    const pending = this.#startPing(message, true);
+    if (signal !== undefined && !pending.done.isSettled) {
       const onAbort = (): void => {
         const i = this.#pings.indexOf(pending);
         if (i >= 0) {
           this.#pings.splice(i, 1);
         }
-        done.reject(signal.reason);
+        pending.done.reject(signal.reason);
       };
       signal.addEventListener('abort', onAbort, { once: true });
       pending.cleanup = () => signal.removeEventListener('abort', onAbort);
     }
-    this.#pings.push(pending);
-    this.#sendControl(message);
-    return done.promise;
+    return pending.done.promise;
   }
 
+  /**
+   * Sends [message], a `PING`, and registers it with the pending ones: with
+   * `maxPendingPings` of them [counted] already, the oldest pending ones
+   * fail until it fits. The GOAWAY barrier's `PING` is not [counted]: it
+   * must not evict an application's `PING`, nor make one go sooner (binding
+   * page, "GOAWAY and connection close"), and it fails like any other once
+   * it is the oldest when one is evicted. Fails at once when closing.
+   */
+  #startPing(message: MuxControlMessage, counted: boolean): PendingPing {
+    const pending: PendingPing = {
+      payload: message.payload.slice(),
+      done: new Deferred<number>(),
+      start: this.options.clock.now(),
+      counted,
+      cleanup: undefined,
+    };
+    if (this.#closing) {
+      pending.done.reject(
+        SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed'),
+      );
+      return pending;
+    }
+    if (counted) {
+      let pendingCounted = this.#pings.filter((other) => other.counted).length;
+      while (pendingCounted >= QuicBindingConnection.maxPendingPings) {
+        const oldest = this.#pings.shift() as PendingPing;
+        if (oldest.counted) {
+          pendingCounted--;
+        }
+        oldest.cleanup?.();
+        oldest.done.reject(
+          SwitchboardError.of(
+            StatusCode.deadlineExceeded,
+            `no PONG before ${QuicBindingConnection.maxPendingPings} later PINGs`,
+          ),
+        );
+      }
+    }
+    this.#pings.push(pending);
+    this.#sendControl(message);
+    return pending;
+  }
+
+  /** The next payload of the counter that no PING waiting for its PONG has (an application's own included). */
   #nextPingPayload(): Uint8Array {
-    const n = this.#pingCounter;
-    this.#pingCounter = (n + 1) & 0x7fffffff;
-    return Uint8Array.of(n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff);
+    for (;;) {
+      const n = this.#pingCounter;
+      this.#pingCounter = (n + 1) & 0x7fffffff;
+      const payload = Uint8Array.of(n & 0xff, (n >> 8) & 0xff, (n >> 16) & 0xff, (n >> 24) & 0xff);
+      if (!this.#pings.some((pending) => bytesEqual(pending.payload, payload))) {
+        return payload;
+      }
+    }
   }
 
   #completePing(payload: Uint8Array): void {
@@ -1458,8 +1501,33 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   }
 
   /**
-   * Sends GOAWAY with [status], waits for the open channels (and the drain
-   * holds) up to `MuxOptions.goAwayGrace`, then closes.
+   * Sends GOAWAY with [status], and a `PING` right after it on the control
+   * stream; refuses the peer's new channels (except a `_bulk` channel for
+   * one that is open) and opens none; then {@link close}s once both:
+   *
+   * - the channels are done (and the bulk payloads held for the drain), or
+   *   `MuxOptions.goAwayGrace` passed;
+   * - the `PING` barrier is passed (binding page, "GOAWAY and connection
+   *   close"): the GOAWAY travels on the control stream, which stays open,
+   *   so the acknowledgement {@link close} waits for does not cover it. The
+   *   `PONG` of that `PING` says the peer read the record; the `PING`'s own
+   *   failure (it could not be sent, or later PINGs crowded it out), the
+   *   peer's own close (a peer with no channel left closes on reading it,
+   *   and its `PONG` may be lost with the close), or any other end of the
+   *   connection, ends the wait too, and so does
+   *   `MuxOptions.closeConfirmTimeout` after the GOAWAY (none when 0); a
+   *   `PONG` after that is ignored. A GOAWAY from the peer alone does not
+   *   end it: the peer is still there. The `PING` is an ordinary one of
+   *   {@link ping}'s bookkeeping, which fails like any other once it is the
+   *   oldest when a later `PING` evicts, but it does not count toward
+   *   {@link maxPendingPings} itself, so that it evicts no application
+   *   `PING`.
+   *
+   * Both run at once, so the barrier normally costs nothing; what the
+   * drain gained meanwhile (a channel, an OPEN being read, a drain hold)
+   * is waited for after it, within what is left of the grace (none when the
+   * grace is 0). Calling it again sends nothing more and waits for the
+   * same. Never rejects.
    *
    * @throws {RangeError} for an application code.
    */
@@ -1473,19 +1541,63 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       this.#ownGoAway = status;
       this.#log('debug', `${this}: sending GOAWAY ${status}`);
       this.#sendControl(MuxControlMessage.goAway(statusForWire(status)));
+      this.#goAwayBarrier = this.#pingBarrier();
     }
-    return this.#goAwayWait();
+    this.#goingAway ??= this.#goAwayWait();
+    return this.#goingAway;
+  }
+
+  /**
+   * A `PING` sent now through the bookkeeping of {@link ping}, not counted
+   * toward `maxPendingPings` (`#startPing`): settles once its `PONG`
+   * arrived, the `PING` failed (at once when the connection is closing,
+   * with the connection's end, or as the oldest when a later `PING`
+   * evicts), or `MuxOptions.closeConfirmTimeout` passed (none when 0),
+   * when it leaves the pending `PING`s at once, so that a later `PONG`
+   * matches nothing. Never rejects.
+   */
+  async #pingBarrier(): Promise<void> {
+    const pending = this.#startPing(MuxControlMessage.ping(this.#nextPingPayload()), false);
+    // The ordinary bookkeeping fails the PING on every end of the connection.
+    const answered = pending.done.promise.then(
+      () => {},
+      () => {},
+    );
+    const bound = this.options.closeConfirmTimeout;
+    try {
+      if (!(bound > 0)) {
+        await answered;
+      } else {
+        await withTimeout(this.options.clock, answered, bound, () => {
+          this.#log('debug', `${this}: no PONG after GOAWAY within ${bound} ms`);
+        });
+      }
+    } finally {
+      // The drain may still run after the bound: the PING leaves now.
+      const i = this.#pings.indexOf(pending);
+      if (i >= 0) {
+        this.#pings.splice(i, 1);
+        pending.done.reject(SwitchboardError.of(StatusCode.deadlineExceeded));
+      }
+    }
   }
 
   async #goAwayWait(): Promise<void> {
+    const clock = this.options.clock;
+    const start = clock.now();
     // Let channel readers register their pending bulk work.
-    await delay(this.options.clock, 0);
+    await delay(clock, 0);
+    await this.#goAwayBarrier;
+    // Work can arrive while the barrier waits, even after an earlier idle
+    // check: the drain as it is now, within what is left of the grace.
+    const remaining = this.options.goAwayGrace - (clock.now() - start);
     if (
       (this.#channels.size > 0 || this.hasDrainHolds || this.#pendingStreams.size > 0) &&
-      !this.#closing
+      !this.#closing &&
+      remaining > 0
     ) {
       this.#idle ??= new Deferred<void>();
-      await withTimeout(this.options.clock, this.#idle.promise, this.options.goAwayGrace, () => {
+      await withTimeout(clock, this.#idle.promise, remaining, () => {
         this.#log('debug', `${this}: GOAWAY grace expired with ${this.#channels.size} channels`);
       });
     }
@@ -1493,12 +1605,13 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
   }
 
   /**
-   * Closes the session: an application close with code 0 (or the status of
-   * this side's GOAWAY when it was not `GOING_AWAY`), once what this side
+   * Closes the session now: an application close with code 0 (or the status
+   * of this side's GOAWAY when it was not `GOING_AWAY`), once what this side
    * finished writing on its streams has been acknowledged, within
-   * `MuxOptions.keepAliveTimeout`. The channels still open end with
-   * `CONNECTION_LOST`, or the GOAWAY status if either side sent one. Never
-   * rejects.
+   * `MuxOptions.keepAliveTimeout`. It sends no GOAWAY and waits for no
+   * `PONG`, also after a {@link goAway}, whose wait it ends. The channels
+   * still open end with `CONNECTION_LOST`, or the GOAWAY status if either
+   * side sent one. Never rejects.
    */
   close(): Promise<void> {
     const own = this.#ownGoAway;

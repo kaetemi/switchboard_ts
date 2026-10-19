@@ -620,7 +620,7 @@ Where the scenarios above are checked now (`interop.md`, sections 11 and 12, has
 - **10 to 12:** `identity.test.ts`, exporter-bound over QUIC.
 - **21:** `sharding.test.ts`: lazy and eager allocation, refused ASSIGN and DRAIN with RESUME, an owner going down mid-hand-over, the queue, the MOVED retry of `openChannelToSlot` and `openTalkToSlot`, never on RELOCATED.
 - **23:** `reconnect.test.ts`, on all four transports.
-- **24:** `probe/quic.test.ts`, a raw QUIC and WebTransport peer built on the native provider: HELLOs, records, the negative vectors, FRAME_TOO_LARGE, rejections with STOP_SENDING, resets both ways, the confirmation timeout, GOAWAY, application closes, WT_DRAIN_SESSION, keep-alive. One case is skipped in its four cells, with the reason: both implementations can close the session before their GOAWAY record is acknowledged, which loses it.
+- **24:** `probe/quic.test.ts`, a raw QUIC and WebTransport peer built on the native provider: HELLOs, records, the negative vectors, FRAME_TOO_LARGE, rejections with STOP_SENDING, resets both ways, the confirmation timeout, GOAWAY, application closes, WT_DRAIN_SESSION, keep-alive. The two cases of a client's GOAWAY with no channel open (the PING barrier: its PING right after the GOAWAY, the close after the PONG or the close confirmation timeout) run in all four cells (design section 13, item 8).
 - **1, 2, 6, 9 in part:** `probe/conformance.test.ts` over TCP and WebSocket: the preamble, LIMITS first, the channel window, the channel limit, the negative mux vectors.
 - **7 and 19 in part:** PING payloads and live peers keeping an idle connection open (`mux.test.ts`); the `switchboard` subprotocol and 1009 on an oversized message (`probe/conformance.test.ts`).
 

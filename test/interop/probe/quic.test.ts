@@ -819,11 +819,9 @@ for (const server of servers) {
               // The probe's stack resets the session's streams with
               // WT_SESSION_GONE, which carries no code, only once its close
               // is acknowledged; such a reset reads as UNKNOWN "unless the
-              // connection is ending", as it is here. A peer that reads the
-              // reset before the session's close still ends the channel
-              // UNKNOWN: rare, seen with the TS peer here and in every
-              // pairing of the close and reconnect scenarios, Dart to Dart
-              // too (expectEndedWith).
+              // connection is ending". The binding page holds it for the
+              // session's end, so the channel ends with the close's status,
+              // as both peers do (expectEndedWith).
               test('after an application close the open channel ends GOING_AWAY', async () => {
                 for (const code of [0, StatusCode.unavailable, 300]) {
                   const { s } = await open();
@@ -832,7 +830,6 @@ for (const server of servers) {
                   expectEndedWith(
                     await peerOf().events.waitFor({ event: 'channel.closed', channel }),
                     StatusCode.goingAway,
-                    transport,
                   );
                 }
               });
@@ -1119,16 +1116,15 @@ for (const server of servers) {
               await going;
             });
 
-            // The spec: an application close discards what is in flight, "so
-            // a side closes only once the data it wrote on every stream has
-            // been acknowledged". Both bindings await only the directions
-            // they finished, not the control stream, and close a GOAWAY's
-            // session at once when no channel is open: the GOAWAY is lost,
-            // by the Dart peer about every other time, by the TS peer now
-            // and then (over WebTransport, under load).
-            const goAwayLost =
-              ' (skipped: Dart and TS deviation: the session closes before its GOAWAY record is acknowledged, which loses it)';
-            test.skip(`with no channel open, the client's GOAWAY arrives before its close${goAwayLost}`, async () => {
+            // The binding page ("GOAWAY and connection close"): a side
+            // writes a PING right after its GOAWAY and closes only once its
+            // PONG arrived (the peer read the GOAWAY), the connection ended
+            // (the peer's own close), or the close confirmation timeout
+            // passed: an application close discards what is in flight, and
+            // with no channel open nothing else holds the close back. Both
+            // peers do so (design section 13, item 8; the Dart one since
+            // switchboard_quic d509a42).
+            test("with no channel open, the client's GOAWAY and the PING behind it arrive before its close, which follows the PONG", async () => {
               const { s, c, connection } = await accept();
               const going = peerOf().rpc('connection.goAway', {
                 connection,
@@ -1138,7 +1134,21 @@ for (const server of servers) {
               expect((await c.recordMatching((r) => r.type === control.goAway)).hex).toBe(
                 controlHex(control.goAway, status(StatusCode.unavailable, 'x')),
               );
+              const ping = await c.record();
+              expect(ping.type).toBe(control.ping);
+              await c.write(record.control(control.pong, ping.body.subarray(1)));
               await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.unavailable));
+              await going;
+            });
+
+            test('with no channel open and no PONG, the client closes once its close confirmation timeout (500 ms) passed', async () => {
+              const { s, c, connection } = await accept();
+              const start = Date.now();
+              const going = peerOf().rpc('connection.goAway', { connection });
+              await c.recordMatching((r) => r.type === control.goAway);
+              expect((await c.record()).type).toBe(control.ping);
+              await expectClosedBy(s, await wireCode(peerOf(), transport, StatusCode.ok));
+              expect(Date.now() - start).toBeGreaterThanOrEqual(450);
               await going;
             });
 

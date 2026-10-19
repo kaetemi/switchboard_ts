@@ -31,7 +31,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
  */
 
 import type { ConnectionConnector } from '../../core/client/reconnecting-client.ts';
-import { attempt, delay } from '../../core/quic/binding-util.ts';
+import { attempt, delay, sessionGoneGrace } from '../../core/quic/binding-util.ts';
 import {
   defaultQuicLimits,
   type QuicClientConfig,
@@ -68,9 +68,6 @@ import {
 
 /** The largest close reason, in bytes of UTF-8. */
 const maxReasonBytes = 1024;
-
-/** How long the session may take to report its end once a stream reported it gone, in ms. */
-const sessionGoneGrace = 2000;
 
 /** The first and the longest wait between two attempts to open a stream without credit, in ms. */
 const openBackoff = Object.freeze({ initial: 5, max: 200 });

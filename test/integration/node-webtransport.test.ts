@@ -126,6 +126,10 @@ describe.skipIf(!availability.available)(
         connectTimeout: 2000,
       });
       const connection = await within(client.connect(endpoint));
+      // The dialler is connected before the listener took the session: a
+      // round trip makes sure it did, or closing the listener would refuse
+      // the session still in its handshake (the dialler then reads a loss).
+      await within(connection.ping());
       await server.close();
       expect((await within(connection.done)).known).toBe(StatusCode.goingAway);
       expect(server.listeningEndpoints).toEqual([]);

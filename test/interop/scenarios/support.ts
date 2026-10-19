@@ -10,9 +10,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { createHash } from 'node:crypto';
 import { expect } from 'vitest';
 import { hexBytes, hexString, utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
-import { StatusCode } from '../../../src/core/status.ts';
 import type { CellPeers } from '../matrix.ts';
-import type { ChannelIncomingEvent, PeerEvent, ServiceConfig, Transport } from '../protocol.ts';
+import type { ChannelIncomingEvent, PeerEvent, ServiceConfig } from '../protocol.ts';
 
 /** [text] as the peers write bytes: upper-case hex. */
 export const hex = (text: string): string => hexString(utf8Encode(text));
@@ -90,18 +89,13 @@ export async function nextSubframe(peers: CellPeers, far: string, seen: number):
 /**
  * Expects the `channel.closed` (or `persistent.closed`) [event] of a channel
  * that was open when the far side ended the connection to carry [code], the
- * connection's status. Over WebTransport it may carry `UNKNOWN` "no
- * application error code" instead: the session's `WT_SESSION_GONE` reset
- * has no code, and a receiver that reads it before the session's close
- * ends the channel `UNKNOWN` (the QUIC binding page: such a reset "reads as
- * UNKNOWN, unless the connection is ending"). The side ending the session
- * holds the resets back until its close is acknowledged, which makes this
- * rare, not impossible: seen in every pairing, Dart to Dart too.
+ * connection's status. Over WebTransport the session's `WT_SESSION_GONE`
+ * reset and `STOP_SENDING` have no code and can be read before the
+ * session's close; the binding page holds them for the session's end, for
+ * the control stream's two-second grace, so that the channel ends with the
+ * close's status, never `UNKNOWN`: both implementations do (design section
+ * 13, item 8; Dart since switchboard_quic d509a42).
  */
-export function expectEndedWith(event: PeerEvent, code: number, transport: Transport): void {
-  if (transport === 'webtransport' && event['code'] === StatusCode.unknown) {
-    expect(event['reason']).toBe('no application error code');
-  } else {
-    expect(event['code']).toBe(code);
-  }
+export function expectEndedWith(event: PeerEvent, code: number): void {
+  expect(event['code']).toBe(code);
 }

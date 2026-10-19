@@ -46,6 +46,14 @@ export class RecordReader {
 
   /** The stream read. */
   readonly stream: QuicStream;
+  /**
+   * Waited for before each read from the provider, within a record too and
+   * in {@link expectEnd}: what returns a promise holds the reads back, and
+   * with them the peer's credit, until it settles (a channel holding the
+   * peer's `STOP_SENDING` for the session's end). A read already issued is
+   * not held. Undefined: nothing holds them.
+   */
+  gate: (() => Promise<void> | undefined) | undefined;
   readonly #header = new Uint8Array(quicRecordHeaderSize);
 
   constructor(stream: QuicStream) {
@@ -65,6 +73,10 @@ export class RecordReader {
   async next(limit: number): Promise<QuicRecord | undefined> {
     let have = 0;
     while (have < quicRecordHeaderSize) {
+      const hold = this.gate?.();
+      if (hold !== undefined) {
+        await hold;
+      }
       const chunk = await this.stream.read(quicRecordHeaderSize - have);
       if (chunk === undefined) {
         if (have === 0) {
@@ -116,6 +128,10 @@ export class RecordReader {
   /** Up to [wanted] bytes of a body; FIN is a protocol error. */
   async #read(wanted: number): Promise<Uint8Array> {
     const max = wanted < RecordReader.maxChunk ? wanted : RecordReader.maxChunk;
+    const hold = this.gate?.();
+    if (hold !== undefined) {
+      await hold;
+    }
     const chunk = await this.stream.read(max);
     if (chunk === undefined) {
       throw new ProtocolError('FIN inside a record');
@@ -134,6 +150,10 @@ export class RecordReader {
   async expectEnd(): Promise<void> {
     try {
       for (;;) {
+        const hold = this.gate?.();
+        if (hold !== undefined) {
+          await hold;
+        }
         const chunk = await this.stream.read(1);
         if (chunk === undefined) {
           return;

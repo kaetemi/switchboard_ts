@@ -19,6 +19,18 @@ import { quicDefaultRecordLimit, quicMaxRecordLength } from './records.ts';
 export const quicLoggerName = 'Switchboard.Quic';
 
 /**
+ * How long a sign that a WebTransport session is gone waits for the
+ * session's end, in milliseconds. The side that terminates a session resets
+ * and stops its streams with `WT_SESSION_GONE`, which carries no
+ * application code and can overtake the close itself: a reset or
+ * `STOP_SENDING` without a code on the control stream is a protocol error
+ * only after this grace, and on a channel's stream reads as `UNKNOWN` only
+ * after it. The web provider gives the browser as long to report the
+ * session's end once a stream reported it gone.
+ */
+export const sessionGoneGrace = 2000;
+
+/**
  * Whether [error] is the end of the session, which every pending operation
  * reports, rather than a failure of one stream.
  */

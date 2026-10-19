@@ -4,7 +4,7 @@
 import { expect, onTestFinished } from 'vitest';
 import { bytesEqual } from '../../../src/core/bytes.ts';
 import type { MuxChannel, MuxConnection, MuxOptions } from '../../../src/core/mux/contract.ts';
-import { MuxControlMessage } from '../../../src/core/mux/mux-frame.ts';
+import { MuxControlMessage, MuxControlType } from '../../../src/core/mux/mux-frame.ts';
 import type { QuicSessionEnd, QuicStream } from '../../../src/core/quic/contract.ts';
 import { QuicStreamReset } from '../../../src/core/quic/contract.ts';
 import { QuicHello, quicHelloType } from '../../../src/core/quic/hello.ts';
@@ -225,6 +225,8 @@ export interface PairOptions {
   network?: MemoryQuicNetwork;
   initiatorIdentity?: string;
   acceptorIdentity?: string;
+  /** Both ends take the session as a WebTransport session. */
+  isWebTransport?: boolean;
 }
 
 /** Two connections of the binding over an in-memory session pair, closed after the test. */
@@ -240,11 +242,13 @@ export async function connectionPair(
     options: init.acceptor ?? fast,
     quicOptions: init.acceptorQuic,
     localIdentity: init.acceptorIdentity,
+    isWebTransport: init.isWebTransport ?? false,
   });
   const client = await QuicBindingConnection.start(a, {
     options: init.initiator ?? fast,
     quicOptions: init.initiatorQuic,
     localIdentity: init.initiatorIdentity,
+    isWebTransport: init.isWebTransport ?? false,
   });
   const accepted = await server;
   closeAfter(client);
@@ -348,6 +352,18 @@ export class RawPeer {
     }
   }
 
+  /**
+   * Reads the `PING` the binding writes right behind its GOAWAY (the PING
+   * barrier of design section 13, item 8) and answers it, as a peer
+   * reading the control stream does: the binding's close waits for the
+   * `PONG`, else for `closeConfirmTimeout`.
+   */
+  async answerPing(): Promise<void> {
+    const ping = await this.nextControl();
+    expect(ping.type).toBe(MuxControlType.ping);
+    await this.sendControl(MuxControlMessage.pong(ping.payload));
+  }
+
   /** Opens a stream and writes [data] on it. */
   async openRaw(data: ArrayLike<number>): Promise<QuicStream> {
     const stream = await this.session.openStream();
@@ -396,6 +412,7 @@ export interface RawOptions {
   rawControl?: boolean;
   rawHello?: QuicHello;
   isWebTransport?: boolean;
+  network?: MemoryQuicNetwork;
 }
 
 /**
@@ -411,6 +428,7 @@ export async function bindingAndRaw(
   const bindingEnd = init.bindingEnd ?? {};
   const rawEnd = init.rawEnd ?? {};
   const [a, b] = MemoryQuicSession.pair({
+    ...(init.network === undefined ? {} : { network: init.network }),
     initiator: bindingIsInitiator ? bindingEnd : rawEnd,
     acceptor: bindingIsInitiator ? rawEnd : bindingEnd,
   });

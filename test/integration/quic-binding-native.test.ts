@@ -28,7 +28,7 @@ import {
   switchboardAlpn,
   webTransportIdentLabel,
 } from '../../src/core/quic/contract.ts';
-import type { QuicBindingConnection } from '../../src/core/quic/quic-binding-connection.ts';
+import { QuicBindingConnection } from '../../src/core/quic/quic-binding-connection.ts';
 import { connectQuic, type QuicConnectOptions } from '../../src/core/quic/quic-dial.ts';
 import { QuicIdentityRules } from '../../src/core/quic/quic-identity-rules.ts';
 import { listenQuic, type QuicBindingListener } from '../../src/core/quic/quic-listen.ts';
@@ -225,6 +225,49 @@ async function dial(server: Server, init: QuicConnectOptions = {}): Promise<Quic
   });
   onTestFinished(() => connection.close());
   return connection;
+}
+
+/**
+ * A native listener of [mode] on the loopback without a node, closed after
+ * the test, and a function that dials it and returns the next pair of
+ * bindings, the dialler's and the listener's, once each has the other's
+ * HELLO (`bindingPairs` of `native_integration_test.dart`).
+ */
+async function bindingPairs(
+  mode: Mode,
+): Promise<() => Promise<[QuicBindingConnection, QuicBindingConnection]>> {
+  const config: QuicServerConfig = {
+    alpn: [switchboardAlpn],
+    certificateDer: cert.certificateDer,
+    privateKeyDer: cert.privateKeyDer,
+  };
+  const quic: QuicListener = mode.wt
+    ? await nativeQuic().listenWebTransport('127.0.0.1', 0, config, { path: '/sb' })
+    : await nativeQuic().listen('127.0.0.1', 0, config);
+  onTestFinished(() => quic.close());
+  const sessions = quic.sessions[Symbol.asyncIterator]();
+  return async () => {
+    const dialling = connectQuic(quic.endpoint, nativeQuic(), {
+      verifyCertificate: false,
+      timeout: 5000,
+      options: fast,
+      identityRules: QuicIdentityRules.none,
+    });
+    dialling.catch(() => {});
+    const next = await within(sessions.next());
+    if (next.done === true) {
+      throw new Error('the listener ended');
+    }
+    const acceptor = await QuicBindingConnection.start(next.value, {
+      options: fast,
+      isWebTransport: mode.wt,
+    });
+    onTestFinished(() => acceptor.close());
+    const initiator = await within(dialling);
+    onTestFinished(() => initiator.close());
+    await until(() => initiator.peerHello !== undefined && acceptor.peerHello !== undefined);
+    return [initiator, acceptor];
+  };
 }
 
 /**
@@ -468,6 +511,76 @@ describe.skipIf(!availability.available)(
           expect((await within(channel.done)).code).toBe(StatusCode.goingAway);
           expect((await within(connection.done)).code).toBe(StatusCode.goingAway);
         });
+
+        // The PING barrier and the session-gone hold (design section 13,
+        // item 8): ported from switchboard_quic's native_integration_test.dart
+        // at the pinned d509a42, which has the same fix.
+        test('GOAWAY with no channel open, sixteen times, from either side: the peer reads the record before the close', async () => {
+          // Without channels the GOAWAY's sender closes once the PONG of the
+          // PING it sent right after the record is back (or the peer's own
+          // close arrived): the session's close cannot overtake the record.
+          // The reason tells the record from the close, which says only code
+          // 0; a peer that lost both would read CONNECTION_LOST.
+          const pairs = await bindingPairs(mode);
+          for (let round = 0; round < 16; round++) {
+            const [initiator, acceptor] = await pairs();
+            const [sender, receiver] =
+              round % 2 === 0 ? [initiator, acceptor] : [acceptor, initiator];
+            const status = Status.of(StatusCode.goingAway, `round ${round}`);
+            await within(sender.goAway(status));
+            expect((await within(receiver.peerGoAwayStatus)).equals(status), `round ${round}`).toBe(
+              true,
+            );
+            expect((await within(receiver.done)).equals(status), `round ${round}`).toBe(true);
+            expect((await within(sender.done)).code).toBe(StatusCode.goingAway);
+          }
+        }, 60_000);
+
+        test("a close with channels open, sixty-four times, from either side: the far side's channels end GOING_AWAY, never UNKNOWN", async () => {
+          // Over WebTransport the closing side's stack resets the session's
+          // streams without an application code (WT_SESSION_GONE), which the
+          // far side can read before the session's close; its channels hold
+          // such a reset for the close.
+          const pairs = await bindingPairs(mode);
+          for (let round = 0; round < 64; round++) {
+            const [initiator, acceptor] = await pairs();
+            const [closer, far] = round % 2 === 0 ? [initiator, acceptor] : [acceptor, initiator];
+            const farChannels: MuxChannel[] = [];
+            const drain = (channel: MuxChannel): void => {
+              void (async () => {
+                for await (const _ of channel.readable) {
+                  // Read and dropped.
+                }
+              })().catch(() => {});
+            };
+            void (async () => {
+              for await (const channel of far.incoming) {
+                drain(channel);
+                farChannels.push(channel);
+              }
+            })().catch(() => {});
+            void (async () => {
+              for await (const channel of closer.incoming) {
+                drain(channel);
+              }
+            })().catch(() => {});
+            const opened = far.open(new Uint8Array(0));
+            drain(opened);
+            farChannels.push(opened);
+            const theirs = closer.open(new Uint8Array(0));
+            drain(theirs);
+            await until(() => farChannels.length === 2);
+            await within(opened.send(bytes('x')));
+            await within(theirs.send(bytes('y')));
+            await within(closer.close());
+            for (const channel of farChannels) {
+              expect((await within(channel.done)).code, `round ${round}`).toBe(
+                StatusCode.goingAway,
+              );
+            }
+            expect((await within(far.done)).code).toBe(StatusCode.goingAway);
+          }
+        }, 120_000);
 
         test('the idle timeout ends the channels with CONNECTION_LOST', async () => {
           const idle = 800;
