@@ -42,7 +42,9 @@ class PeerContext {
   Switchboard? ownerOf(MuxConnection connection) => _owners[connection];
 
   /// Registers [connection] (of [node], when known) and reports its
-  /// identification, its GOAWAY and its end as events.
+  /// identification, its GOAWAY and its end as events, while the handle
+  /// names it: a connection a reset forgot without closing it (one this
+  /// peer accepted) reports nothing more under the old handle.
   String trackConnection(MuxConnection connection, [Switchboard? node]) {
     if (node != null) {
       _owners[connection] = node;
@@ -52,11 +54,15 @@ class PeerContext {
       return existing;
     }
     final handle = handles.add('c', connection);
+    void event(String name, Map<String, Object?> fields) {
+      if (handles.nameOf(connection) == handle) {
+        out.event(name, {'connection': handle, ...fields});
+      }
+    }
+
     // Every valid IDENT, the first and those replacing it.
-    void report(PeerIdentity identity) => out.event('connection.identified', {
-      'connection': handle,
-      ...identityJson(identity),
-    });
+    void report(PeerIdentity identity) =>
+        event('connection.identified', identityJson(identity));
     unawaited(
       connection.peerIdentified.then((first) async {
         report(first);
@@ -73,19 +79,11 @@ class PeerContext {
     );
     unawaited(
       connection.peerGoAwayStatus.then(
-        (s) => out.event('connection.goAway', {
-          'connection': handle,
-          ...statusJson(s),
-        }),
+        (s) => event('connection.goAway', statusJson(s)),
       ),
     );
     unawaited(
-      connection.done.then((s) {
-        out.event('connection.closed', {
-          'connection': handle,
-          ...statusJson(s),
-        });
-      }),
+      connection.done.then((s) => event('connection.closed', statusJson(s))),
     );
     return handle;
   }
@@ -157,6 +155,16 @@ class PeerContext {
   /// The reconnecting clients stop first: closing their connections and
   /// their persistent channels' channels would otherwise make them
   /// reconnect and open those again.
+  ///
+  /// A connection this peer accepted ([MuxConnection.isInitiator] false)
+  /// is only forgotten, never closed: a connection is torn down by the side
+  /// that dialled it. The dialler may pool it (a proxy's, a relay's, a
+  /// forwarding service's connection to a backend), and a close from this
+  /// side lands while the dialler still counts it open: until its read loop
+  /// sees the end, it can forward a channel's OPEN into the linger window
+  /// of this side's transport, which reads and drops it, so the channel is
+  /// neither served nor refused. The dialler's own reset closes what it
+  /// dialled, and its pool drops a connection it closes at once.
   Future<int> closeAll() async {
     final objects = handles.all;
     handles.clear();
@@ -175,7 +183,9 @@ class PeerContext {
           case final SlotChannel c:
             await c.close().timeout(_closeTimeout, onTimeout: () {});
           case final MuxConnection c:
-            await c.close().timeout(_closeTimeout, onTimeout: () {});
+            if (c.isInitiator) {
+              await c.close().timeout(_closeTimeout, onTimeout: () {});
+            }
           case final TalkStream s:
             s.cancel();
           case final NamingHandle n:
