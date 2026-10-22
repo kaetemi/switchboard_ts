@@ -13,7 +13,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 import { expect, test } from 'vitest';
 import { ChannelAddress } from '../../../src/core/address/channel-address.ts';
 import { hexString } from '../../../src/core/bytes.ts';
-import { StatusCode } from '../../../src/core/status.ts';
+import { StatusCode, statusCodeName } from '../../../src/core/status.ts';
 import { wikiBytes } from '../../support/vectors.ts';
 import { type ChainPeers, type ChainRole, describeChains } from '../chain.ts';
 import type { ChannelIncomingEvent, MessageInfo, PeerEvent, TalkItemEvent } from '../protocol.ts';
@@ -108,6 +108,34 @@ function endToEnd(peers: ChainPeers, via: string, address: () => Record<string, 
   });
 }
 
+/**
+ * The backend's `channel.incoming` for the client's [channel], opened
+ * through an intermediary. Fails at once, with the status, when the
+ * client's channel closes first: the open did not reach the backend's
+ * service, and waiting out the event's timeout would hide why.
+ */
+async function incomingAtBackend(
+  peers: ChainPeers,
+  channel: string,
+): Promise<ChannelIncomingEvent> {
+  const first = await Promise.race([
+    peers
+      .peer('backend')
+      .events.waitFor<ChannelIncomingEvent>('channel.incoming')
+      .then((incoming) => ({ incoming })),
+    closedAtClient(peers, channel).then((closed) => ({ closed })),
+  ]);
+  if ('closed' in first) {
+    const { code, reason, body } = first.closed;
+    throw new Error(
+      `the client's channel ${channel} closed with ${statusCodeName(Number(code)) ?? code} ` +
+        `(${code}, reason ${JSON.stringify(reason)}, body ${JSON.stringify(body)}) ` +
+        "before the backend's channel.incoming",
+    );
+  }
+  return first.incoming;
+}
+
 /** A raw channel from the client through [via] to the backend's raw service. */
 async function rawThrough(
   peers: ChainPeers,
@@ -119,9 +147,7 @@ async function rawThrough(
     endpoint: peers.endpoint(via),
   });
   const { channel } = await c.rpc<{ channel: string }>('open', { connection, address });
-  const incoming = await peers
-    .peer('backend')
-    .events.waitFor<ChannelIncomingEvent>('channel.incoming');
+  const incoming = await incomingAtBackend(peers, channel);
   return { channel, far: incoming.channel };
 }
 
