@@ -10,7 +10,9 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // eight implementation cells per transport; the all-Dart cell checks the
 // scenario against the reference. Peers start from the last role (the
 // backend) to the first (the client), each configured from those started
-// before it, and live for the cell.
+// before it, and live for the cell. So does an intermediary's pooled
+// connection to the backend: a reset closes what a peer dialled and leaves
+// what it accepted to its dialler.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect } from 'vitest';
 import type { Peer } from './launcher.ts';

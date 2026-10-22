@@ -91,7 +91,9 @@ export class PeerContext {
 
   /**
    * Registers [connection] (of [node], when known) and reports its
-   * identification, its GOAWAY and its end as events.
+   * identification, its GOAWAY and its end as events, while the handle
+   * names it: a connection a reset forgot without closing it (one this
+   * peer accepted) reports nothing more under the old handle.
    */
   trackConnection(connection: MuxConnection, node?: Switchboard): string {
     if (node !== undefined) {
@@ -102,9 +104,14 @@ export class PeerContext {
       return existing;
     }
     const handle = this.handles.add('c', connection);
+    const event = (name: string, fields: Record<string, unknown>): void => {
+      if (this.handles.nameOf(connection) === handle) {
+        this.out.event(name, { connection: handle, ...fields });
+      }
+    };
     // Every valid IDENT, the first and those replacing it.
     const report = (identity: PeerIdentity): void =>
-      this.out.event('connection.identified', { connection: handle, ...identityJson(identity) });
+      event('connection.identified', identityJson(identity));
     void connection.peerIdentified.then(async (first) => {
       report(first);
       let last = first;
@@ -117,12 +124,8 @@ export class PeerContext {
         }
       }
     });
-    void connection.peerGoAwayStatus.then((s) =>
-      this.out.event('connection.goAway', { connection: handle, ...statusJson(s) }),
-    );
-    void connection.done.then((s) =>
-      this.out.event('connection.closed', { connection: handle, ...statusJson(s) }),
-    );
+    void connection.peerGoAwayStatus.then((s) => event('connection.goAway', statusJson(s)));
+    void connection.done.then((s) => event('connection.closed', statusJson(s)));
     return handle;
   }
 
@@ -189,6 +192,17 @@ export class PeerContext {
    * reconnecting clients stop first: closing their connections and their
    * persistent channels' channels would otherwise make them reconnect and
    * open those again.
+   *
+   * A connection this peer accepted ({@link MuxConnection.isInitiator}
+   * false) is only forgotten, never closed: a connection is torn down by
+   * the side that dialled it. The dialler may pool it (a proxy's, a
+   * relay's, a forwarding service's connection to a backend), and a close
+   * from this side lands while the dialler still counts it open: until its
+   * read loop sees the end, it can forward a channel's OPEN into the
+   * linger window of this side's transport, which reads and drops it, so
+   * the channel is neither served nor refused. The dialler's own reset
+   * closes what it dialled, and its pool drops a connection it closes at
+   * once.
    */
   async closeAll(): Promise<number> {
     const objects = this.handles.all;
@@ -211,7 +225,9 @@ export class PeerContext {
             await within((object as SlotChannel).close(), closeTimeoutMs);
             break;
           case 'c':
-            await within((object as MuxConnection).close(), closeTimeoutMs);
+            if ((object as MuxConnection).isInitiator) {
+              await within((object as MuxConnection).close(), closeTimeoutMs);
+            }
             break;
           case 's':
             (object as TalkStream).cancel();
