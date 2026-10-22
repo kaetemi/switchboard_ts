@@ -368,7 +368,11 @@ export class Peer {
     }
   }
 
-  /** Closes everything the previous test created and forgets the events. */
+  /**
+   * Closes what the previous test created and forgets the events: the
+   * `reset` command, which closes the connections the peer dialled and only
+   * forgets those it accepted, leaving them to their dialler.
+   */
   async reset(): Promise<void> {
     await this.rpc('reset');
     this.events.clear();

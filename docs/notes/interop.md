@@ -854,3 +854,44 @@ Because both runs were fully green and take about two and a half minutes, the
 unit job) after the Node run, in required mode, when the Dart peer and the
 addon were built. The all-Dart cells run again with it; the step can be
 dropped without touching anything else.
+
+## 14. The reset leaves accepted connections to their dialler (branch `claude/harness-graceful-reset`)
+
+CI run 219 on main (2afb6fb, docs only, the code of the green run 218) failed
+one interop test of 4548: mesh, proxy, "client ts → proxy ts → backend dart
+over tcp", "a backend's CLOSE MOVED reaches the client without its owner and
+epoch", with `no event "channel.incoming" within 10000 ms` at the Dart backend,
+both peers' stderr empty and the next test of the cell green. It did not
+come back in 190 runs of the cell, nor in 8 loaded runs of the mesh, sharding,
+close and forward files together.
+
+After every test each peer's `reset` closed every tracked connection with a
+bare `close()`, and a backend tracks the connection it accepted from the proxy
+once its `raw` service gets a channel there, so the reset after the previous
+test closed the proxy's pooled connection from the backend's side. A bare
+close sends the FIN without waiting for the peer: Dart's resolves after
+`socket.close()` (dart:io's `shutdown(send)`), TS's once the socket's `end()`
+finished (`'finish'`, the FIN handed to the system; 3 ms with the peer's side
+still open, so the TS side is no different), and the transports of both then
+linger up to `closeTimeout` (10 s), reading and dropping whatever still
+arrives.
+
+The proxy keeps the connection in its pool until its read loop sees the end
+(`isOpen` is `!closing && !goAwaySent`). The next test opens at once; when the
+proxy forwards the OPEN on the pooled connection before it has processed the
+FIN, the OPEN lands in the backend's discard window: no `channel.incoming`, no
+CLOSE, no error anywhere. Milliseconds later the proxy reads the FIN and the
+client's channel ends UNAVAILABLE, but the test waits on the backend's event
+and runs into the harness's 10 s `waitFor`. The window is there wherever a
+reset closes a connection another peer pools, in either implementation; it
+was seen once.
+
+**Accepted connections are left to their dialler.** A reset closes the
+connections the peer dialled (`isInitiator`) and only forgets those it
+accepted, which report no more events under their old handle; the dialling
+side's pool drops a connection it closes at once (`isOpen` turns false before
+`close()` yields), so nothing is reused through a window. An intermediary's
+pooled connection now lives across a cell's tests, as in a deployment; no test
+depended on a fresh one. `rawThrough` in the mesh scenario races the backend's
+`channel.incoming` with the client's `channel.closed` and fails at once with
+the status.

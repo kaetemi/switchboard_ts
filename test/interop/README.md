@@ -76,7 +76,7 @@ describeCells('my scenario', { transports: ['tcp', 'ws'] }, (peers) => {
 });
 ```
 
-Each cell starts its server and client peers once, resets both after every test (and fails the test if either reported a `peer.error`), and prints both peers' stderr when a test fails. A cell that cannot run is a skipped suite whose name says why: a peer is missing, or the TS side lacks the transport (`tsTransportGaps` in `matrix.ts`: raw QUIC and WebTransport without the native addon). `describeChains` (`chain.ts`) does the same for three or more peers, each role in either language, started from the backend to the client and each configured from the peers started before it.
+Each cell starts its server and client peers once, resets both after every test (and fails the test if either reported a `peer.error`), and prints both peers' stderr when a test fails. A reset closes what a peer dialled and only forgets what it accepted, so a connection a peer pools (an intermediary's to a backend, a forwarding service's) lives across the cell's tests, as it would in a deployment; a test that needs the far side to end a connection says so (`accepted.close`, `accepted.goAway`, `connection.close` on the connection a `raw` channel reported). A cell that cannot run is a skipped suite whose name says why: a peer is missing, or the TS side lacks the transport (`tsTransportGaps` in `matrix.ts`: raw QUIC and WebTransport without the native addon). `describeChains` (`chain.ts`) does the same for three or more peers, each role in either language, started from the backend to the client and each configured from the peers started before it.
 
 A value the reference decides is found by running the Dart to Dart cell and asserting what it does in every cell, never by recording a snapshot per cell (each cell would record its own).
 
@@ -209,7 +209,7 @@ A plain message (no reply expected) to `echo` is reported as `service.message {s
 | --- | --- | --- |
 | `ping` | | `"pong"` |
 | `info` | | the READY object and `handles`, the number of live handles |
-| `reset` | | closes every handle's object (newest first, the reconnecting clients stopped before anything, so that none reconnects meanwhile) and forgets them: `{closed}`; the listeners stay |
+| `reset` | | closes every handle's object (newest first, the reconnecting clients stopped before anything, so that none reconnects meanwhile) and forgets them: `{closed}`, the number of handles; the listeners stay. A connection the peer accepted (`isInitiator` false) is forgotten without being closed, and reports no more events under its handle: a connection is torn down by the side that dialled it, which closes it at its own reset or keeps it pooled |
 | `shutdown` | | `null`, then the peer exits |
 | `decode` | `kind`, `hex` | the reference decoder's fields and `reencoded` (see the oracle) |
 | `decodeMany` | `kind`, `hexes` | `[{ok: true, value} \| {ok: false, error}]`, one per input |

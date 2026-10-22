@@ -191,7 +191,10 @@ class TsPeer {
   /// What the peer wrote to stderr.
   String get diagnostics => '$_stderr';
 
-  /// Closes everything the previous test created and forgets the events.
+  /// Closes what the previous test created and forgets the events: the
+  /// `reset` command, which closes the connections the TS peer dialled and
+  /// only forgets those it accepted, leaving them to their dialler (the
+  /// Dart side of a test closes what it dialled).
   Future<void> reset() async {
     await rpc<Object?>('reset');
     _events.clear();
