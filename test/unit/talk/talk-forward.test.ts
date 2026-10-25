@@ -22,6 +22,7 @@ import { forwardMessage } from '../../../src/core/talk/talk-forward.ts';
 import { TalkFrame, TalkKind } from '../../../src/core/talk/talk-frame.ts';
 import type { Clock } from '../../../src/core/util/clock.ts';
 import { Deferred } from '../../../src/core/util/deferred.ts';
+import type { Logger } from '../../../src/core/util/logger.ts';
 import { ManualClock } from '../../../src/testing/manual-clock.ts';
 import { until } from '../../support/talk/bulk-peers.ts';
 import { Carrier } from '../../support/talk/carrier.ts';
@@ -42,6 +43,7 @@ import {
   rejectsRemote,
   rejectsStatus,
   toList,
+  within,
 } from '../../support/talk/helpers.ts';
 import { costOf, type MemoryMuxChannel, memoryMuxPair } from '../../support/talk/memory-mux.ts';
 
@@ -1058,6 +1060,89 @@ describe('frame level', () => {
 });
 
 describe('forwardMessage', () => {
+  test('a closed target reports one transient plain refusal and keeps request aborts', async () => {
+    const source = new Chain({ proxies: 0 });
+    const target = new Chain({ proxies: 0 });
+    onTestFinished(() => source.close());
+    onTestFinished(() => target.close());
+    const messages = new Queue(source.backend.messages);
+    onTestFinished(() => messages.cancel());
+    await target.client.close();
+    const plain = messages.next();
+    await source.client.send('NOTE', bytes([1]));
+    const refused: Status[] = [];
+    await forwardMessage(await plain, target.client, { onRefused: (s) => refused.push(s) });
+    expect(refused).toHaveLength(1);
+    expect(only(refused).known).toBe(StatusCode.unavailable);
+    const request = messages.next();
+    const response = source.client.request('ASK', empty);
+    const aborted = rejectsRemote(response, StatusCode.unavailable);
+    await forwardMessage(await request, target.client, { onRefused: (s) => refused.push(s) });
+    await aborted;
+    expect(refused, 'requests use their abort response').toHaveLength(1);
+  });
+
+  test('successful plain forwarding does not refuse and callback errors are contained', async () => {
+    const source = new Chain({ proxies: 0 });
+    const target = new Chain({ proxies: 0 });
+    onTestFinished(() => source.close());
+    onTestFinished(() => target.close());
+    const messages = new Queue(source.backend.messages);
+    onTestFinished(() => messages.cancel());
+    const plain = messages.next();
+    const received = first(target.backend.messages);
+    await source.client.send('NOTE', bytes([7]));
+    const refused: Status[] = [];
+    await forwardMessage(await plain, target.client, { onRefused: (s) => refused.push(s) });
+    expect([...(await received).payload]).toEqual([7]);
+    expect(refused).toEqual([]);
+    await target.client.close();
+    const next = messages.next();
+    await source.client.send('NOTE', bytes([8]));
+    let calls = 0;
+    await forwardMessage(await next, target.client, {
+      onRefused: () => {
+        calls++;
+        throw new Error('application refusal callback failed');
+      },
+    });
+    expect(calls).toBe(1);
+  });
+
+  test('a refusal callback whose promise rejects is logged, not left unhandled', async () => {
+    // Dart listens to the root logger; here every channel logs to one.
+    const logged: string[] = [];
+    const logger: Logger = {
+      log(level, name, message) {
+        if (name === 'Switchboard.Talk' && (level === 'warn' || level === 'error')) {
+          logged.push(message);
+        }
+      },
+    };
+    const source = new Chain({ proxies: 0, client: { logger }, backend: { logger } });
+    const target = new Chain({ proxies: 0, client: { logger }, backend: { logger } });
+    onTestFinished(() => source.close());
+    onTestFinished(() => target.close());
+    const messages = new Queue(source.backend.messages);
+    onTestFinished(() => messages.cancel());
+    await target.client.close();
+    const plain = messages.next();
+    await source.client.send('NOTE', bytes([1]));
+    let calls = 0;
+    await forwardMessage(await plain, target.client, {
+      onRefused: async () => {
+        calls++;
+        // A later turn, as Dart's `Future.delayed(Duration.zero)`: one of
+        // those `pumpEventQueue` waits for.
+        await flush(1);
+        throw new Error('the retry could not be recorded');
+      },
+    });
+    await pumpEventQueue();
+    expect(calls).toBe(1);
+    expect(logged).toEqual(['plain forwarding refusal callback failed']);
+  });
+
   test('refuses foreign messages and double forwarding', async () => {
     const chain = new Chain({ proxies: 0 });
     // Dart's `ArgumentError` is a TypeError here.
@@ -1276,6 +1361,28 @@ describe('bulk payloads', () => {
     expect(bytesEqual((await received).payload, pattern(100000))).toBe(true);
     await pumpEventQueue();
     expect(forwarded).toBe(true);
+  });
+
+  test('a failed in-progress plain bulk transfer reports only transient uncertainty', async () => {
+    const [client, front] = await muxTalk({}, { streamBulk: () => true });
+    const [back, backend] = await muxTalk({}, { streamBulk: () => true });
+    const source = new Source();
+    onTestFinished(() => source.close());
+    const refused: Status[] = [];
+    const forwarded = new Deferred<void>();
+    void front.serve((message) => {
+      void forwardMessage(message, back, { onRefused: (s) => refused.push(s) }).then(() =>
+        forwarded.resolve(),
+      );
+    });
+    const arrived = first(backend.messages);
+    void client.send('NOTE', empty, { bulk: source.readable });
+    source.add(pattern(100000));
+    await within(arrived, 5000);
+    await within(back.close(Status.of(StatusCode.unavailable)), 5000);
+    await within(forwarded.promise, 5000);
+    expect(refused).toHaveLength(1);
+    expect(only(refused).known).toBe(StatusCode.unavailable);
   });
 
   test('forwarding stays active until the bulk reply has finished', async () => {
@@ -1658,6 +1765,52 @@ describe('item windows', () => {
       }).encode(),
     );
     await forwarding;
+    await held.cancel();
+    await Promise.all([front.close(), back.close()]);
+  });
+
+  test('onRefused leaves a stream request its window, its credits and its abort', async () => {
+    const [toClientLocal, toClientForeign] = frameLink();
+    const [toBackendLocal, toBackendForeign] = frameLink();
+    const front = new TalkChannel(toClientLocal);
+    const back = new TalkChannel(toBackendLocal);
+    const atBackend = record(toBackendForeign);
+    const atClient = record(toClientForeign);
+    const held = new Collector(front.messages);
+    toClientForeign.add(
+      new TalkFrame({
+        kind: TalkKind.message,
+        procedure: Name.of('LIST'),
+        requestId: 1,
+        stream: true,
+        window: 1,
+      }).encode(),
+    );
+    toClientForeign.add(hexBytes('32 01 00 00 03 00 00 00'));
+    await pumpEventQueue();
+    const refused: Status[] = [];
+    const forwarding = forwardMessage(only(held.values), back, {
+      onRefused: (s) => refused.push(s),
+    });
+    await pumpEventQueue();
+    expect(only(atBackend).window).toBe(4);
+    toClientForeign.add(hexBytes('32 01 00 00 02 00 00 00'));
+    await pumpEventQueue();
+    expect(last(atBackend).isCredit).toBe(true);
+    expect(last(atBackend).creditItems).toBe(2);
+    toBackendForeign.add(
+      new TalkFrame({
+        kind: TalkKind.abort,
+        responseId: (atBackend[0] as TalkFrame).requestId,
+        payload: Status.of(StatusCode.notFound).encode(),
+      }).encode(),
+    );
+    await forwarding;
+    await pumpEventQueue();
+    expect(last(atClient).kind).toBe(TalkKind.abort);
+    expect(last(atClient).responseId).toBe(1);
+    expect(last(atClient).status.known).toBe(StatusCode.notFound);
+    expect(refused).toEqual([]);
     await held.cancel();
     await Promise.all([front.close(), back.close()]);
   });

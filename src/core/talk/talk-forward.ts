@@ -12,7 +12,7 @@ import type { TalkChannel } from './talk-channel.ts';
 import { TalkFrame, TalkKind } from './talk-frame.ts';
 import { IncomingMessage } from './talk-message.ts';
 import type { Outgoing, ResponseSink } from './talk-request.ts';
-import { TalkAbortError } from './talk-util.ts';
+import { isThenable, TalkAbortError } from './talk-util.ts';
 
 /**
  * Forwards [incoming], a message received on one channel, to [target]:
@@ -21,9 +21,11 @@ import { TalkAbortError } from './talk-util.ts';
  * `TalkChannel.messages` it lets through, in both directions.
  *
  * A message that expects no reply is sent on [target] as a plain message;
- * if [target] is closed it is dropped. A request is sent on [target] as a
- * new request with the same procedure, payload and `STREAM` flag, and
- * everything that comes back for it is relayed to [incoming], in order:
+ * if [target] is closed, or the message cannot be handed to its
+ * connection, it is dropped (see `options.onRefused` below). A request is
+ * sent on [target] as a new request with the same procedure, payload and
+ * `STREAM` flag, and everything that comes back for it is relayed to
+ * [incoming], in order:
  *
  * - stream items and `EXTEND`s are passed on as they arrive, an `EXTEND`
  *   with its payload unchanged (the deadline and renewal the far responder
@@ -87,6 +89,23 @@ import { TalkAbortError } from './talk-util.ts';
  * never rejects. If [incoming] can no longer be answered (it was already
  * answered or cancelled), nothing is forwarded.
  *
+ * `options.onRefused`, when given, hears of a plain message that could not
+ * be forwarded: [target] closed, or the message not handed to [target]'s
+ * connection, or its bulk payload not sent whole. It is called once, with
+ * `UNAVAILABLE`, possibly before `forwardMessage` returns and always before
+ * its promise resolves. The status is transient on purpose: a failed
+ * transfer does not establish whether the far peer acted (a bulk payload
+ * can fail after its message went), so work retried for the message keeps
+ * its original idempotency identity. A plain message handed to the
+ * connection counts as forwarded, and what becomes of it beyond (lost with
+ * the connection, dropped by the far peer) is not reported; a caller that
+ * needs to know sends a request. With `onRefused`, the promise of a plain
+ * message also waits for [target]'s send window to take its frame, so that
+ * a failure there is known before it resolves. Requests never call it:
+ * their failures are answered with aborts as above, and nothing about
+ * their item windows or credits changes. An error the callback throws, or
+ * a promise it returns that rejects, is logged and changes nothing else.
+ *
  * ```ts
  * backend.serve((message) => void forwardMessage(message, client));
  * client.serve((message) => void forwardMessage(message, backend));
@@ -95,29 +114,73 @@ import { TalkAbortError } from './talk-util.ts';
  * @throws {TypeError} if [incoming] was not received by a `TalkChannel`.
  * @throws {Error} if it is already being forwarded.
  */
-export function forwardMessage(incoming: TalkMessage, target: TalkChannel): Promise<void> {
+export function forwardMessage(
+  incoming: TalkMessage,
+  target: TalkChannel,
+  options: { readonly onRefused?: ((status: Status) => unknown) | undefined } = {},
+): Promise<void> {
   if (!(incoming instanceof IncomingMessage)) {
     throw new TypeError('the message to forward was not received by a TalkChannel');
   }
   const procedure = incoming.frame.procedure ?? Name.empty;
   if (!incoming.expectsReply) {
+    const onRefused = options.onRefused;
     const done = new Deferred<void>();
+    let reported = false;
+    const refused = (): void => {
+      if (reported || onRefused === undefined) {
+        return;
+      }
+      reported = true;
+      const callbackFailed = (e: unknown): void => {
+        incoming.channel._log('warn', 'plain forwarding refusal callback failed', e);
+      };
+      let result: unknown;
+      try {
+        result = onRefused(Status.of(StatusCode.unavailable));
+      } catch (e) {
+        callbackFailed(e);
+        return;
+      }
+      if (isThenable(result)) {
+        Promise.resolve(result).then(noop, callbackFailed);
+      }
+    };
     const failed = (error: SwitchboardError): void => {
       incoming.channel._log('debug', `forwarded ${incoming.frame} dropped: ${error.status}`);
       incoming._bulk?.abandon();
+      refused();
       done.resolve();
     };
     const accepted = incoming._takeCredit();
     try {
       const [payload, bulk] = incoming._forwardPayload();
-      void target._sendFrame(new TalkFrame({ kind: TalkKind.message, procedure, payload }), {
-        bulk,
-        onSent: (out) => {
-          done.resolve(out?.done.then(noop, noop));
+      const sent = target._sendFrame(
+        new TalkFrame({ kind: TalkKind.message, procedure, payload }),
+        {
+          bulk,
+          onSent: (out) => {
+            if (onRefused === undefined) {
+              // The original pacing, for callers not observing drops.
+              done.resolve(out?.done.then(noop, noop));
+            }
+          },
+          onFailure: failed,
+          onAccepted: accepted,
         },
-        onFailure: failed,
-        onAccepted: accepted,
-      });
+      );
+      if (onRefused !== undefined) {
+        // This includes asynchronous transport and bulk transfer failures:
+        // indeterminate UNAVAILABLE outcomes, never permanent refusals by
+        // the application or assertions that the peer did not act.
+        sent.then(
+          () => done.resolve(),
+          () => {
+            refused();
+            done.resolve();
+          },
+        );
+      }
     } catch (e) {
       accepted();
       if (!(e instanceof SwitchboardError)) {

@@ -19,7 +19,7 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // 'forwardMessage' and the raw item window tests, which drive frames by
 // hand on frame links and involve no mux.
 
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, onTestFinished, test } from 'vitest';
 import { bytesEqual } from '../../src/core/bytes.ts';
 import type { MuxChannel, MuxChannelCarrier } from '../../src/core/mux/contract.ts';
 import { MuxCredit } from '../../src/core/mux/mux-frame.ts';
@@ -49,6 +49,7 @@ import {
   rejectsRemote,
   rejectsStatus,
   toList,
+  within,
 } from '../support/talk/helpers.ts';
 
 const empty = new Uint8Array(0);
@@ -799,6 +800,28 @@ describe('bulk payloads', () => {
     expect(bytesEqual((await received).payload, pattern(100000))).toBe(true);
     await pumpEventQueue();
     expect(forwarded).toBe(true);
+  });
+
+  test('a failed in-progress plain bulk transfer reports only transient uncertainty', async () => {
+    const [client, front] = await muxTalk({ far: { streamBulk: () => true } });
+    const [back, backend] = await muxTalk({ far: { streamBulk: () => true } });
+    const source = new Source();
+    onTestFinished(() => source.close());
+    const refused: Status[] = [];
+    const forwarded = new Deferred<void>();
+    void front.serve((message) => {
+      void forwardMessage(message, back, { onRefused: (s) => refused.push(s) }).then(() =>
+        forwarded.resolve(),
+      );
+    });
+    const arrived = first(backend.messages);
+    void client.send('NOTE', empty, { bulk: source.readable });
+    source.add(pattern(100000));
+    await within(arrived, 5000);
+    await within(back.close(Status.of(StatusCode.unavailable)), 5000);
+    await within(forwarded.promise, 5000);
+    expect(refused).toHaveLength(1);
+    expect(only(refused).known).toBe(StatusCode.unavailable);
   });
 
   test('forwarding stays active until the bulk reply has finished', async () => {
