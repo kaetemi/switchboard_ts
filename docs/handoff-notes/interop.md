@@ -117,9 +117,11 @@ node tool/dart-peer.mjs status   # what the build uses and whether the peer is f
   * `node tool/dart-peer.mjs fetch`, which clones the pinned commits into
     `test/interop/dart_peer/.deps/`
 * **Pins:** in `test/interop/dart_peer/dart_commits.txt` (core `91cd86f`,
-  the refused plain messages, since 2026-10-25, and QUIC `d509a42`; core
-  `6ed87b4` in the fourth round, `3816e6f` and `c5b3265` before). A
-  checkout at another commit only warns locally.
+  the refused plain messages, and QUIC `9d3e1c7`, whose `core_commit.txt`
+  names that core and whose dial maps every connector failure to
+  UNAVAILABLE, both since 2026-10-25; core `6ed87b4` and QUIC `d509a42` in
+  the fourth round, `3816e6f` and `c5b3265` before). A checkout at another
+  commit only warns locally.
 * **Without Dart:** the interop files skip, with one line saying why.
 * **Environment variables:**
   * `SWITCHBOARD_INTEROP=required` fails the run instead of skipping.

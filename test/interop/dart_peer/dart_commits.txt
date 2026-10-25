@@ -5,4 +5,4 @@
 # commit). Moving them is a deliberate commit: a protocol change upstream
 # shows up as one failing interop run. Lines starting with # are comments.
 switchboard 91cd86f38820f7ca9b168c342914592ec8b01ac5
-switchboard_quic d509a428d5a171f836db29653c4e252f267832c0
+switchboard_quic 9d3e1c7fcb7010bdbe8b6f89e86cc73b866d361a
