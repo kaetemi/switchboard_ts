@@ -901,6 +901,82 @@ describe('over memory', () => {
 // memory pair, with and without transport latency, in
 // test/integration/talk-frame-mux-bulk.test.ts.
 
+// Not in Dart: its replyRequest family takes no bulk source (only in-memory
+// bytes, sent bulk when large), while here every reply request takes
+// ReplyOptions' `bulk` and `bulkLength` (design section 12, item 27).
+describe('bulk sources on reply requests', () => {
+  test('a chained response and an item that are requests carry a bulk source, and are answered', async () => {
+    const peers = await Peers.connect();
+    const [talk, server] = await peers.open();
+    const answers: number[][] = [];
+    serve(server, async (m) => {
+      switch (m.procedureName) {
+        case 'GET': {
+          const answer = await m.replyRequest(empty, {
+            bulk: generated(150_000),
+            bulkLength: 150_000,
+          });
+          answers.push([...answer.payload]);
+          break;
+        }
+        case 'LIST': {
+          const answer = await m.replyItemRequest(empty, {
+            bulk: generated(80_000, { piece: 999 }),
+          });
+          answers.push([...answer.payload]);
+          await m.reply(bytes([9]));
+          break;
+        }
+      }
+    });
+    const got = await talk.request('GET', empty);
+    expect(got.isBulk).toBe(true);
+    expect(got.bulkLength).toBe(150_000);
+    expect(got.expectsReply).toBe(true);
+    expectBytes(got.payload, pattern(150_000));
+    await got.reply(bytes([1]));
+    const stream = talk.streamRequest('LIST', empty);
+    for await (const item of stream.items) {
+      expect(item.isBulk).toBe(true);
+      expect(item.bulkLength).toBeUndefined();
+      expect(item.expectsReply).toBe(true);
+      expectBytes(item.payload, pattern(80_000));
+      await item.reply(bytes([2]));
+    }
+    expect([...(await stream.done).payload]).toEqual([9]);
+    await until(() => answers.length === 2);
+    expect(answers).toEqual([[1], [2]]);
+  });
+
+  test('a chained stream request carries a bulk source; a payload with it is refused before anything is sent', async () => {
+    const peers = await Peers.connect();
+    const [talk, server] = await peers.open();
+    const items: number[][] = [];
+    const refused = new Deferred<unknown>();
+    serve(server, async (m) => {
+      try {
+        m.replyStreamRequest(bytes([1]), { bulk: generated(10) });
+      } catch (e) {
+        refused.resolve(e);
+      }
+      const stream = m.replyStreamRequest(empty, { bulk: generated(60_000), bulkLength: 60_000 });
+      for await (const item of stream.items) {
+        items.push([...item.payload]);
+      }
+      await stream.done;
+    });
+    const got = await talk.request('WATCH', empty);
+    expect(await refused.promise).toBeInstanceOf(TypeError);
+    expect(got.isBulk).toBe(true);
+    expect(got.expectsStream).toBe(true);
+    expectBytes(got.payload, pattern(60_000));
+    await got.replyItem(bytes([4]));
+    await got.reply(empty);
+    await until(() => items.length === 1);
+    expect(items).toEqual([[4]]);
+  });
+});
+
 test('a send with a bulk payload completes once the payload went whole, and fails with how its transfer ended', async () => {
   const peers = await Peers.connect({
     serverOptions: { streamBulk: (m) => m.procedureName === 'DROP' },
