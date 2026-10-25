@@ -1131,17 +1131,23 @@ describe('identity', () => {
     expect(initiator.peerAuthenticated).toBe(false);
   });
 
-  test('a holder key given with a bearer credential is ignored, its IDENT carries no proof; a holder-key credential without its key, or with another, is a TypeError', async () => {
+  test('a holder key given with a bearer credential is ignored, its IDENT carries no proof; a holder-key credential without its key, or with another, rejects with a RangeError, as an intent or receiver too long does (as over the frame mux, and as in Dart)', async () => {
     const [connection, raw] = await bindingAndRaw({
       bindingIsInitiator: true,
       rawHello: new QuicHello({ exporter: true }),
     });
     await until(() => connection.peerHello !== undefined);
     const npc7 = await credentialOf('npc-7');
-    expect(() => connection.identify(npc7)).toThrow(TypeError);
+    await expect(connection.identify(npc7)).rejects.toThrow(RangeError);
     const other = await Ed25519HolderKey.generate();
-    expect(() => connection.identify(npc7, { holderKey: other })).toThrow(TypeError);
+    await expect(connection.identify(npc7, { holderKey: other })).rejects.toThrow(RangeError);
     const bearer = await credentialFor('bearer');
+    await expect(connection.identify(bearer, { intent: new Uint8Array(65) })).rejects.toThrow(
+      RangeError,
+    );
+    await expect(connection.identify(bearer, { receiver: 'x'.repeat(256) })).rejects.toThrow(
+      RangeError,
+    );
     const identifying = connection.identify(bearer, { holderKey: holder });
     await raw.nextControlOf(MuxControlType.nonce);
     await raw.sendControl(MuxControlMessage.nonce(new Uint8Array(32).fill(0x42)));
