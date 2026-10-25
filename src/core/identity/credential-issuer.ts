@@ -118,7 +118,12 @@ export class CredentialIssuer {
     options: CredentialIssuerOptions = {},
   ): CredentialIssuer {
     checkHmacKey(key);
-    return new CredentialIssuer(keyId, SignatureKind.hmacSha256, { hmacKey: key.slice() }, options);
+    return new CredentialIssuer(
+      keyId,
+      SignatureKind.hmacSha256,
+      { hmacKey: new Uint8Array(key) },
+      options,
+    );
   }
 
   /**

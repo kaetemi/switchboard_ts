@@ -160,7 +160,7 @@ export class CredentialVerifier implements CredentialVerifierContract {
    */
   addHmacKey(keyId: NameLike, key: Uint8Array): void {
     checkHmacKey(key);
-    this.#setKey(toName(keyId), { kind: SignatureKind.hmacSha256, bytes: key.slice() });
+    this.#setKey(toName(keyId), { kind: SignatureKind.hmacSha256, bytes: new Uint8Array(key) });
   }
 
   /**
@@ -174,7 +174,7 @@ export class CredentialVerifier implements CredentialVerifierContract {
         `Ed25519 public keys are ${ed25519PublicKeyLength} bytes, got ${publicKey.length}`,
       );
     }
-    this.#setKey(toName(keyId), { kind: SignatureKind.ed25519, bytes: publicKey.slice() });
+    this.#setKey(toName(keyId), { kind: SignatureKind.ed25519, bytes: new Uint8Array(publicKey) });
   }
 
   /**
@@ -254,7 +254,7 @@ export class CredentialVerifier implements CredentialVerifierContract {
       this.#cache.delete(key);
       this.#cache.set(key, credential);
     } else {
-      credential = await this.#verifyShared(key, bytes.slice());
+      credential = await this.#verifyShared(key, new Uint8Array(bytes));
       if (credential === undefined) {
         throw invalid();
       }

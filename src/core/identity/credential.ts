@@ -173,12 +173,12 @@ export class Credential implements CredentialContract {
     this.identity = init.identity;
     this.issuedAt = init.issuedAt;
     this.expiresAt = init.expiresAt;
-    this.holderKey = init.holderKey?.slice();
+    this.holderKey = init.holderKey === undefined ? undefined : new Uint8Array(init.holderKey);
     this.scopes = Object.freeze(
       (init.scopes ?? []).map((s) => (s instanceof Scope ? s : new Scope(s.right, s.pattern))),
     );
     this.signatureKind = init.signatureKind;
-    this.signature = init.signature.slice();
+    this.signature = new Uint8Array(init.signature);
     if (utf8Encoder.encode(this.identity).length > 0xff) {
       throw new RangeError('identity longer than 255 bytes of UTF-8');
     }
@@ -311,7 +311,7 @@ export class Credential implements CredentialContract {
         `credential of ${bytes.length} bytes exceeds ${Credential.maxLength}`,
       );
     }
-    const copy = bytes.slice();
+    const copy = new Uint8Array(bytes);
     const r = new ByteReader(copy);
     let init: CredentialInit;
     let signedLength: number;
