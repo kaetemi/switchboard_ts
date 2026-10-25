@@ -1137,6 +1137,211 @@ describe('requests', () => {
   /** The requests whose handler started, in order. */
   let started: string[];
 
+  /** A refusal reported for a plain message: its procedure and the status. */
+  type Refusal = readonly [string, Status];
+
+  /** The status of [refusal], which must be there. */
+  function statusOf(refusal: Refusal | undefined): Status {
+    expect(refusal).toBeDefined();
+    return (refusal as Refusal)[1];
+  }
+
+  /**
+   * Serves Talk on every channel; each plain message names its slot in its
+   * payload and goes through `serveRequest` with a refusal callback:
+   * [refusals] gets what it reports, [handled] the messages its handler ran
+   * for, and [completed] those whose `serveRequest` resolved.
+   */
+  function plainLifecycle(refusals: Refusal[], handled: string[], completed: string[]): void {
+    lifecycle.onServe = (channel) => {
+      gate.detach(channel);
+      void channel.talk().serve((message) => {
+        void gate
+          .serveRequest(
+            message,
+            Number(message.text()),
+            (accepted) => {
+              handled.push(accepted.procedureName);
+            },
+            {
+              onRefused: (status) => {
+                refusals.push([message.procedureName, status]);
+              },
+            },
+          )
+          .then(() => completed.push(message.procedureName));
+      });
+    };
+  }
+
+  test('plain absent, overflow and revoked queued work report once before completion', async () => {
+    await setUp();
+    newGate({ trackChannels: false, maxQueuedRequests: 1 });
+    const refusals: Refusal[] = [];
+    const handled: string[] = [];
+    const completed: string[] = [];
+    plainLifecycle(refusals, handled, completed);
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await until(() => (lifecycle.served.get(1)?.length ?? 0) > 0);
+    await talk.send('ABSENT', '5');
+    await until(() => completed.includes('ABSENT'));
+    expect(refusals).toHaveLength(1);
+    expectMoved(statusOf(refusals[0]));
+    await gate.onDrain(drain(1, 2, 2));
+    await talk.send('QUEUED', '1');
+    await talk.send('EXCESS', '1');
+    await until(() => completed.includes('EXCESS'));
+    expect(completed).not.toContain('QUEUED');
+    expectCode(statusOf(refusals.at(-1)), StatusCode.unavailable);
+    await gate.onRevoke(kv, 1);
+    await until(() => completed.includes('QUEUED'));
+    expectMoved(statusOf(refusals.at(-1)));
+    expect(refusals.map((r) => r[0])).toEqual(['ABSENT', 'EXCESS', 'QUEUED']);
+    expect(handled).toEqual([]);
+    await talk.close();
+    await settle();
+    expect(refusals).toHaveLength(3);
+  });
+
+  test('plain accepted work and resumed queued work never report a refusal', async () => {
+    await setUp();
+    newGate({ trackChannels: false });
+    const refusals: Refusal[] = [];
+    const handled: string[] = [];
+    const completed: string[] = [];
+    plainLifecycle(refusals, handled, completed);
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await talk.send('HERE', '1');
+    await until(() => completed.includes('HERE'));
+    await gate.onDrain(drain(1, 2, 2));
+    await talk.send('RESUME', '1');
+    await settle();
+    await gate.onResume(resume(1, 1));
+    await until(() => completed.includes('RESUME'));
+    expect(handled).toEqual(['HERE', 'RESUME']);
+    expect(refusals).toEqual([]);
+    await talk.close();
+  });
+
+  test('queued and late plain forwarding failures retain their refusal callbacks', async () => {
+    await setUp();
+    const resolver = new StaticResolver([]);
+    onCleanup(() => resolver.close());
+    sb.resolver = resolver;
+    newGate({ trackChannels: false });
+    const refusals: Refusal[] = [];
+    const handled: string[] = [];
+    const completed: string[] = [];
+    plainLifecycle(refusals, handled, completed);
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await until(() => (lifecycle.served.get(1)?.length ?? 0) > 0);
+    await gate.onDrain(drain(1, 2, 2));
+    await talk.send('QUEUED', '1');
+    await settle();
+    await gate.onForward(forward(1, 2, 2));
+    await until(() => completed.includes('QUEUED'));
+    await talk.send('LATE', '1');
+    await until(() => completed.includes('LATE'));
+    expect(refusals.map((r) => r[0])).toEqual(['QUEUED', 'LATE']);
+    for (const refusal of refusals) {
+      expectCode(statusOf(refusal), StatusCode.unavailable);
+    }
+    expect(handled).toEqual([]);
+    await talk.close();
+  });
+
+  test('plain messages handed to the new owner, queued and late, are not refused', async () => {
+    await setUp();
+    newGate({ trackChannels: false });
+    const refusals: Refusal[] = [];
+    const handled: string[] = [];
+    const completed: string[] = [];
+    plainLifecycle(refusals, handled, completed);
+    const received: string[] = [];
+    target.registerService(
+      kv,
+      (incoming) => {
+        void incoming.talk().serve((m) => {
+          received.push(m.procedureName);
+        });
+      },
+      { instance: 2 },
+    );
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await until(() => (lifecycle.served.get(1)?.length ?? 0) > 0);
+    await gate.onDrain(drain(1, 2, 2));
+    await talk.send('QUEUED', '1');
+    await settle();
+    await gate.onForward(forward(1, 2, 2));
+    await talk.send('LATE', '1');
+    await until(() => completed.length === 2 && received.length === 2);
+    // In either order, as Dart's `unorderedEquals`.
+    expect([...received].sort()).toEqual(['LATE', 'QUEUED']);
+    expect(refusals).toEqual([]);
+    expect(handled).toEqual([]);
+    await talk.close();
+  });
+
+  test('a queued plain message whose channel closes is refused UNAVAILABLE once, and not served on RESUME', async () => {
+    await setUp();
+    newGate({ trackChannels: false });
+    const refusals: Refusal[] = [];
+    const handled: string[] = [];
+    const completed: string[] = [];
+    plainLifecycle(refusals, handled, completed);
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await until(() => (lifecycle.served.get(1)?.length ?? 0) > 0);
+    await gate.onDrain(drain(1, 2, 2));
+    await talk.send('QUEUED', '1');
+    await settle();
+    expect(completed).toEqual([]);
+    await talk.close();
+    await until(() => completed.includes('QUEUED'));
+    expect(refusals).toHaveLength(1);
+    expect(refusals[0]?.[0]).toBe('QUEUED');
+    expectCode(statusOf(refusals[0]), StatusCode.unavailable);
+    await gate.onResume(resume(1, 1));
+    await settle();
+    expect(handled).toEqual([]);
+    expect(refusals).toHaveLength(1);
+  });
+
+  test('a plain refusal callback whose promise rejects is logged, not left unhandled', async () => {
+    await setUp();
+    newGate({ trackChannels: false });
+    const logged = gateLogs('warn');
+    const completed: string[] = [];
+    let calls = 0;
+    lifecycle.onServe = (channel) => {
+      gate.detach(channel);
+      void channel.talk().serve((message) => {
+        void gate
+          .serveRequest(message, Number(message.text()), () => {}, {
+            onRefused: async () => {
+              calls++;
+              await new Promise((resolve) => setTimeout(resolve, 0));
+              throw new Error('the retry could not be recorded');
+            },
+          })
+          .then(() => completed.push(message.procedureName));
+      });
+    };
+    await gate.onAssign(assign(1));
+    const talk = new TalkChannel(peer.open({ shard: 1 }));
+    await until(() => (lifecycle.served.get(1)?.length ?? 0) > 0);
+    await talk.send('ABSENT', '5');
+    await until(() => completed.includes('ABSENT'));
+    await settle();
+    expect(calls).toBe(1);
+    expect(logged).toEqual(['plain gate refusal callback failed']);
+    await talk.close();
+  });
+
   test('revocation from a request refuses the rest of the released queue', async () => {
     await setUp();
     newGate({ trackChannels: false });

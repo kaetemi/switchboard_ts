@@ -278,22 +278,29 @@ class Forward {
   }
 }
 
+/** Hears of a plain message refused by {@link SlotGate.serveRequest}, at most once; undefined without a callback. */
+type Refusal = ((status: Status) => void) | undefined;
+
 /** A request queued by {@link SlotGate.serveRequest}. */
 class Parked {
   readonly message: TalkMessage;
   readonly handler: (message: TalkMessage) => unknown;
   /** The credential to forward it with; undefined for its channel's. */
   readonly payload: Uint8Array | undefined;
+  /** Reports a refusal of a plain message; undefined without a callback. */
+  readonly onRefused: Refusal;
   readonly done = new Deferred<void>();
 
   constructor(
     message: TalkMessage,
     handler: (message: TalkMessage) => unknown,
     payload: Uint8Array | undefined,
+    onRefused: Refusal,
   ) {
     this.message = message;
     this.handler = handler;
     this.payload = payload;
+    this.onRefused = onRefused;
   }
 
   finish(): void {
@@ -771,23 +778,43 @@ export class SlotGate implements SlotHandler {
    * refused; it never rejects. A queued request that can no longer be
    * answered (cancelled, or its channel closed) leaves the queue and is
    * dropped.
+   *
+   * A plain message (one that expects no reply) cannot be answered with an
+   * abort. [options.onRefused], when given, hears of one refused here
+   * instead, with the status a request would get: `OUT_OF_RANGE` or `MOVED`
+   * for a slot not served here; `MOVED` for a queued one when the slot
+   * stops being served here with its queue unread (revoked, released, a
+   * failed load, {@link close}); `UNAVAILABLE` beyond
+   * {@link maxQueuedRequests}, for a queued one whose channel closed, and
+   * when forwarding it failed (see `forwardMessage`: a failed transfer
+   * leaves open whether the new owner acted). A plain message [handler] ran
+   * for, or that was handed to the new owner's channel, was not refused
+   * here; what the new owner does with it is not reported. It is called at
+   * most once, possibly before this returns and always before the promise
+   * resolves. Requests never call it; they are answered as above. An error
+   * the callback throws, or a promise it returns that rejects, is logged
+   * and changes nothing else.
    */
   async serveRequest(
     message: TalkMessage,
     slot: number,
     handler: (message: TalkMessage) => unknown,
-    options: { payload?: Uint8Array | undefined } = {},
+    options: {
+      payload?: Uint8Array | undefined;
+      onRefused?: ((status: Status) => unknown) | undefined;
+    } = {},
   ): Promise<void> {
+    const report = this.#refusal(message, options.onRefused);
     const s = this.#slots.get(slot);
     switch (s?.state) {
       case undefined: {
         const count = this.client.slotTable(this.type)?.count;
         if (count !== undefined && slot >= count) {
           this.#log('debug', `${this.type} gate: request for slot ${slot} outside ${count}`);
-          this.#abort(message, genericStatus(StatusCode.outOfRange));
+          this.#refuse(message, genericStatus(StatusCode.outOfRange), report);
           return;
         }
-        this.#abort(message, this.movedStatus(slot));
+        this.#refuse(message, this.movedStatus(slot), report);
         return;
       }
       case SlotGateState.loading:
@@ -795,10 +822,10 @@ export class SlotGate implements SlotHandler {
         const gateSlot = s as GateSlot;
         if (this.#queuedRequests >= this.maxQueuedRequests) {
           this.#log('info', `${this.type} gate: request refused, ${this.maxQueuedRequests} queued`);
-          this.#abort(message, genericStatus(StatusCode.unavailable));
+          this.#refuse(message, genericStatus(StatusCode.unavailable), report);
           return;
         }
-        const parked = new Parked(message, handler, options.payload);
+        const parked = new Parked(message, handler, options.payload, report);
         this.#queuedRequests++;
         gateSlot.requests.push(parked);
         // A request that can no longer be answered leaves the queue.
@@ -810,6 +837,7 @@ export class SlotGate implements SlotHandler {
           if (at >= 0) {
             gateSlot.requests.splice(at, 1);
             this.#queuedRequests--;
+            this.#refuse(message, genericStatus(StatusCode.unavailable), report);
             parked.finish();
           }
         });
@@ -820,9 +848,41 @@ export class SlotGate implements SlotHandler {
         await this.#run(s as GateSlot, message, handler);
         return;
       case SlotGateState.forwarding:
-        await this.#forwardRequest(s as GateSlot, slot, message, options.payload);
+        await this.#forwardRequest(s as GateSlot, slot, message, options.payload, report);
         return;
     }
+  }
+
+  /**
+   * The report of a refusal of [message] to [onRefused]: undefined without
+   * a callback (so that forwarding keeps its pacing), else a function that
+   * calls it once, for a plain message only, logging what it throws or a
+   * promise it returns that rejects.
+   */
+  #refusal(message: TalkMessage, onRefused: ((status: Status) => unknown) | undefined): Refusal {
+    if (onRefused === undefined) {
+      return undefined;
+    }
+    let reported = false;
+    return (status) => {
+      if (reported || message.expectsReply) {
+        return;
+      }
+      reported = true;
+      const callbackFailed = (e: unknown): void => {
+        this.#log('warn', 'plain gate refusal callback failed', e);
+      };
+      let result: unknown;
+      try {
+        result = onRefused(status);
+      } catch (e) {
+        callbackFailed(e);
+        return;
+      }
+      if (isPromiseLike(result)) {
+        Promise.resolve(result).then(() => {}, callbackFailed);
+      }
+    };
   }
 
   async #run(
@@ -852,12 +912,13 @@ export class SlotGate implements SlotHandler {
     slot: number,
     message: TalkMessage,
     payload: Uint8Array | undefined,
+    onRefused: Refusal,
   ): Promise<void> {
     if (message.expectsReply && !message.canReply) {
       return;
     }
     if (this.#queuedRequests >= this.maxQueuedRequests) {
-      this.#abort(message, genericStatus(StatusCode.unavailable));
+      this.#refuse(message, genericStatus(StatusCode.unavailable), onRefused);
       return;
     }
     this.#queuedRequests++;
@@ -879,17 +940,20 @@ export class SlotGate implements SlotHandler {
       target = await this.#forwardChannel(s, slot, f);
     } catch (e) {
       this.#log('info', `${this.type} gate: cannot forward a request for ${slot}: ${e}`);
-      this.#abort(message, genericStatus(StatusCode.unavailable));
+      this.#refuse(message, genericStatus(StatusCode.unavailable), onRefused);
       this.#relayEnded(s, f);
       return;
     } finally {
       this.#queuedRequests--;
     }
     try {
-      await forwardMessage(message, target);
+      await forwardMessage(message, target, { onRefused });
     } catch (e) {
       // The application forwarded it already: nothing more to do.
       this.#log('error', `${this.type} gate: forwarding a request for ${slot} failed`, e);
+      if (!message.expectsReply) {
+        this.#refuse(message, genericStatus(StatusCode.unavailable), onRefused);
+      }
     } finally {
       this.#relayEnded(s, f);
     }
@@ -962,6 +1026,15 @@ export class SlotGate implements SlotHandler {
     f.channel = opening;
     opening.catch(() => {});
     return opening;
+  }
+
+  /** Refuses [message] with [status]: a request is answered with an abort, a plain message reported to [onRefused]. */
+  #refuse(message: TalkMessage, status: Status, onRefused: Refusal): void {
+    if (!message.expectsReply) {
+      onRefused?.(status);
+    } else {
+      this.#abort(message, status);
+    }
   }
 
   #abort(message: TalkMessage, status: Status): void {
@@ -1311,8 +1384,8 @@ export class SlotGate implements SlotHandler {
       this.#forwardChannelOf(s, incoming);
     }
     for (const parked of requests) {
-      void this.#forwardRequest(s, slot, parked.message, parked.payload).finally(() =>
-        parked.finish(),
+      void this.#forwardRequest(s, slot, parked.message, parked.payload, parked.onRefused).finally(
+        () => parked.finish(),
       );
     }
     // Answered once the queued channels are handed over.
@@ -1427,7 +1500,7 @@ export class SlotGate implements SlotHandler {
       void incoming.reject(moved);
     }
     for (const parked of this.#takeRequests(s)) {
-      this.#abort(parked.message, moved);
+      this.#refuse(parked.message, moved, parked.onRefused);
       parked.finish();
     }
   }

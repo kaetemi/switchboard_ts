@@ -116,8 +116,9 @@ node tool/dart-peer.mjs status   # what the build uses and whether the peer is f
   * sibling checkouts `../switchboard` and `../switchboard_quic`
   * `node tool/dart-peer.mjs fetch`, which clones the pinned commits into
     `test/interop/dart_peer/.deps/`
-* **Pins:** in `test/interop/dart_peer/dart_commits.txt` (core `6ed87b4`,
-  QUIC `d509a42` since the fourth round; `3816e6f` and `c5b3265` before). A
+* **Pins:** in `test/interop/dart_peer/dart_commits.txt` (core `91cd86f`,
+  the refused plain messages, since 2026-10-25, and QUIC `d509a42`; core
+  `6ed87b4` in the fourth round, `3816e6f` and `c5b3265` before). A
   checkout at another commit only warns locally.
 * **Without Dart:** the interop files skip, with one line saying why.
 * **Environment variables:**
