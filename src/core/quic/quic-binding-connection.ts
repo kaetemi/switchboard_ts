@@ -1919,20 +1919,30 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
    * A holder key given with a bearer credential is ignored: a bearer
    * credential carries no proof (as in Dart, and as the frame mux does).
    *
-   * @throws {TypeError} for a holder-key credential whose holder key is
-   * missing or not the one it names.
-   * @throws {RangeError} for an intent, receiver or credential too long for
-   * an `IDENT`.
+   * Rejects (as the frame mux does, and as Dart's future fails) with a
+   * {@link RangeError} when the credential names a holder key and
+   * `holderKey` is missing or another, and when the intent, the receiver or
+   * the credential is too long for an `IDENT`; nothing is sent then. The
+   * promise is safe to drop: a rejection nobody awaits is not reported as
+   * unhandled.
    */
   identify(credential: Credential, options: IdentifyOptions = {}): Promise<void> {
+    const identifying = this.#identify(credential, options);
+    identifying.catch(() => {});
+    return identifying;
+  }
+
+  async #identify(credential: Credential, options: IdentifyOptions): Promise<void> {
     const holder = credential.holderKey;
     const holderKey = options.holderKey;
     if (holder !== undefined) {
       if (holderKey === undefined) {
-        throw new TypeError('the credential names a holder key, the proof needs its key pair');
+        throw new RangeError(
+          'the credential names a holder key, the proof needs its key pair (holderKey)',
+        );
       }
       if (!bytesEqual(holderKey.publicKey, holder)) {
-        throw new TypeError('not the holder key the credential names');
+        throw new RangeError('holderKey is not the holder key the credential names');
       }
     }
     const intent =
@@ -1949,26 +1959,6 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
       receiver: receiverBytes,
       proof: holder === undefined ? undefined : new Uint8Array(MuxIdent.proofLength),
     }).encode();
-    const identifying = this.#identify(
-      credential,
-      credentialBytes,
-      intent,
-      receiver,
-      receiverBytes,
-      options,
-    );
-    identifying.catch(() => {});
-    return identifying;
-  }
-
-  async #identify(
-    credential: Credential,
-    credentialBytes: Uint8Array,
-    intent: Uint8Array,
-    receiver: string | undefined,
-    receiverBytes: Uint8Array,
-    options: IdentifyOptions,
-  ): Promise<void> {
     if (this.#closing) {
       throw SwitchboardError.of(StatusCode.failedPrecondition, 'connection is closed');
     }
@@ -1979,7 +1969,6 @@ export class QuicBindingConnection extends BindingConnection implements MuxConne
         'the peer has not identified with an exporter-bound proof',
       );
     }
-    const holder = credential.holderKey;
     if (holder === undefined && rules.bearerOnlyToAuthenticatedPeer && !this.peerAuthenticated) {
       throw SwitchboardError.of(
         StatusCode.failedPrecondition,
