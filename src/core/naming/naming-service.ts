@@ -13,6 +13,7 @@ import type {
   Scope,
 } from '../identity/contract.ts';
 import { Right } from '../identity/contract.ts';
+import { CredentialVerifier as WallTimeVerifier } from '../identity/credential-verifier.ts';
 import type { MuxConnection } from '../mux/contract.ts';
 import { Name, type NameLike, toName } from '../name.ts';
 import { ProtocolError, Status, StatusCode, SwitchboardError } from '../status.ts';
@@ -132,7 +133,13 @@ export interface NamingServiceOptions {
   readonly brokerTimeout?: number;
   /** Time and timers; default the system clock. */
   readonly clock?: Clock;
-  /** Wall time in ms since the epoch, for credential expiry; default `Date.now`. */
+  /**
+   * Wall time in ms since the epoch, for credential expiry (the payload
+   * credentials' verification, the sessions' expiry timers); default the
+   * {@link verifier}'s own when it is a `CredentialVerifier`, as a node
+   * takes it for its connections, so that one wall clock reads them all;
+   * else `Date.now`.
+   */
   readonly wallTime?: () => number;
   /** Diagnostics, under the name `Switchboard.Naming`; default none. */
   readonly logger?: Logger;
@@ -267,7 +274,9 @@ export class NamingService implements AsyncDisposable {
     this.renewable = options.renewable;
     this.brokerTimeout = options.brokerTimeout ?? 30_000;
     this.clock = options.clock ?? systemClock;
-    this.wallTime = options.wallTime ?? Date.now;
+    this.wallTime =
+      options.wallTime ??
+      (options.verifier instanceof WallTimeVerifier ? options.verifier.wallTime : Date.now);
     this.logger = options.logger ?? noopLogger;
     if (!(this.assignBackoff > 0)) {
       throw new RangeError(`assignBackoff must be positive: ${this.assignBackoff}`);

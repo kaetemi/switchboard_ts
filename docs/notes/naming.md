@@ -122,6 +122,37 @@ Dart wraps them; and a malformed `PHASE` item ending `migrate`'s
 iteration (and cancelling the `MIGRATE`) where Dart adds an error and
 goes on.
 
+## Alignment audit against Dart master 91cd86f (2026-10-25)
+
+Codecs, `NamingService` (scopes, hold, settle, allocator, backoffs,
+hand-over, RENEW, CONNECT), the client and its slot half, the resolver,
+`SlotChannel`, `reopenAtSlotOwner`, `SlotGate` (without `onRefused`, ported
+separately) and `MeshNode` were compared function by function: no
+behavioural difference beyond design section 12. Fixed on
+`claude/audit-naming`: a `NamingService` without a `wallTime` reads its
+verifier's wall clock. Left for the lead:
+
+- `reopenAtSlotOwner` and `SlotReopenOptions` are exported from the
+  package (`naming/index.ts`); Dart keeps the function internal, and its
+  TS doc says `@internal`. Drop the export, or keep it as a public hook
+  for custom routers and say so.
+- Laid over, not replacing: a `talkOptions` given to `namingClientFor` or
+  `MeshNode.join` is a `Partial` laid over the node's Talk options (as for
+  `openTalk`, `openTalkAt`, `openTalkToSlot`); Dart replaces the node's
+  options with the given ones. A node-wide difference, not in section 12.
+- TS-only additions Dart could take or leave: `namingClientFor` takes
+  `slotHandlerMaxDuration` (Dart's `NamingClient` has it, its
+  `namingClientFor` does not pass it); `SlotRequestContext.signal`; a
+  throw while the service handles a request drops that session (Dart lets
+  it escape as an uncaught error); `leave()` survives a failing resolver
+  close.
+- The service's options accept `Infinity` (a timer that never fires) and a
+  non-integer `resumeAttempts`, which Dart's types rule out. Harmless.
+- Shared with Dart, unreachable as the naming service sends FORWARD once
+  per hand-over: a second `FORWARD` for a slot already forwarding replaces
+  the grace timer without cancelling the first, which still ends the
+  forwarding (`slot_gate.dart` `onForward`, `slot-gate.ts` `onForward`).
+
 ## Questions for the lead
 
 - Review the `SlotResolver` contract commit (above) with the next PR.
