@@ -15,9 +15,14 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // owned slots go free. The control pins the `events` half.
 
 import { afterEach, beforeEach, expect, test } from 'vitest';
+import { CredentialKind, Right } from '../../../src/core/identity/contract.ts';
+import { CredentialIssuer } from '../../../src/core/identity/credential-issuer.ts';
+import { CredentialVerifier } from '../../../src/core/identity/credential-verifier.ts';
+import { Scope } from '../../../src/core/identity/scope.ts';
 import { Name } from '../../../src/core/name.ts';
 import { SlotMode, SlotSpace } from '../../../src/core/naming/naming-protocol.ts';
-import { Harness, register, until } from '../../support/naming/harness.ts';
+import { StatusCode } from '../../../src/core/status.ts';
+import { Harness, register, rejectsWith, until } from '../../support/naming/harness.ts';
 import { Instance } from '../../support/naming/sharding-harness.ts';
 
 const discord = Name.of('discord');
@@ -105,4 +110,55 @@ test('a DOWN listener sees every record of the channel that ended gone', async (
   await channel.close();
   await until(() => seen.length === 2);
   expect(seen).toEqual([0, 0]);
+});
+
+// Alignment audit (naming layer): credential expiry is read on one wall
+// clock (design section 11, "Wall time"), as Dart reads every expiry on
+// `package:clock`. A node takes its verifier's `wallTime` when its mux
+// options give none; the naming service read `Date.now` unless given a
+// `wallTime` of its own, so with a verifier on another wall clock (a test
+// clock, a corrected clock) a payload credential the verifier accepts was
+// refused by the service (it verifies with `now: wallTime()`), and the
+// sessions' expiry timers ran on a clock their connections' identities do
+// not. The service now defaults to its verifier's wall clock.
+const walled = Date.UTC(2020, 0, 1);
+
+async function walledCredential(): Promise<{ bytes: Uint8Array; verifier: CredentialVerifier }> {
+  const key = new Uint8Array(32).fill(7);
+  const issuer = CredentialIssuer.hmac('mesh1', key, { wallTime: () => walled });
+  const credential = await issuer.issue({
+    kind: CredentialKind.node,
+    identity: 'worker-a1',
+    scopes: [Scope.of(Right.register, 'worker-*')],
+    lifetime: 3600_000,
+  });
+  const verifier = new CredentialVerifier({
+    hmacKeys: [['mesh1', key]],
+    wallTime: () => walled + 60_000,
+  });
+  return { bytes: credential.encode(), verifier };
+}
+
+test('the naming service reads credential expiry on the wall clock of its verifier', async () => {
+  const { bytes, verifier } = await walledCredential();
+  const service = new Harness({ verifier, requireCredential: true });
+  try {
+    expect(service.service.wallTime).toBe(verifier.wallTime);
+    const [channel] = service.link({ credential: bytes });
+    expect(await register(channel, 'worker-a')).toBe(1);
+  } finally {
+    await service.close();
+  }
+});
+
+test('control: a wallTime given to the naming service still takes precedence', async () => {
+  const { bytes, verifier } = await walledCredential();
+  // Valid an hour from 2020 by the verifier, expired by the real time.
+  const service = new Harness({ verifier, requireCredential: true, wallTime: Date.now });
+  try {
+    const [channel] = service.link({ credential: bytes });
+    await rejectsWith(register(channel, 'worker-a'), StatusCode.unauthenticated);
+  } finally {
+    await service.close();
+  }
 });
