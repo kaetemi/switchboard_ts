@@ -195,6 +195,8 @@ gateway.registerService('echo', async (incoming) => {
 
 Call it inside a `serve` handler, as above, so the message's frame credit is passed on too.
 
+A plain message has no reply to carry a failure back, so a dropped one is silent unless you pass `onRefused`: `forwardMessage(message, upstream, { onRefused: (status) => … })` hears of a plain message that could not be forwarded (the target closed, the message not handed to its connection, or its bulk payload not sent whole). It is called at most once, with `UNAVAILABLE`, possibly before `forwardMessage` returns and always before its promise resolves. The status is transient on purpose: a failed transfer does not tell whether the far peer acted, so work retried for the message keeps its original idempotency identity. A message handed to the connection counts as forwarded; what becomes of it beyond is not reported (send a request when you need to know). With the callback, the promise of a plain message also waits for the target's send window to take its frame. Requests never call it: their failures reach the requester as aborts. A throw, or a promise the callback returns that rejects, is logged.
+
 ### Options
 
 `TalkOptions`, given as `talkOptions` to a node, a client or `openTalk`, or to the `TalkChannel` constructor. Durations in milliseconds.
