@@ -237,7 +237,7 @@ export class IncomingMessage implements TalkMessage {
   _creditOwed = 0;
 
   /** Why replies still waiting for the window are not sent, when the request ends with an abort. */
-  #dropError: SwitchboardError | undefined;
+  #dropStatus: Status | undefined;
 
   /** When {@link #timer} fires. */
   #armedEnd: number | undefined;
@@ -668,14 +668,19 @@ export class IncomingMessage implements TalkMessage {
     }
   }
 
-  /** Drops what waits for the window: the request ended before it could go. */
-  #dropQueue(error: SwitchboardError): void {
+  /**
+   * Drops what waits for the window: the request ended before it could
+   * go. [reason] is asked for the error only when something waits: most
+   * requests end with nothing queued, and an error carries a stack trace.
+   */
+  #dropQueue(reason: () => SwitchboardError): void {
     const queue = this.#queue;
     if (queue === undefined || queue.length === 0) {
       return;
     }
     const dropped = queue.splice(0);
     this.#finalQueued = false;
+    const error = reason();
     for (const queued of dropped) {
       try {
         queued.drop(error);
@@ -1365,7 +1370,7 @@ export class IncomingMessage implements TalkMessage {
 
   _replyAbort(status: Status): Promise<void> {
     this.#check();
-    this.#dropError ??= new SwitchboardError(status);
+    this.#dropStatus ??= status;
     return this.#sendReply(
       () =>
         this.channel._sendChecked(
@@ -1535,7 +1540,7 @@ export class IncomingMessage implements TalkMessage {
     if (this._finished || this.#finalizing || !this.expectsReply) {
       return;
     }
-    this.#dropError ??= new SwitchboardError(status);
+    this.#dropStatus ??= status;
     this.#sendReply(() => this.channel._rejectRequest(this.requestId, status), true);
   }
 
@@ -1576,12 +1581,13 @@ export class IncomingMessage implements TalkMessage {
     // Answered: a payload the application did not read is not needed.
     this._bulk?.abandon();
     // An abort went before what waited for the window.
-    this.#dropQueue(
-      this.#dropError ??
-        SwitchboardError.of(
-          StatusCode.failedPrecondition,
-          `request ${this.requestId} ended before the reply was sent`,
-        ),
+    this.#dropQueue(() =>
+      this.#dropStatus === undefined
+        ? SwitchboardError.of(
+            StatusCode.failedPrecondition,
+            `request ${this.requestId} ended before the reply was sent`,
+          )
+        : new SwitchboardError(this.#dropStatus),
     );
     this.#notifyCredit();
   }
@@ -1633,7 +1639,8 @@ export class IncomingMessage implements TalkMessage {
     this.#stopTimer();
     this.#stopCredit();
     this.#dropQueue(
-      error ??
+      () =>
+        error ??
         SwitchboardError.of(
           StatusCode.failedPrecondition,
           `request ${this.requestId} can no longer be answered`,

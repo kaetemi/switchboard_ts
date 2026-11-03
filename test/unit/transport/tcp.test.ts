@@ -28,6 +28,8 @@ const preambleHex = '53 57 42 44 01 00 00 00';
 
 /** Deno, whose `node:net` lets go of a destroyed socket's buffer at once. */
 const isDeno = typeof (globalThis as { Deno?: unknown }).Deno !== 'undefined';
+/** Node itself, whose socket cork and tick the turn-coalescing test observes. */
+const isNode = !isDeno && typeof (globalThis as { Bun?: unknown }).Bun === 'undefined';
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -311,6 +313,39 @@ describe('connectTcp and listenTcp', () => {
 });
 
 describe('the socket accounting', () => {
+  test('the frames of one turn leave the socket together, on the next tick', async () => {
+    const raw = await rawServer();
+    const client = await connectTcp('127.0.0.1', raw.port);
+    const socket = await raw.next();
+    const received: Buffer[] = [];
+    socket.on('data', (data: Buffer) => received.push(data));
+    // The preamble went out on construction and is on its way; let its tick pass.
+    await new Promise((resolve) => setImmediate(resolve));
+    const writer = client.writable.getWriter();
+    let total = 0;
+    for (let i = 0; i < 200; i++) {
+      void writer.write(bytesOf(16 + (i % 7), i));
+      total += 4 + 16 + (i % 7);
+    }
+    await writer.write(bytesOf(1));
+    total += 5;
+    if (isNode) {
+      // Every write of this turn reached the socket; none has left it yet.
+      expect(client.socket.writableCorked).toBeGreaterThan(0);
+      expect(client.socket.writableLength).toBe(total);
+      expect(client.acceptedOutputBytes).toBe(8);
+    }
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(client.socket.writableCorked).toBe(0);
+    expect(client.socket.writableLength).toBe(0);
+    expect(client.acceptedOutputBytes).toBe(8 + total);
+    await writer.close();
+    await new Promise<void>((resolve) => socket.on('end', resolve));
+    const bytes = Buffer.concat(received);
+    expect(bytes.length).toBe(8 + total);
+    expect(hexString(bytes.subarray(0, 8))).toBe(preambleHex);
+  });
+
   test('buffered output counts the socket buffer; accepted output grows as the peer reads', async () => {
     const raw = await rawServer();
     const client = await connectTcp('127.0.0.1', raw.port, { outputHighWaterMark: 0 });
