@@ -177,12 +177,26 @@ function socketInput(socket: Socket, backlog: SocketBacklog): ByteInput {
  * its writer to wait (`writableNeedDrain`), so that what does not fit
  * waits, counted, in the stream transport. Closing ends the socket (a FIN
  * after what was written) and resolves once that is done.
+ *
+ * The writes of one turn leave the socket together: the first write of a
+ * turn corks the socket and the socket is uncorked on the next tick, once
+ * the turn's microtasks have run, so that the frames a turn sends (each
+ * device's event, each answer) go to the system as one `writev` rather
+ * than a system call each. Nothing waits longer than that tick. Bytes
+ * corked count as not yet taken (the socket's `writableLength` holds
+ * them), and a turn that corks more than the socket's high-water mark
+ * asks for a drain as a single write of that size does.
  */
 function socketOutput(socket: Socket, backlog: SocketBacklog): ByteOutput {
   let failed = false;
   let finished = false;
   let failure: ((error: unknown) => void) | undefined;
   let readyWaiter: Deferred<void> | undefined;
+  let corked = false;
+  const uncork = (): void => {
+    corked = false;
+    socket.uncork();
+  };
   const signalReady = (): void => {
     const w = readyWaiter;
     readyWaiter = undefined;
@@ -223,6 +237,11 @@ function socketOutput(socket: Socket, backlog: SocketBacklog): ByteOutput {
     write(bytes) {
       if (failed || socket.destroyed || socket.writableEnded) {
         return;
+      }
+      if (!corked) {
+        corked = true;
+        socket.cork();
+        process.nextTick(uncork);
       }
       socket.write(bytes);
     },
@@ -327,9 +346,11 @@ export class TcpTransport extends StreamTransport {
  * socket is destroyed), because closing a socket with unread input makes
  * the system reset the connection, and a reset can destroy the frames
  * still on their way, such as the GOAWAY sent just before the close.
- * `abort()` destroys the socket. Output the socket does not take at once
- * waits in the transport; {@link TcpTransport.bufferedOutputBytes} counts
- * it with the socket's own buffer, and while more than
+ * `abort()` destroys the socket. The frames written in one turn of the
+ * event loop go to the system together, as one `writev` on the next tick
+ * (the socket is corked meanwhile). Output the socket does not take at
+ * once waits in the transport; {@link TcpTransport.bufferedOutputBytes}
+ * counts it with the socket's own buffer, and while more than
  * `outputHighWaterMark` bytes wait the socket is not read.
  *
  * The socket should be created with `allowHalfOpen: true`, so that the

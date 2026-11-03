@@ -254,6 +254,7 @@ offset size field
 * Frames are copied.
 * `maxFrameSize` makes it `FrameLimited`.
 * A failed side stays writable, as above.
+* No bound of its own: each side is a `StreamController`, which buffers what the listener has not taken without limit. Flow control over the pair is the mux channels' credit. The TS pair keeps this (design section 11, "Memory transport flow control").
 * The Dart mux tests mostly run over this, or over `RawPeer` (§19), which reads and writes raw mux frames byte for byte.
 
 ---
