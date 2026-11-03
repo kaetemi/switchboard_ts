@@ -12,7 +12,8 @@ Copyright (C) 2018-2026  Jan BOON (Kaetemi)
 // the close frame). The "Switchboard listener" group is in
 // test/integration/node-websocket.test.ts.
 
-import { describe, expect, test } from 'vitest';
+import { Socket } from 'node:net';
+import { describe, expect, test, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { utf8Decode, utf8Encode } from '../../../src/core/bytes.ts';
 import type { MuxOptions } from '../../../src/core/mux/contract.ts';
@@ -31,6 +32,7 @@ import {
   Harness,
   handshake,
   isBun,
+  onCleanup,
   opBinary,
   opClose,
   opContinuation,
@@ -43,6 +45,9 @@ import {
   sampleAccept,
   wsMessages,
 } from './ws-support.ts';
+
+/** Node itself, whose socket cork and tick the turn-coalescing test observes. */
+const isNode = !isBun && typeof (globalThis as { Deno?: unknown }).Deno === 'undefined';
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
@@ -132,6 +137,37 @@ describe('frames', () => {
     const [client, server] = await h.pair();
     return { client, server, received: eager(server) };
   }
+
+  test.skipIf(!isNode)(
+    'the messages of one turn leave the socket together, on the next tick',
+    async () => {
+      const { client, server } = await setUp();
+      const writer = server.writable.getWriter();
+      // Settles the handshake's and the preamble's writes.
+      await new Promise((resolve) => setImmediate(resolve));
+      const writes = vi.spyOn(Socket.prototype, '_write');
+      const writevs = vi.spyOn(Socket.prototype, '_writev');
+      onCleanup(() => {
+        writes.mockRestore();
+        writevs.mockRestore();
+      });
+      const count = 100;
+      for (let i = 0; i < count; i++) void writer.write(pattern(20 + (i % 5), i));
+      await writer.write(pattern(1));
+      // Each message reached the socket (a header and a payload each, through
+      // `ws`'s own cork), none has left it yet.
+      expect(writes).not.toHaveBeenCalled();
+      expect(writevs).not.toHaveBeenCalled();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(writes).not.toHaveBeenCalled();
+      expect(writevs).toHaveBeenCalledTimes(1);
+      expect((writevs.mock.calls[0] as unknown[])[0]).toHaveLength(2 * (count + 1));
+      for (let i = 0; i < count; i++) {
+        expect(sameBytes((await client.next()).payload, pattern(20 + (i % 5), i))).toBe(true);
+      }
+      expect(sameBytes((await client.next()).payload, pattern(1))).toBe(true);
+    },
+  );
 
   test('binary messages both ways, every length encoding', async () => {
     const { client, server, received } = await setUp();
