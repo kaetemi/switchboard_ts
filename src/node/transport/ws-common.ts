@@ -95,6 +95,12 @@ export interface WsConnectionOptions {
   readonly clock?: Clock | undefined;
 }
 
+/** What the cork of a turn needs of `ws`'s socket. */
+interface CorkableSocket {
+  cork(): void;
+  uncork(): void;
+}
+
 /**
  * Adapts [socket], a `ws` WebSocket (connecting or open), for the core's
  * `WebSocketTransport`: binary messages as bytes, pausing, output
@@ -108,6 +114,29 @@ export function wsConnection(
   const clock = options.clock ?? systemClock;
   const waiters: { readonly bytes: number; readonly resolve: () => void }[] = [];
   let poll: TimerHandle | undefined;
+  // The messages of one turn leave the socket together, as the TCP
+  // transport's frames do: `ws` writes each message to its socket as it is
+  // sent, so the socket is corked on the first send of a turn and uncorked
+  // on the next tick, after the turn's microtasks, and the turn's messages
+  // go to the system as one `writev`. `ws`'s own cork around a message
+  // nests inside. The socket is `ws`'s `_socket`; a stand-in without one
+  // (Bun's) writes as before. Corked bytes stay in `bufferedAmount`.
+  let corked = false;
+  const corkTurn = (): void => {
+    if (corked) {
+      return;
+    }
+    const raw = (socket as { _socket?: CorkableSocket | null })._socket;
+    if (raw == null || typeof raw.cork !== 'function' || typeof raw.uncork !== 'function') {
+      return;
+    }
+    corked = true;
+    raw.cork();
+    process.nextTick(() => {
+      corked = false;
+      raw.uncork();
+    });
+  };
   // Checked on every send callback, and polled while someone waits: a send
   // callback does not always mean the bytes left (Bun's stand-in for `ws`
   // calls it at once).
@@ -165,6 +194,7 @@ export function wsConnection(
       });
     },
     send(frame) {
+      corkTurn();
       socket.send(frame, { binary: true }, check);
     },
     close(code, reason) {
